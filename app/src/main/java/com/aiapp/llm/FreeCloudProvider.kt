@@ -2,6 +2,7 @@ package com.aiapp.llm
 
 import com.aiapp.data.Log
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.mapNotNull
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
@@ -25,7 +26,15 @@ import kotlinx.serialization.json.putJsonArray
 class FreeCloudProvider : LlmProvider {
     override val id = ProviderId.FREE
 
-    private val base = "https://text.pollinations.ai"
+    // Current endpoint first, classic host as a fallback (hosts/paths rotate).
+    private val chatEndpoints = listOf(
+        "https://gen.pollinations.ai/v1/chat/completions",
+        "https://text.pollinations.ai/openai",
+    )
+    private val modelEndpoints = listOf(
+        "https://text.pollinations.ai/models",
+        "https://gen.pollinations.ai/v1/models",
+    )
     private val referrer = "aiapp"
 
     private val fallback = listOf(
@@ -36,25 +45,26 @@ class FreeCloudProvider : LlmProvider {
         ModelInfo("llama", "Llama (free)"),
     )
 
-    override suspend fun listModels(apiKey: String): List<ModelInfo> = runCatching {
-        val raw = Http.getJsonArray("$base/models", emptyMap())
-        val models = raw.mapNotNull { el ->
-            when (el) {
-                is JsonPrimitive -> el.contentOrNull?.let { ModelInfo(it, it) }
-                is JsonObject -> {
-                    val name = el["name"]?.jsonPrimitive?.contentOrNull ?: return@mapNotNull null
-                    val type = el["type"]?.jsonPrimitive?.contentOrNull
-                    if (type != null && type != "chat" && type != "text") return@mapNotNull null
-                    val desc = el["description"]?.jsonPrimitive?.contentOrNull ?: name
-                    ModelInfo(name, desc)
+    override suspend fun listModels(apiKey: String): List<ModelInfo> {
+        for (url in modelEndpoints) {
+            val models = runCatching {
+                val raw = Http.getJsonArray(url, emptyMap())
+                raw.mapNotNull { el ->
+                    when (el) {
+                        is JsonPrimitive -> el.contentOrNull?.let { ModelInfo(it, it) }
+                        is JsonObject -> {
+                            val name = (el["name"] ?: el["id"])?.jsonPrimitive?.contentOrNull ?: return@mapNotNull null
+                            val type = el["type"]?.jsonPrimitive?.contentOrNull
+                            if (type != null && type != "chat" && type != "text") return@mapNotNull null
+                            ModelInfo(name, el["description"]?.jsonPrimitive?.contentOrNull ?: name)
+                        }
+                        else -> null
+                    }
                 }
-                else -> null
-            }
+            }.getOrElse { Log.w("FreeCloud", "listModels $url failed: ${it.message}"); emptyList() }
+            if (models.isNotEmpty()) return models
         }
-        models.ifEmpty { fallback }
-    }.getOrElse {
-        Log.w("FreeCloud", "listModels failed: ${it.message}")
-        fallback
+        return fallback
     }
 
     override fun stream(
@@ -82,7 +92,23 @@ class FreeCloudProvider : LlmProvider {
                 }
             }
         }.toString()
-        return Http.sse("$base/openai", mapOf("Content-Type" to "application/json"), body).mapNotNull { data -> parse(data) }
+        val headers = mapOf("Content-Type" to "application/json")
+        // Try each endpoint; fall through only while nothing has been emitted yet.
+        return flow {
+            var last: Throwable? = null
+            for (url in chatEndpoints) {
+                var emitted = false
+                try {
+                    Http.sse(url, headers, body).mapNotNull { parse(it) }.collect { emitted = true; emit(it) }
+                    return@flow
+                } catch (e: Exception) {
+                    if (emitted) throw e
+                    Log.w("FreeCloud", "stream $url failed: ${e.message}")
+                    last = e
+                }
+            }
+            throw (last ?: ProviderException(503, "Free cloud model is unavailable right now."))
+        }
     }
 
     private fun parse(data: String): String? {

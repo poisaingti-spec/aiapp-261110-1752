@@ -28,14 +28,16 @@ object ReverseEngine {
 
     suspend fun inspect(apk: File): ApkReport = withContext(Dispatchers.IO) {
         val module = ApkModule.loadApkFile(apk)
-        val manifest: AndroidManifestBlock = module.androidManifest
-        val xml = runCatching { manifest.serializeToXml() }.getOrDefault("")
+        val manifest: AndroidManifestBlock? = runCatching { module.androidManifest }.getOrNull()
+        val xml = runCatching { manifest?.serializeToXml() }.getOrNull().orEmpty()
 
-        val permissions = runCatching { manifest.usesPermissions.toList() }.getOrDefault(emptyList())
-        val activities = componentNames(xml, "activity")
-        val services = componentNames(xml, "service")
-        val receivers = componentNames(xml, "receiver")
-        val providers = componentNames(xml, "provider")
+        val permissions = runCatching { manifest?.usesPermissions?.toList() }.getOrNull().orEmpty()
+        // Prefer the structured manifest tree; fall back to scanning the serialized XML.
+        val app = runCatching { manifest?.applicationElement }.getOrNull()
+        val activities = componentsOf(app, "activity").ifEmpty { componentNames(xml, "activity") }
+        val services = componentsOf(app, "service").ifEmpty { componentNames(xml, "service") }
+        val receivers = componentsOf(app, "receiver").ifEmpty { componentNames(xml, "receiver") }
+        val providers = componentsOf(app, "provider").ifEmpty { componentNames(xml, "provider") }
 
         // Archive-level facts straight from the zip (robust, no decode needed).
         val dexFiles = mutableListOf<String>()
@@ -60,13 +62,13 @@ object ReverseEngine {
         ApkReport(
             fileName = apk.name,
             sizeBytes = apk.length(),
-            packageName = runCatching { manifest.packageName }.getOrNull().orEmpty().ifBlank { "unknown" },
-            appLabel = runCatching { manifest.applicationLabelString }.getOrNull().orEmpty(),
-            versionName = runCatching { manifest.versionName }.getOrNull().orEmpty().ifBlank { "?" },
-            versionCode = runCatching { manifest.versionCode?.toString() }.getOrNull().orEmpty().ifBlank { "?" },
-            minSdk = runCatching { manifest.minSdkVersion?.toString() }.getOrNull().orEmpty().ifBlank { "?" },
-            targetSdk = runCatching { manifest.targetSdkVersion?.toString() }.getOrNull().orEmpty().ifBlank { "?" },
-            mainActivity = runCatching { manifest.mainActivityClassName }.getOrNull().orEmpty(),
+            packageName = runCatching { manifest?.packageName }.getOrNull().orEmpty().ifBlank { "unknown" },
+            appLabel = runCatching { manifest?.applicationLabelString }.getOrNull().orEmpty(),
+            versionName = runCatching { manifest?.versionName }.getOrNull().orEmpty().ifBlank { "?" },
+            versionCode = runCatching { manifest?.versionCode?.toString() }.getOrNull().orEmpty().ifBlank { "?" },
+            minSdk = runCatching { manifest?.minSdkVersion?.toString() }.getOrNull().orEmpty().ifBlank { "?" },
+            targetSdk = runCatching { manifest?.targetSdkVersion?.toString() }.getOrNull().orEmpty().ifBlank { "?" },
+            mainActivity = runCatching { manifest?.mainActivityClassName }.getOrNull().orEmpty(),
             permissions = permissions.sorted(),
             activities = activities,
             services = services,
@@ -86,6 +88,19 @@ object ReverseEngine {
     private fun componentNames(xml: String, tag: String): List<String> =
         Regex("""<$tag\b[^>]*\bandroid:name="([^"]+)"""")
             .findAll(xml).map { it.groupValues[1] }.distinct().toList()
+
+    /** Component names read from the parsed manifest tree (robust when serialize-to-XML is unavailable). */
+    private fun componentsOf(app: com.reandroid.arsc.chunk.xml.ResXmlElement?, tag: String): List<String> {
+        if (app == null) return emptyList()
+        val out = LinkedHashSet<String>()
+        runCatching {
+            val it = app.getElements(tag)
+            while (it.hasNext()) {
+                it.next().searchAttributeByName("name")?.valueString?.let { n -> if (n.isNotBlank()) out += n }
+            }
+        }
+        return out.toList()
+    }
 
     /**
      * Reads the app's string resources (name -> value, default locale) so the model can be shown the
