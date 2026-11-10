@@ -37,12 +37,13 @@ class FreeCloudProvider : LlmProvider {
     )
     private val referrer = "aiapp"
 
+    // "openai-fast" is the model the keyless legacy endpoint still serves without a key.
     private val fallback = listOf(
-        ModelInfo("openai", "OpenAI (GPT, free)"),
-        ModelInfo("openai-large", "OpenAI large (free)"),
-        ModelInfo("mistral", "Mistral (free)"),
-        ModelInfo("deepseek", "DeepSeek (free)"),
-        ModelInfo("llama", "Llama (free)"),
+        ModelInfo("openai-fast", "OpenAI fast (keyless)"),
+        ModelInfo("openai", "OpenAI (GPT)"),
+        ModelInfo("openai-large", "OpenAI large"),
+        ModelInfo("mistral", "Mistral"),
+        ModelInfo("deepseek", "DeepSeek"),
     )
 
     override suspend fun listModels(apiKey: String): List<ModelInfo> {
@@ -75,7 +76,7 @@ class FreeCloudProvider : LlmProvider {
         system: String,
     ): Flow<String> {
         val body = buildJsonObject {
-            put("model", model.ifBlank { "openai" })
+            put("model", model.ifBlank { "openai-fast" })
             put("stream", true)
             put("referrer", referrer)
             putJsonArray("messages") {
@@ -107,7 +108,13 @@ class FreeCloudProvider : LlmProvider {
                     last = e
                 }
             }
-            throw (last ?: ProviderException(503, "Free cloud model is unavailable right now."))
+            Log.e("FreeCloud", "all endpoints failed: ${last?.message}")
+            throw ProviderException(
+                503,
+                "Couldn't reach the keyless free cloud model (your network may block it, or the free " +
+                    "service now needs a key). For a reliable free model, add a Gemini key in Settings " +
+                    "(free at aistudio.google.com/apikey) and pick the Gemini provider.",
+            )
         }
     }
 
