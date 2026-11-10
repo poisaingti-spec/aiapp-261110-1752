@@ -1,30 +1,46 @@
 package com.aiapp.reverse
 
-import android.util.Base64
+import android.security.keystore.KeyGenParameterSpec
+import android.security.keystore.KeyProperties
+import java.security.KeyPairGenerator
 import java.security.KeyStore
 import java.security.PrivateKey
 import java.security.cert.X509Certificate
+import javax.security.auth.x500.X500Principal
 
 /**
- * Debug signing key used to re-sign rebuilt APKs so Android will install them.
+ * Signing key used to re-sign rebuilt APKs so Android will install them.
  *
- * This is the project's standard Android **debug** key (store/key password "android"), the same one
- * in app/debug.keystore, carried here as a PKCS12 (Android can read PKCS12 but not JKS) encoded in
- * Base64. It is a public, well-known debug credential — not a release key — so rebuilt APKs are
- * clearly debug-signed, never passed off as the original author's build.
+ * A dedicated RSA key is generated once in the device's AndroidKeyStore (hardware-backed where
+ * available) and reused. Rebuilt APKs are therefore signed with a per-device debug-style key — they
+ * are clearly re-signed by this app and are never passed off as the original author's release build.
  */
 object SigningKey {
-    private val PASS = "android".toCharArray()
-
-    private const val P12_BASE64 =
-        "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"
+    private const val ALIAS = "aiapp_reverse_signing"
 
     fun load(): Pair<PrivateKey, List<X509Certificate>> {
-        val ks = KeyStore.getInstance("PKCS12")
-        Base64.decode(P12_BASE64, Base64.DEFAULT).inputStream().use { ks.load(it, PASS) }
-        val alias = ks.aliases().toList().first { ks.isKeyEntry(it) }
-        val key = ks.getKey(alias, PASS) as PrivateKey
-        val chain = ks.getCertificateChain(alias).map { it as X509Certificate }
-        return key to chain
+        val ks = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
+        if (!ks.containsAlias(ALIAS)) generate()
+        val key = ks.getKey(ALIAS, null) as PrivateKey
+        val cert = ks.getCertificate(ALIAS) as X509Certificate
+        return key to listOf(cert)
+    }
+
+    private fun generate() {
+        val notBefore = java.util.Date(0L)
+        val notAfter = java.util.Date(4_102_444_800_000L) // year 2100
+        val spec = KeyGenParameterSpec.Builder(ALIAS, KeyProperties.PURPOSE_SIGN)
+            .setKeySize(2048)
+            .setDigests(KeyProperties.DIGEST_SHA256, KeyProperties.DIGEST_SHA512)
+            .setSignaturePaddings(KeyProperties.SIGNATURE_PADDING_RSA_PKCS1)
+            .setCertificateSubject(X500Principal("CN=AI App Reverse, O=AI App"))
+            .setCertificateSerialNumber(java.math.BigInteger.ONE)
+            .setCertificateNotBefore(notBefore)
+            .setCertificateNotAfter(notAfter)
+            .build()
+        KeyPairGenerator.getInstance(KeyProperties.KEY_ALGORITHM_RSA, "AndroidKeyStore").apply {
+            initialize(spec)
+            generateKeyPair()
+        }
     }
 }
