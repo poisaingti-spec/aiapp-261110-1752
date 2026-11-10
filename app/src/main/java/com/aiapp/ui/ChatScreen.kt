@@ -30,6 +30,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
@@ -248,15 +249,22 @@ fun ChatScreen(vm: ChatViewModel, onOpenSettings: () -> Unit, onOpenBuild: () ->
             TopAppBar(
                 title = { Text("AI App") },
                 actions = {
-                    TextButton(onClick = onOpenBuild) { Text("Build") }
-                    TextButton(onClick = onOpenCreate) { Text("Create") }
-                    TextButton(onClick = onOpenReverse) { Text("Reverse") }
-                    TextButton(onClick = onOpenCode) { Text("Code") }
-                    TextButton(onClick = onOpenLog) { Text("Log") }
-                    TextButton(onClick = onOpenHistory) { Text("Chats") }
                     TextButton(onClick = vm::newChat) { Text("New") }
                     IconButton(onClick = onOpenSettings) {
                         Icon(Icons.Filled.Settings, contentDescription = "Settings")
+                    }
+                    var menuOpen by remember { mutableStateOf(false) }
+                    IconButton(onClick = { menuOpen = true }) {
+                        Icon(Icons.Filled.MoreVert, contentDescription = "Menu")
+                    }
+                    DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                        DropdownMenuItem(text = { Text("Build") }, onClick = { menuOpen = false; onOpenBuild() })
+                        DropdownMenuItem(text = { Text("Create") }, onClick = { menuOpen = false; onOpenCreate() })
+                        DropdownMenuItem(text = { Text("Reverse") }, onClick = { menuOpen = false; onOpenReverse() })
+                        DropdownMenuItem(text = { Text("Code") }, onClick = { menuOpen = false; onOpenCode() })
+                        DropdownMenuItem(text = { Text("Chats") }, onClick = { menuOpen = false; onOpenHistory() })
+                        DropdownMenuItem(text = { Text("Error log") }, onClick = { menuOpen = false; onOpenLog() })
+                        DropdownMenuItem(text = { Text("Settings") }, onClick = { menuOpen = false; onOpenSettings() })
                     }
                 },
             )
