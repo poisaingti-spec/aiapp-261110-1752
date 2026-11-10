@@ -51,6 +51,7 @@ class BuildService : Service() {
                 BuildAgent(
                     request,
                     emit = { event ->
+                        if (event.kind == BuildEvent.Kind.ERROR) com.aiapp.data.Log.e("Build", event.text)
                         scope.launch {
                             BuildRunner.timeline += TimelineItem.Event(event)
                             BuildRunner.save(this@BuildService)
@@ -74,8 +75,10 @@ class BuildService : Service() {
             } catch (e: CancellationException) {
                 BuildResult(false, "Stopped.")
             } catch (e: Throwable) {
+                com.aiapp.data.Log.e("Build", "Build crashed", e)
                 BuildResult(false, friendly(e))
             }
+            if (!result.success) com.aiapp.data.Log.e("Build", "Build failed: ${result.message}")
             BuildRunner.timeline += TimelineItem.Result(result.success, result.message, result.apkUrl, result.repoUrl)
             BuildRunner.running = false
             BuildRunner.progress = null

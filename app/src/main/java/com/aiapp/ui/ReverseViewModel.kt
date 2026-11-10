@@ -76,6 +76,7 @@ class ReverseViewModel(app: Application) : AndroidViewModel(app) {
                 report = ReverseEngine.inspect(dst)
                 status = null
             } catch (e: Exception) {
+                com.aiapp.data.Log.e("Reverse", "operation failed", e)
                 error = e.message ?: "Couldn't read that APK."
                 status = null
             } finally {
@@ -110,6 +111,7 @@ class ReverseViewModel(app: Application) : AndroidViewModel(app) {
                 }
                 transcript.add(ChatMessage(Role.ASSISTANT, liveAnswer))
             } catch (e: Exception) {
+                com.aiapp.data.Log.e("Reverse", "operation failed", e)
                 error = e.message ?: "The model request failed."
             } finally {
                 answering = false; liveAnswer = ""
@@ -153,6 +155,7 @@ class ReverseViewModel(app: Application) : AndroidViewModel(app) {
                 rebuilt = ReverseEngine.rebuild(getApplication(), apk, edits, outDir)
                 status = null
             } catch (e: Exception) {
+                com.aiapp.data.Log.e("Reverse", "operation failed", e)
                 error = e.message ?: "Couldn't apply that change."
                 status = null
             } finally {
@@ -215,6 +218,7 @@ class ReverseViewModel(app: Application) : AndroidViewModel(app) {
                 rebuilt = ReverseEngine.rebuild(getApplication(), apk, dexEdits, outDir)
                 status = null
             } catch (e: Exception) {
+                com.aiapp.data.Log.e("Reverse", "operation failed", e)
                 error = e.message ?: "Couldn't apply that code change."
                 status = null
             } finally {
@@ -240,6 +244,7 @@ class ReverseViewModel(app: Application) : AndroidViewModel(app) {
                 rebuilt = ReverseEngine.rebuild(getApplication(), apk, edits, outDir)
                 status = null
             } catch (e: Exception) {
+                com.aiapp.data.Log.e("Reverse", "operation failed", e)
                 error = e.message ?: "Rebuild failed."
                 status = null
             } finally {
@@ -270,6 +275,7 @@ class ReverseViewModel(app: Application) : AndroidViewModel(app) {
                 reaConnected = true
                 status = null
             } catch (e: Exception) {
+                com.aiapp.data.Log.e("Reverse", "rea connect failed", e)
                 reaConnected = false
                 error = "Couldn't reach rea: ${e.message}"
                 status = null

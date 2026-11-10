@@ -17,9 +17,11 @@ import com.aiapp.ui.ChatViewModel
 import com.aiapp.ui.CreateScreen
 import com.aiapp.ui.CreateViewModel
 import com.aiapp.ui.HistoryScreen
+import com.aiapp.ui.LogScreen
 import com.aiapp.ui.ReverseScreen
 import com.aiapp.ui.ReverseViewModel
 import com.aiapp.ui.SettingsScreen
+import com.aiapp.data.Log
 
 class MainActivity : ComponentActivity() {
     override fun onTrimMemory(level: Int) {
@@ -33,6 +35,12 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        Log.init(applicationContext)
+        val prev = Thread.getDefaultUncaughtExceptionHandler()
+        Thread.setDefaultUncaughtExceptionHandler { thread, e ->
+            Log.e("CRASH", "Uncaught exception on ${thread.name}", e)
+            prev?.uncaughtException(thread, e)
+        }
         setContent {
             AppTheme {
                 val vm: ChatViewModel = viewModel()
@@ -49,8 +57,10 @@ class MainActivity : ComponentActivity() {
                         onOpenHistory = { screen = "history" },
                         onOpenCreate = { screen = "create" },
                         onOpenReverse = { screen = "reverse" },
+                        onOpenLog = { screen = "log" },
                     )
                     "history" -> HistoryScreen(vm, onBack = { screen = "chat" })
+                    "log" -> LogScreen(onBack = { screen = "chat" })
                     "create" -> CreateScreen(createVm, onBack = { screen = "chat" }, onOpenSettings = { screen = "settings" })
                     "build" -> BuildScreen(vm, buildVm, onBack = { screen = "chat" }, onOpenSettings = { screen = "settings" })
                     "reverse" -> ReverseScreen(vm, reverseVm, onBack = { screen = "chat" })
