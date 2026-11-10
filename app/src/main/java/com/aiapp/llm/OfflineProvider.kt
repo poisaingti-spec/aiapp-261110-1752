@@ -40,8 +40,36 @@ object OfflineCatalog {
     /** Built-in picks; users can add more from any Hugging Face repo with a .litertlm file. */
     val builtIn = listOf(
         OfflineModel(
+            id = "qwen25-coder-3b",
+            name = "★ Qwen 2.5 Coder 3B (best offline for code)",
+            repo = "litert-community/Qwen2.5-Coder-3B-Instruct",
+            approxSizeGb = 3.4,
+            minRamGb = 8,
+        ),
+        OfflineModel(
+            id = "deepseek-r1-7b",
+            name = "DeepSeek R1 Distill Qwen 7B (max reasoning)",
+            repo = "litert-community/DeepSeek-R1-Distill-Qwen-7B",
+            approxSizeGb = 4.2,
+            minRamGb = 10,
+        ),
+        OfflineModel(
+            id = "qwen25-coder-1_5b",
+            name = "Qwen 2.5 Coder 1.5B (fast code, any phone)",
+            repo = "litert-community/Qwen2.5-Coder-1.5B-Instruct",
+            approxSizeGb = 1.1,
+            minRamGb = 3,
+        ),
+        OfflineModel(
+            id = "deepseek-r1-1_5b",
+            name = "DeepSeek R1 Distill Qwen 1.5B (fast reasoning)",
+            repo = "litert-community/DeepSeek-R1-Distill-Qwen-1.5B",
+            approxSizeGb = 1.8,
+            minRamGb = 4,
+        ),
+        OfflineModel(
             id = "gemma-4-e4b",
-            name = "Gemma 4 E4B (best offline)",
+            name = "Gemma 4 E4B (best general offline)",
             repo = "litert-community/gemma-4-E4B-it-litert-lm",
             approxSizeGb = 3.7,
             minRamGb = 8,
