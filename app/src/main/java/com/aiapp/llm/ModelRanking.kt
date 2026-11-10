@@ -23,6 +23,11 @@ object ModelRanking {
             "kimi" to 60, "deepseek" to 55, "glm" to 50, "qwen" to 45, "minimax" to 40,
             "gpt-oss" to 35, "llama" to 30, "mistral" to 25, "gemma" to 20,
         ),
+        // Free cloud (keyless): surface the strongest reasoning/coding models first.
+        ProviderId.FREE to listOf(
+            "deepseek" to 60, "gpt-oss" to 56, "qwen" to 52, "glm" to 50, "kimi" to 48,
+            "nemotron" to 46, "llama" to 40, "mistral" to 34, "gemma" to 30, "openai" to 24,
+        ),
     )
 
     private val versionRegex = Regex("(\\d+(?:[.-]\\d{1,2}(?!\\d))?)")
