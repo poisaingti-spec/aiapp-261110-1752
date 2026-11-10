@@ -26,12 +26,15 @@ import kotlinx.serialization.json.putJsonArray
 class FreeCloudProvider : LlmProvider {
     override val id = ProviderId.FREE
 
-    // Current endpoint first, classic host as a fallback (hosts/paths rotate).
+    // Legitimately keyless, OpenAI-compatible public APIs (no key, no client impersonation).
+    // LLM7.io is a free public API; Pollinations' legacy host is keyless for "openai-fast".
     private val chatEndpoints = listOf(
+        "https://api.llm7.io/v1/chat/completions",
         "https://gen.pollinations.ai/v1/chat/completions",
         "https://text.pollinations.ai/openai",
     )
     private val modelEndpoints = listOf(
+        "https://api.llm7.io/v1/models",
         "https://text.pollinations.ai/models",
         "https://gen.pollinations.ai/v1/models",
     )
