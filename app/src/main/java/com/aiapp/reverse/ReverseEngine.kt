@@ -7,8 +7,6 @@ import com.reandroid.arsc.chunk.xml.AndroidManifestBlock
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
-import java.security.KeyStore
-import java.security.PrivateKey
 import java.security.cert.CertificateFactory
 import java.security.cert.X509Certificate
 import java.util.zip.ZipFile
@@ -173,8 +171,8 @@ object ReverseEngine {
 
         val minSdk = runCatching { manifest.minSdkVersion ?: 21 }.getOrDefault(21)
         val outApk = File(outDir, "rebuilt-signed.apk")
-        signApk(context, rebuilt, outApk, minSdk)
-        RebuildResult(outApk, notes, "debug key (SHA-256 ${debugCertSha(context).take(16)}…)")
+        signApk(rebuilt, outApk, minSdk)
+        RebuildResult(outApk, notes, "debug key (SHA-256 ${debugCertSha().take(16)}…)")
     }
 
     private fun rewriteZip(src: File, replacements: Map<String, ByteArray>, out: File): File {
@@ -193,19 +191,10 @@ object ReverseEngine {
         return out
     }
 
-    // ---------- Signing (PKCS12 bundled in assets, Android can read it) ----------
+    // ---------- Signing (debug PKCS12 embedded as Base64; Android can read PKCS12) ----------
 
-    private fun loadSigner(context: Context): Pair<PrivateKey, List<X509Certificate>> {
-        val ks = KeyStore.getInstance("PKCS12")
-        context.assets.open("rev_signing.p12").use { ks.load(it, SIGN_PASS) }
-        val alias = ks.aliases().toList().first { ks.isKeyEntry(it) }
-        val key = ks.getKey(alias, SIGN_PASS) as PrivateKey
-        val chain = ks.getCertificateChain(alias).map { it as X509Certificate }
-        return key to chain
-    }
-
-    private fun signApk(context: Context, input: File, output: File, minSdk: Int) {
-        val (key, chain) = loadSigner(context)
+    private fun signApk(input: File, output: File, minSdk: Int) {
+        val (key, chain) = SigningKey.load()
         val signer = ApkSigner.SignerConfig.Builder("rev", key, chain).build()
         ApkSigner.Builder(listOf(signer))
             .setInputApk(input)
@@ -217,12 +206,9 @@ object ReverseEngine {
             .sign()
     }
 
-    fun debugCertSha(context: Context): String = runCatching {
-        val (_, chain) = loadSigner(context)
-        chain.first().encoded.sha256Hex()
+    fun debugCertSha(): String = runCatching {
+        SigningKey.load().second.first().encoded.sha256Hex()
     }.getOrDefault("")
-
-    private val SIGN_PASS = "android".toCharArray()
 
     private fun ByteArray.sha256Hex(): String =
         java.security.MessageDigest.getInstance("SHA-256").digest(this)
