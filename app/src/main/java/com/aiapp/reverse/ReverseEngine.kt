@@ -3,6 +3,7 @@ package com.aiapp.reverse
 import android.content.Context
 import com.android.apksig.ApkSigner
 import com.reandroid.apk.ApkModule
+import com.reandroid.arsc.chunk.TableBlock
 import com.reandroid.arsc.chunk.xml.AndroidManifestBlock
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -86,6 +87,46 @@ object ReverseEngine {
         Regex("""<$tag\b[^>]*\bandroid:name="([^"]+)"""")
             .findAll(xml).map { it.groupValues[1] }.distinct().toList()
 
+    /**
+     * Reads the app's string resources (name -> value, default locale) so the model can be shown the
+     * exact UI text it can change. Bounded so a huge app doesn't flood the prompt.
+     */
+    suspend fun readStrings(apk: File, limit: Int = 400): Map<String, String> = withContext(Dispatchers.IO) {
+        val out = linkedMapOf<String, String>()
+        runCatching {
+            val table = ApkModule.loadApkFile(apk).tableBlock ?: return@runCatching
+            for (pkg in table.listPackages()) {
+                val it = pkg.getResources("string")
+                while (it.hasNext() && out.size < limit) {
+                    val res = it.next()
+                    val name = res.name ?: continue
+                    val entry = res.iterator().asSequence().firstOrNull { e -> !e.isComplex && e.valueAsString != null }
+                    val value = entry?.valueAsString ?: continue
+                    if (name !in out) out[name] = value
+                }
+                if (out.size >= limit) break
+            }
+        }
+        out
+    }
+
+    /** Replaces a string resource's value across every locale it is defined in. Returns true if found. */
+    private fun applyStringEdit(table: TableBlock?, name: String, value: String): Boolean {
+        if (table == null) return false
+        var changed = false
+        for (pkg in table.listPackages()) {
+            val res = pkg.getResources("string")
+            while (res.hasNext()) {
+                val entry = res.next()
+                if (entry.name != name) continue
+                entry.iterator().forEach { e ->
+                    if (!e.isComplex) { runCatching { e.resValue.setValueAsString(value) }; changed = true }
+                }
+            }
+        }
+        return changed
+    }
+
     private fun runtimeHint(libs: Set<String>, assets: List<String>, dex: List<String>): String = when {
         libs.any { it.contains("flutter") } || assets.any { it.startsWith("flutter_assets") } -> "Flutter"
         libs.any { it.contains("il2cpp") } || assets.any { it.endsWith("global-metadata.dat") } -> "Unity (IL2CPP)"
@@ -158,7 +199,10 @@ object ReverseEngine {
                 notes += "Version -> ${edit.name ?: "(unchanged)"} / ${edit.code ?: "(unchanged)"}"
             }
             is ApkEdit.ReplaceFile -> { replacements[edit.path] = edit.bytes; notes += "Replaced ${edit.path} (${edit.bytes.size} bytes)" }
-            is ApkEdit.SetString -> notes += "String '${edit.name}' not editable on-device yet — use the rea backend"
+            is ApkEdit.SetString -> {
+                val ok = applyStringEdit(module.tableBlock, edit.name, edit.value)
+                notes += if (ok) "Set string '${edit.name}' = \"${edit.value.take(60)}\"" else "String '${edit.name}' not found"
+            }
         }
 
         outDir.mkdirs()

@@ -52,6 +52,7 @@ fun ReverseScreen(chat: ChatViewModel, vm: ReverseViewModel, onBack: () -> Unit)
         if (uri != null) vm.loadApk(uri)
     }
     var question by remember { mutableStateOf("") }
+    var instruction by remember { mutableStateOf("") }
     var newLabel by remember { mutableStateOf("") }
     var newVersion by remember { mutableStateOf("") }
 
@@ -74,6 +75,14 @@ fun ReverseScreen(chat: ChatViewModel, vm: ReverseViewModel, onBack: () -> Unit)
                     "apps, security research or personal modding. Decoding runs on your phone.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Text(
+                "Model tip: planning edits and fixing builds needs a capable model. Small offline models " +
+                    "often can't. Pick a strong FREE one in Chat first: Gemini (free AI Studio key) or an " +
+                    "Open model like DeepSeek / Qwen-Coder / GLM / Kimi (free OpenRouter key). " +
+                    "Current model: ${chat.provider.label}.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.primary,
             )
 
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -129,7 +138,27 @@ fun ReverseScreen(chat: ChatViewModel, vm: ReverseViewModel, onBack: () -> Unit)
                     Text("AI: " + vm.liveAnswer, style = MaterialTheme.typography.bodyMedium)
                 }
 
-                // Authorized rebuild + re-sign.
+                // Instruction-driven change: model plans edits, engine applies + rebuilds in one tap.
+                Text("Change the app", style = MaterialTheme.typography.titleSmall)
+                Text(
+                    "Describe a change to the app's text, name or version. The model plans it, and it's " +
+                        "applied, rebuilt and signed in one step. Deeper code changes need the rea backend.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                OutlinedTextField(
+                    value = instruction, onValueChange = { instruction = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    placeholder = { Text("e.g. change the welcome text to \"Hello\" and rename the app to Demo") },
+                    minLines = 2,
+                )
+                Button(
+                    onClick = { vm.applyInstruction(instruction.trim(), chat.provider, chat.model, chat.effort) },
+                    enabled = !vm.busy && !vm.answering && instruction.isNotBlank(),
+                ) { Text("Apply change & rebuild") }
+                vm.planSummary?.let { Text("Plan: $it", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+
+                // Manual rebuild + re-sign (rename / version only).
                 Text("Rebuild & re-sign", style = MaterialTheme.typography.titleSmall)
                 OutlinedTextField(newLabel, { newLabel = it }, Modifier.fillMaxWidth(), label = { Text("New app name (optional)") }, singleLine = true)
                 OutlinedTextField(newVersion, { newVersion = it }, Modifier.fillMaxWidth(), label = { Text("New version name (optional)") }, singleLine = true)

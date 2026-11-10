@@ -18,6 +18,7 @@ import com.aiapp.llm.THOUGHT
 import com.aiapp.reverse.ApkEdit
 import com.aiapp.reverse.ApkReport
 import com.aiapp.reverse.ReaClient
+import com.aiapp.reverse.ReverseAgent
 import com.aiapp.reverse.ReaConfig
 import com.aiapp.reverse.ReaTool
 import com.aiapp.reverse.RebuildResult
@@ -111,6 +112,50 @@ class ReverseViewModel(app: Application) : AndroidViewModel(app) {
                 error = e.message ?: "The model request failed."
             } finally {
                 answering = false; liveAnswer = ""
+            }
+        }
+    }
+
+    var planSummary by mutableStateOf<String?>(null); private set
+
+    /**
+     * One-tap: ask the model to turn [instruction] into concrete edits, apply them on-device, then
+     * rebuild and re-sign — the whole process at once. For apps you are authorized to modify.
+     */
+    fun applyInstruction(instruction: String, provider: ProviderId, model: String, effort: Effort) {
+        val r = report ?: return
+        val apk = apkFile ?: return
+        if (busy || answering) return
+        viewModelScope.launch {
+            busy = true; error = null; rebuilt = null; planSummary = null
+            try {
+                status = "Reading the app's text…"
+                val strings = ReverseEngine.readStrings(apk)
+                status = "Planning the change with ${provider.label}…"
+                val prompt = ReverseAgent.buildPrompt(r, strings, instruction)
+                val reply = StringBuilder()
+                Providers.get(provider).stream(keys.get(provider), model, listOf(ChatMessage(Role.USER, prompt)), effort, ReverseAgent.SYSTEM)
+                    .collect { chunk -> if (!chunk.startsWith(THOUGHT)) reply.append(chunk) }
+                val plan = ReverseAgent.parsePlan(reply.toString())
+                planSummary = plan.summary.ifBlank { null }
+                val edits = plan.toApkEdits()
+                if (edits.isEmpty()) {
+                    error = plan.summary.ifBlank {
+                        "The model couldn't express that as an on-device edit. It may need code changes — connect the rea backend."
+                    }
+                    status = null
+                    return@launch
+                }
+                status = "Applying ${edits.size} edit(s), rebuilding & signing…"
+                val outDir = File(getApplication<Application>().cacheDir, "reverse/out")
+                outDir.deleteRecursively()
+                rebuilt = ReverseEngine.rebuild(getApplication(), apk, edits, outDir)
+                status = null
+            } catch (e: Exception) {
+                error = e.message ?: "Couldn't apply that change."
+                status = null
+            } finally {
+                busy = false
             }
         }
     }

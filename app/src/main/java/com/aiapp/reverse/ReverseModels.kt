@@ -84,6 +84,35 @@ data class RebuildResult(
     val signedWith: String,
 )
 
+/** One edit the model proposes, in its JSON reply. [type] is rename|version|setString|repackage|replaceFile. */
+@kotlinx.serialization.Serializable
+data class PlannedEdit(
+    val type: String,
+    val label: String? = null,
+    val name: String? = null,
+    val value: String? = null,
+    val code: Int? = null,
+    val pkg: String? = null,
+)
+
+/** The model's structured plan for an instruction: a human summary plus the edits to apply. */
+@kotlinx.serialization.Serializable
+data class EditPlan(
+    val summary: String = "",
+    val edits: List<PlannedEdit> = emptyList(),
+) {
+    /** Maps the planned edits to the engine's edit types (unknown/unsupported ones are dropped). */
+    fun toApkEdits(): List<ApkEdit> = edits.mapNotNull { e ->
+        when (e.type.lowercase()) {
+            "rename" -> e.label?.let { ApkEdit.Rename(it) }
+            "version" -> if (e.name != null || e.code != null) ApkEdit.SetVersion(e.name, e.code) else null
+            "setstring", "string" -> if (e.name != null && e.value != null) ApkEdit.SetString(e.name, e.value) else null
+            "repackage" -> e.pkg?.let { ApkEdit.Repackage(it) }
+            else -> null
+        }
+    }
+}
+
 /** Connection settings for a remote `rea` MCP server the user runs on their own PC/server. */
 data class ReaConfig(
     val baseUrl: String,
