@@ -17,6 +17,8 @@ import com.aiapp.ui.ChatViewModel
 import com.aiapp.ui.CreateScreen
 import com.aiapp.ui.CreateViewModel
 import com.aiapp.ui.HistoryScreen
+import com.aiapp.ui.ReverseScreen
+import com.aiapp.ui.ReverseViewModel
 import com.aiapp.ui.SettingsScreen
 
 class MainActivity : ComponentActivity() {
@@ -38,6 +40,7 @@ class MainActivity : ComponentActivity() {
                 BackHandler(enabled = screen != "chat") { screen = "chat" }
                 val buildVm: BuildViewModel = viewModel()
                 val createVm: CreateViewModel = viewModel()
+                val reverseVm: ReverseViewModel = viewModel()
                 when (screen) {
                     "chat" -> ChatScreen(
                         vm,
@@ -45,10 +48,12 @@ class MainActivity : ComponentActivity() {
                         onOpenBuild = { screen = "build" },
                         onOpenHistory = { screen = "history" },
                         onOpenCreate = { screen = "create" },
+                        onOpenReverse = { screen = "reverse" },
                     )
                     "history" -> HistoryScreen(vm, onBack = { screen = "chat" })
                     "create" -> CreateScreen(createVm, onBack = { screen = "chat" }, onOpenSettings = { screen = "settings" })
                     "build" -> BuildScreen(vm, buildVm, onBack = { screen = "chat" }, onOpenSettings = { screen = "settings" })
+                    "reverse" -> ReverseScreen(vm, reverseVm, onBack = { screen = "chat" })
                     else -> SettingsScreen(vm, onBack = { screen = "chat" })
                 }
             }

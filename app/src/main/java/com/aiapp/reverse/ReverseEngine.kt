@@ -1,0 +1,230 @@
+package com.aiapp.reverse
+
+import android.content.Context
+import com.android.apksig.ApkSigner
+import com.reandroid.apk.ApkModule
+import com.reandroid.arsc.chunk.xml.AndroidManifestBlock
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import java.io.File
+import java.security.KeyStore
+import java.security.PrivateKey
+import java.security.cert.CertificateFactory
+import java.security.cert.X509Certificate
+import java.util.zip.ZipFile
+
+/**
+ * On-device APK reverse-engineering engine.
+ *
+ * Decodes, inspects, edits and re-signs APKs entirely on the phone using ARSCLib (Android-safe,
+ * pure-JVM decode/encode of AndroidManifest + resources + archive) and Google's `apksig`.
+ *
+ * Intended for apps you are authorized to analyse and modify: your own apps, open-source apps,
+ * security research, learning, interoperability, and personal modding. Deep DEX decompilation
+ * (class/method source) is delegated to an optional remote `rea` backend — see [ReaClient].
+ */
+object ReverseEngine {
+
+    // ---------- Inspect ----------
+
+    suspend fun inspect(apk: File): ApkReport = withContext(Dispatchers.IO) {
+        val module = ApkModule.loadApkFile(apk)
+        val manifest: AndroidManifestBlock = module.androidManifest
+        val xml = runCatching { manifest.serializeToXml() }.getOrDefault("")
+
+        val permissions = runCatching { manifest.usesPermissions.toList() }.getOrDefault(emptyList())
+        val activities = componentNames(xml, "activity")
+        val services = componentNames(xml, "service")
+        val receivers = componentNames(xml, "receiver")
+        val providers = componentNames(xml, "provider")
+
+        // Archive-level facts straight from the zip (robust, no decode needed).
+        val dexFiles = mutableListOf<String>()
+        val nativeLibs = sortedSetOf<String>()
+        val abis = sortedSetOf<String>()
+        val assets = mutableListOf<String>()
+        ZipFile(apk).use { zip ->
+            val entries = zip.entries()
+            while (entries.hasMoreElements()) {
+                val name = entries.nextElement().name
+                when {
+                    name.matches(Regex("""classes\d*\.dex""")) -> dexFiles += name
+                    name.startsWith("lib/") && name.endsWith(".so") -> {
+                        nativeLibs += name.substringAfterLast('/')
+                        name.removePrefix("lib/").substringBefore('/').let { if (it.isNotBlank()) abis += it }
+                    }
+                    name.startsWith("assets/") && !name.endsWith("/") -> assets += name.removePrefix("assets/")
+                }
+            }
+        }
+
+        ApkReport(
+            fileName = apk.name,
+            sizeBytes = apk.length(),
+            packageName = runCatching { manifest.packageName }.getOrNull().orEmpty().ifBlank { "unknown" },
+            appLabel = runCatching { manifest.applicationLabelString }.getOrNull().orEmpty(),
+            versionName = runCatching { manifest.versionName }.getOrNull().orEmpty().ifBlank { "?" },
+            versionCode = runCatching { manifest.versionCode?.toString() }.getOrNull().orEmpty().ifBlank { "?" },
+            minSdk = runCatching { manifest.minSdkVersion?.toString() }.getOrNull().orEmpty().ifBlank { "?" },
+            targetSdk = runCatching { manifest.targetSdkVersion?.toString() }.getOrNull().orEmpty().ifBlank { "?" },
+            mainActivity = runCatching { manifest.mainActivityClassName }.getOrNull().orEmpty(),
+            permissions = permissions.sorted(),
+            activities = activities,
+            services = services,
+            receivers = receivers,
+            providers = providers,
+            dexFiles = dexFiles.sorted(),
+            nativeLibs = nativeLibs.toList(),
+            abis = abis.toList(),
+            runtimeHint = runtimeHint(nativeLibs, assets, dexFiles),
+            stringSamples = emptyList(),
+            assetSamples = assets.take(60),
+            signature = signatureOf(apk),
+            manifestXml = xml.take(60_000),
+        )
+    }
+
+    private fun componentNames(xml: String, tag: String): List<String> =
+        Regex("""<$tag\b[^>]*\bandroid:name="([^"]+)"""")
+            .findAll(xml).map { it.groupValues[1] }.distinct().toList()
+
+    private fun runtimeHint(libs: Set<String>, assets: List<String>, dex: List<String>): String = when {
+        libs.any { it.contains("flutter") } || assets.any { it.startsWith("flutter_assets") } -> "Flutter"
+        libs.any { it.contains("il2cpp") } || assets.any { it.endsWith("global-metadata.dat") } -> "Unity (IL2CPP)"
+        libs.any { it.contains("unity") } -> "Unity (Mono)"
+        libs.any { it.contains("reactnativejni") } -> "React Native"
+        libs.any { it.contains("hermes") } -> "React Native (Hermes)"
+        dex.isNotEmpty() -> "Android (Java/Kotlin)"
+        else -> "Unknown"
+    }
+
+    private fun signatureOf(apk: File): SignatureInfo {
+        val schemes = mutableListOf<String>()
+        var subject = ""
+        var sha256 = ""
+        runCatching {
+            ZipFile(apk).use { zip ->
+                val entries = zip.entries()
+                var hasV1 = false
+                while (entries.hasMoreElements()) {
+                    val e = entries.nextElement()
+                    val n = e.name.uppercase()
+                    if (n.startsWith("META-INF/") && (n.endsWith(".RSA") || n.endsWith(".DSA") || n.endsWith(".EC"))) {
+                        hasV1 = true
+                        if (subject.isBlank()) {
+                            runCatching {
+                                val cert = zip.getInputStream(e).use {
+                                    CertificateFactory.getInstance("X.509").generateCertificate(it) as X509Certificate
+                                }
+                                subject = cert.subjectX500Principal.name
+                                sha256 = cert.encoded.sha256Hex()
+                            }
+                        }
+                    }
+                }
+                if (hasV1) schemes += "v1"
+            }
+        }
+        // v2/v3 live in the APK Signing Block; ARSCLib surfaces it when present.
+        runCatching {
+            val module = ApkModule.loadApkFile(apk)
+            if (module.apkSignatureBlock != null) schemes += "v2/v3"
+        }
+        return SignatureInfo(schemes, subject, sha256)
+    }
+
+    // ---------- Edit + rebuild + re-sign ----------
+
+    /**
+     * Applies [edits] to [apk] and writes a freshly signed APK. Manifest-level edits (rename,
+     * repackage, version) and whole-file replacements are supported on-device; richer edits are
+     * handled through the remote `rea` backend.
+     */
+    suspend fun rebuild(
+        context: Context,
+        apk: File,
+        edits: List<ApkEdit>,
+        outDir: File,
+    ): RebuildResult = withContext(Dispatchers.IO) {
+        val notes = mutableListOf<String>()
+        val module = ApkModule.loadApkFile(apk)
+        val manifest = module.androidManifest
+        val replacements = mutableMapOf<String, ByteArray>()
+
+        for (edit in edits) when (edit) {
+            is ApkEdit.Rename -> { manifest.setApplicationLabel(edit.newLabel); notes += "Renamed app to \"${edit.newLabel}\"" }
+            is ApkEdit.Repackage -> { manifest.packageName = edit.newPackage; notes += "Set package to ${edit.newPackage} (manifest-level)" }
+            is ApkEdit.SetVersion -> {
+                edit.name?.let { manifest.versionName = it }
+                edit.code?.let { manifest.versionCode = it }
+                notes += "Version -> ${edit.name ?: "(unchanged)"} / ${edit.code ?: "(unchanged)"}"
+            }
+            is ApkEdit.ReplaceFile -> { replacements[edit.path] = edit.bytes; notes += "Replaced ${edit.path} (${edit.bytes.size} bytes)" }
+            is ApkEdit.SetString -> notes += "String '${edit.name}' not editable on-device yet — use the rea backend"
+        }
+
+        outDir.mkdirs()
+        val stageApk = File(outDir, "rebuilt-unsigned.apk")
+        module.writeApk(stageApk)
+
+        // Apply whole-file replacements by rewriting the staged archive (standard zip, then re-sign).
+        val toReplace = replacements.ifEmpty { null }
+        val rebuilt = if (toReplace == null) stageApk else rewriteZip(stageApk, toReplace, File(outDir, "rebuilt-patched.apk"))
+
+        val minSdk = runCatching { manifest.minSdkVersion ?: 21 }.getOrDefault(21)
+        val outApk = File(outDir, "rebuilt-signed.apk")
+        signApk(context, rebuilt, outApk, minSdk)
+        RebuildResult(outApk, notes, "debug key (SHA-256 ${debugCertSha(context).take(16)}…)")
+    }
+
+    private fun rewriteZip(src: File, replacements: Map<String, ByteArray>, out: File): File {
+        java.util.zip.ZipInputStream(src.inputStream().buffered()).use { zin ->
+            java.util.zip.ZipOutputStream(out.outputStream().buffered()).use { zout ->
+                var e = zin.nextEntry
+                while (e != null) {
+                    val name = e.name
+                    zout.putNextEntry(java.util.zip.ZipEntry(name))
+                    if (replacements.containsKey(name)) zout.write(replacements.getValue(name)) else zin.copyTo(zout)
+                    zout.closeEntry()
+                    e = zin.nextEntry
+                }
+            }
+        }
+        return out
+    }
+
+    // ---------- Signing (PKCS12 bundled in assets, Android can read it) ----------
+
+    private fun loadSigner(context: Context): Pair<PrivateKey, List<X509Certificate>> {
+        val ks = KeyStore.getInstance("PKCS12")
+        context.assets.open("rev_signing.p12").use { ks.load(it, SIGN_PASS) }
+        val alias = ks.aliases().toList().first { ks.isKeyEntry(it) }
+        val key = ks.getKey(alias, SIGN_PASS) as PrivateKey
+        val chain = ks.getCertificateChain(alias).map { it as X509Certificate }
+        return key to chain
+    }
+
+    private fun signApk(context: Context, input: File, output: File, minSdk: Int) {
+        val (key, chain) = loadSigner(context)
+        val signer = ApkSigner.SignerConfig.Builder("rev", key, chain).build()
+        ApkSigner.Builder(listOf(signer))
+            .setInputApk(input)
+            .setOutputApk(output)
+            .setMinSdkVersion(minSdk.coerceAtLeast(21))
+            .setV1SigningEnabled(true)
+            .setV2SigningEnabled(true)
+            .build()
+            .sign()
+    }
+
+    fun debugCertSha(context: Context): String = runCatching {
+        val (_, chain) = loadSigner(context)
+        chain.first().encoded.sha256Hex()
+    }.getOrDefault("")
+
+    private val SIGN_PASS = "android".toCharArray()
+
+    private fun ByteArray.sha256Hex(): String =
+        java.security.MessageDigest.getInstance("SHA-256").digest(this)
+            .joinToString("") { "%02x".format(it) }
+}

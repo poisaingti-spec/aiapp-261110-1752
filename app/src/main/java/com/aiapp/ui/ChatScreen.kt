@@ -63,7 +63,7 @@ import com.aiapp.llm.Role
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun ChatScreen(vm: ChatViewModel, onOpenSettings: () -> Unit, onOpenBuild: () -> Unit, onOpenHistory: () -> Unit, onOpenCreate: () -> Unit) {
+fun ChatScreen(vm: ChatViewModel, onOpenSettings: () -> Unit, onOpenBuild: () -> Unit, onOpenHistory: () -> Unit, onOpenCreate: () -> Unit, onOpenReverse: () -> Unit) {
     var input by rememberSaveable { mutableStateOf("") }
     val listState = rememberLazyListState()
     val context = androidx.compose.ui.platform.LocalContext.current
@@ -250,6 +250,7 @@ fun ChatScreen(vm: ChatViewModel, onOpenSettings: () -> Unit, onOpenBuild: () ->
                 actions = {
                     TextButton(onClick = onOpenBuild) { Text("Build") }
                     TextButton(onClick = onOpenCreate) { Text("Create") }
+                    TextButton(onClick = onOpenReverse) { Text("Reverse") }
                     TextButton(onClick = onOpenHistory) { Text("Chats") }
                     TextButton(onClick = vm::newChat) { Text("New") }
                     IconButton(onClick = onOpenSettings) {

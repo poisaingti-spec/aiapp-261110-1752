@@ -13,8 +13,8 @@ android {
         applicationId = "com.aiapp"
         minSdk = 26
         targetSdk = 35
-        versionCode = 19
-        versionName = "0.14.0"
+        versionCode = 20
+        versionName = "0.15.0"
     }
 
     signingConfigs {
@@ -65,4 +65,7 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
     // Offline models (Gemma 4) on the phone's GPU/CPU.
     implementation("com.google.ai.edge.litertlm:litertlm-android:latest.release")
+    // Reverse Engineering tab: on-device APK decode/rebuild + re-signing (pure-JVM, Android-safe).
+    implementation("io.github.reandroid:ARSCLib:1.4.0")
+    implementation("com.android.tools.build:apksig:2.3.0")
 }
