@@ -14,6 +14,7 @@ import com.aiapp.ui.BuildScreen
 import com.aiapp.ui.BuildViewModel
 import com.aiapp.ui.ChatScreen
 import com.aiapp.ui.ChatViewModel
+import com.aiapp.ui.CodespaceScreen
 import com.aiapp.ui.CreateScreen
 import com.aiapp.ui.CreateViewModel
 import com.aiapp.ui.HistoryScreen
@@ -58,9 +59,11 @@ class MainActivity : ComponentActivity() {
                         onOpenCreate = { screen = "create" },
                         onOpenReverse = { screen = "reverse" },
                         onOpenLog = { screen = "log" },
+                        onOpenCode = { screen = "codespace" },
                     )
                     "history" -> HistoryScreen(vm, onBack = { screen = "chat" })
                     "log" -> LogScreen(onBack = { screen = "chat" })
+                    "codespace" -> CodespaceScreen(onBack = { screen = "chat" })
                     "create" -> CreateScreen(createVm, onBack = { screen = "chat" }, onOpenSettings = { screen = "settings" })
                     "build" -> BuildScreen(vm, buildVm, onBack = { screen = "chat" }, onOpenSettings = { screen = "settings" })
                     "reverse" -> ReverseScreen(vm, reverseVm, onBack = { screen = "chat" })

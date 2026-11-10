@@ -113,6 +113,7 @@ fun ReverseScreen(chat: ChatViewModel, vm: ReverseViewModel, onBack: () -> Unit)
                         Field("Activities", r.activities.size.toString())
                         Field("Services / Receivers", "${r.services.size} / ${r.receivers.size}")
                         Field("DEX / native libs", "${r.dexFiles.size} / ${r.nativeLibs.size}")
+                        Field("Classes / methods", "${r.classCount} / ${r.methodCount}")
                     }
                 }
 

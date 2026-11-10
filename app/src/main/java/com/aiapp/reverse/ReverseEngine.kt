@@ -7,6 +7,8 @@ import com.reandroid.arsc.chunk.TableBlock
 import com.reandroid.arsc.chunk.xml.AndroidManifestBlock
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import org.jf.dexlib2.Opcodes
+import org.jf.dexlib2.dexbacked.DexBackedDexFile
 import java.io.File
 import java.security.cert.CertificateFactory
 import java.security.cert.X509Certificate
@@ -59,6 +61,8 @@ object ReverseEngine {
             }
         }
 
+        val (classCount, methodCount, sampleClasses) = dexStats(apk, dexFiles, pkg = runCatching { manifest?.packageName }.getOrNull().orEmpty())
+
         ApkReport(
             fileName = apk.name,
             sizeBytes = apk.length(),
@@ -75,6 +79,9 @@ object ReverseEngine {
             receivers = receivers,
             providers = providers,
             dexFiles = dexFiles.sorted(),
+            classCount = classCount,
+            methodCount = methodCount,
+            sampleClasses = sampleClasses,
             nativeLibs = nativeLibs.toList(),
             abis = abis.toList(),
             runtimeHint = runtimeHint(nativeLibs, assets, dexFiles),
@@ -88,6 +95,32 @@ object ReverseEngine {
     private fun componentNames(xml: String, tag: String): List<String> =
         Regex("""<$tag\b[^>]*\bandroid:name="([^"]+)"""")
             .findAll(xml).map { it.groupValues[1] }.distinct().toList()
+
+    /** Counts classes/methods across every DEX and samples class names from the app's own package. */
+    private fun dexStats(apk: File, dexFiles: List<String>, pkg: String): Triple<Int, Int, List<String>> {
+        if (dexFiles.isEmpty()) return Triple(0, 0, emptyList())
+        var classes = 0
+        var methods = 0
+        val sample = LinkedHashSet<String>()
+        val prefix = if (pkg.isNotBlank()) "L" + pkg.replace('.', '/') else null
+        runCatching {
+            ZipFile(apk).use { zip ->
+                for (name in dexFiles) {
+                    val entry = zip.getEntry(name) ?: continue
+                    val bytes = zip.getInputStream(entry).use { it.readBytes() }
+                    val dex = runCatching { DexBackedDexFile(Opcodes.getDefault(), bytes) }.getOrNull() ?: continue
+                    for (cls in dex.classes) {
+                        classes++
+                        methods += runCatching { cls.methods.count() }.getOrDefault(0)
+                        if (sample.size < 120 && (prefix == null || cls.type.startsWith(prefix))) {
+                            sample += cls.type.removePrefix("L").removeSuffix(";").replace('/', '.')
+                        }
+                    }
+                }
+            }
+        }
+        return Triple(classes, methods, sample.toList())
+    }
 
     /** Component names read from the parsed manifest tree (robust when serialize-to-XML is unavailable). */
     private fun componentsOf(app: com.reandroid.arsc.chunk.xml.ResXmlElement?, tag: String): List<String> {

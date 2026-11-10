@@ -27,6 +27,9 @@ data class ApkReport(
     val receivers: List<String>,
     val providers: List<String>,
     val dexFiles: List<String>,
+    val classCount: Int = 0,
+    val methodCount: Int = 0,
+    val sampleClasses: List<String> = emptyList(),
     val nativeLibs: List<String>,
     val abis: List<String>,
     val runtimeHint: String,
@@ -47,7 +50,8 @@ data class ApkReport(
         appendLine("services (${services.size}): ${services.take(40).joinToString()}")
         appendLine("receivers (${receivers.size}): ${receivers.take(40).joinToString()}")
         appendLine("providers (${providers.size}): ${providers.take(20).joinToString()}")
-        appendLine("dex: ${dexFiles.joinToString()}")
+        appendLine("dex: ${dexFiles.joinToString()}  classes=$classCount methods=$methodCount")
+        if (sampleClasses.isNotEmpty()) appendLine("classes (sample): ${sampleClasses.take(60).joinToString().take(1500)}")
         appendLine("native libs (${nativeLibs.size}): ${nativeLibs.take(40).joinToString()}")
         if (stringSamples.isNotEmpty()) appendLine("string resources (sample): ${stringSamples.take(80).joinToString(" | ").take(1500)}")
         if (assetSamples.isNotEmpty()) appendLine("assets (sample): ${assetSamples.take(40).joinToString()}")
