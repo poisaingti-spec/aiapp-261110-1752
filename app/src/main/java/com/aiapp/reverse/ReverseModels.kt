@@ -95,6 +95,10 @@ data class PlannedEdit(
     val pkg: String? = null,
 )
 
+/** Search terms the model wants to look for in the app's smali, for a code/logic change. */
+@kotlinx.serialization.Serializable
+data class TermList(val terms: List<String> = emptyList())
+
 /** The model's structured plan for an instruction: a human summary plus the edits to apply. */
 @kotlinx.serialization.Serializable
 data class EditPlan(

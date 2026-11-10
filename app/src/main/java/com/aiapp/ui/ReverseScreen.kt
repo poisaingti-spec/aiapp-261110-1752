@@ -53,6 +53,7 @@ fun ReverseScreen(chat: ChatViewModel, vm: ReverseViewModel, onBack: () -> Unit)
     }
     var question by remember { mutableStateOf("") }
     var instruction by remember { mutableStateOf("") }
+    var codeInstruction by remember { mutableStateOf("") }
     var newLabel by remember { mutableStateOf("") }
     var newVersion by remember { mutableStateOf("") }
 
@@ -157,6 +158,26 @@ fun ReverseScreen(chat: ChatViewModel, vm: ReverseViewModel, onBack: () -> Unit)
                     enabled = !vm.busy && !vm.answering && instruction.isNotBlank(),
                 ) { Text("Apply change & rebuild") }
                 vm.planSummary?.let { Text("Plan: $it", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+
+                // Advanced: on-device code (smali/bytecode) change.
+                Text("Change the code (advanced)", style = MaterialTheme.typography.titleSmall)
+                Text(
+                    "Edit app logic (e.g. disable a check, change behaviour). The DEX is disassembled to " +
+                        "smali on your phone, the model patches it, and it's reassembled, rebuilt and signed. " +
+                        "Slow and experimental — use a strong model, and only on apps you're authorized to modify.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                OutlinedTextField(
+                    value = codeInstruction, onValueChange = { codeInstruction = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    placeholder = { Text("e.g. make isPremium() always return true") },
+                    minLines = 2,
+                )
+                Button(
+                    onClick = { vm.applyCodeChange(codeInstruction.trim(), chat.provider, chat.model, chat.effort) },
+                    enabled = !vm.busy && !vm.answering && codeInstruction.isNotBlank(),
+                ) { Text("Patch code & rebuild") }
 
                 // Manual rebuild + re-sign (rename / version only).
                 Text("Rebuild & re-sign", style = MaterialTheme.typography.titleSmall)

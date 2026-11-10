@@ -13,8 +13,8 @@ android {
         applicationId = "com.aiapp"
         minSdk = 26
         targetSdk = 35
-        versionCode = 21
-        versionName = "0.16.0"
+        versionCode = 22
+        versionName = "0.17.0"
     }
 
     signingConfigs {
@@ -68,4 +68,8 @@ dependencies {
     // Reverse Engineering tab: on-device APK decode/rebuild + re-signing (pure-JVM, Android-safe).
     implementation("io.github.reandroid:ARSCLib:1.4.0")
     implementation("com.android.tools.build:apksig:2.3.0")
+    // On-device DEX <-> smali (disassemble / patch / reassemble) for code edits.
+    implementation("org.smali:smali:2.5.2")
+    implementation("org.smali:baksmali:2.5.2")
+    implementation("org.smali:dexlib2:2.5.2")
 }

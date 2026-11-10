@@ -38,6 +38,51 @@ object ReverseAgent {
         appendLine("Reply with ONLY the JSON plan.")
     }
 
+    // ---------- Code (smali) edits ----------
+
+    val TERMS_SYSTEM =
+        "You help locate code in a decompiled Android app. Given the user's change, reply with ONLY a " +
+        "JSON object {\"terms\":[\"...\"]} of short identifiers or string literals likely to appear in the " +
+        "relevant smali (class names, method names, ad/SDK names, resource ids, visible strings). 3-8 terms."
+
+    val SMALI_SYSTEM =
+        "You edit Android smali (Dalvik bytecode assembly) for apps the user is authorized to modify. " +
+        "You are given whole classes. Return the FULL smali of ONLY the classes you change, each as:\n" +
+        "=== CLASS: <descriptor> ===\n<full smali>\n=== END ===\n" +
+        "Keep smali valid: correct .registers/.locals, label and type descriptors, and method signatures. " +
+        "Make the smallest change that fulfils the instruction. If you cannot do it safely, return no blocks."
+
+    fun termsPrompt(report: ApkReport, instruction: String): String =
+        "App: ${report.packageName} (${report.runtimeHint}). Change requested: \"$instruction\".\n" +
+        "Give the JSON search terms."
+
+    fun parseTerms(reply: String, instruction: String): List<String> {
+        val s = reply.indexOf('{'); val e = reply.lastIndexOf('}')
+        val fromJson = if (s in 0 until e) runCatching { json.decodeFromString<TermList>(reply.substring(s, e + 1)).terms }.getOrNull() else null
+        val terms = (fromJson ?: emptyList()).filter { it.isNotBlank() }
+        // Fall back to instruction words if the model gave nothing usable.
+        return terms.ifEmpty { instruction.split(Regex("[^A-Za-z0-9]+")).filter { it.length >= 4 } }.distinct().take(8)
+    }
+
+    fun smaliEditPrompt(instruction: String, candidates: List<SmaliEngine.SmaliClass>): String = buildString {
+        appendLine("Instruction: $instruction")
+        appendLine()
+        appendLine("Candidate classes (full smali). Edit only what's needed:")
+        candidates.forEach { c ->
+            appendLine("=== CLASS: ${c.className} ===")
+            appendLine(c.smali)
+            appendLine("=== END ===")
+        }
+        appendLine()
+        appendLine("Return the full smali of only the classes you change, in the same === CLASS === format.")
+    }
+
+    private val classBlock = Regex("""===\s*CLASS:\s*(\S+)\s*===\s*\n(.*?)\n===\s*END\s*===""", RegexOption.DOT_MATCHES_ALL)
+
+    /** Parses the model's reply into className -> new full smali. */
+    fun parseSmaliEdits(reply: String): Map<String, String> =
+        classBlock.findAll(reply).associate { it.groupValues[1].trim() to it.groupValues[2] }
+
     /** Extracts the first JSON object from the model's reply and decodes it into an [EditPlan]. */
     fun parsePlan(reply: String): EditPlan {
         val text = reply.substringAfter("```json", reply).substringBefore("```").let {

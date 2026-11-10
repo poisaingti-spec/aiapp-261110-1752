@@ -19,6 +19,7 @@ import com.aiapp.reverse.ApkEdit
 import com.aiapp.reverse.ApkReport
 import com.aiapp.reverse.ReaClient
 import com.aiapp.reverse.ReverseAgent
+import com.aiapp.reverse.SmaliEngine
 import com.aiapp.reverse.ReaConfig
 import com.aiapp.reverse.ReaTool
 import com.aiapp.reverse.RebuildResult
@@ -153,6 +154,68 @@ class ReverseViewModel(app: Application) : AndroidViewModel(app) {
                 status = null
             } catch (e: Exception) {
                 error = e.message ?: "Couldn't apply that change."
+                status = null
+            } finally {
+                busy = false
+            }
+        }
+    }
+
+    private suspend fun collectReply(provider: ProviderId, model: String, prompt: String, system: String, effort: Effort): String {
+        val sb = StringBuilder()
+        Providers.get(provider).stream(keys.get(provider), model, listOf(ChatMessage(Role.USER, prompt)), effort, system)
+            .collect { chunk -> if (!chunk.startsWith(THOUGHT)) sb.append(chunk) }
+        return sb.toString()
+    }
+
+    /**
+     * Advanced: a code/logic change via smali. The model picks search terms, the matching classes are
+     * disassembled on-device, the model patches them, they're reassembled, and the APK is rebuilt and
+     * re-signed. Slow and experimental; use a strong model. For apps you are authorized to modify.
+     */
+    fun applyCodeChange(instruction: String, provider: ProviderId, model: String, effort: Effort) {
+        val r = report ?: return
+        val apk = apkFile ?: return
+        if (busy || answering) return
+        viewModelScope.launch {
+            busy = true; error = null; rebuilt = null; planSummary = null
+            try {
+                val api = r.minSdk.toIntOrNull() ?: 21
+                val work = File(getApplication<Application>().cacheDir, "reverse/smali").apply { deleteRecursively(); mkdirs() }
+                val engine = SmaliEngine(work, api)
+
+                status = "Finding the relevant code…"
+                val termsReply = collectReply(provider, model, ReverseAgent.termsPrompt(r, instruction), ReverseAgent.TERMS_SYSTEM, effort)
+                val terms = ReverseAgent.parseTerms(termsReply, instruction)
+
+                status = "Disassembling & searching (this can be slow)…"
+                val candidates = engine.search(apk, terms)
+                if (candidates.isEmpty()) {
+                    error = "Couldn't find code matching that. Try naming the class, SDK, or exact text involved. (searched: ${terms.joinToString()})"
+                    status = null; return@launch
+                }
+
+                status = "Writing the patch with ${provider.label}…"
+                val editReply = collectReply(provider, model, ReverseAgent.smaliEditPrompt(instruction, candidates), ReverseAgent.SMALI_SYSTEM, effort)
+                val smaliEdits = ReverseAgent.parseSmaliEdits(editReply)
+                if (smaliEdits.isEmpty()) {
+                    error = "The model didn't produce a safe code patch for that. Try a stronger model or a more specific instruction."
+                    status = null; return@launch
+                }
+                planSummary = "Patching ${smaliEdits.size} class(es): ${smaliEdits.keys.joinToString().take(200)}"
+
+                status = "Reassembling, rebuilding & signing…"
+                val dexEdits = engine.buildEdits(apk, smaliEdits)
+                if (dexEdits.isEmpty()) {
+                    error = "The edited classes weren't found in the app's DEX files."
+                    status = null; return@launch
+                }
+                val outDir = File(getApplication<Application>().cacheDir, "reverse/out")
+                outDir.deleteRecursively()
+                rebuilt = ReverseEngine.rebuild(getApplication(), apk, dexEdits, outDir)
+                status = null
+            } catch (e: Exception) {
+                error = e.message ?: "Couldn't apply that code change."
                 status = null
             } finally {
                 busy = false
