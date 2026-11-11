@@ -532,11 +532,13 @@ class ReverseViewModel(app: Application) : AndroidViewModel(app) {
                 // Stage 1: Study
                 craftStage = CraftAnythingEngine.CraftStage.STUDY
                 status = "🔍 [Stage 1/4: Study] Craft Anything Architect running inspection tools (${studyMode.label})…"
-                val study = if (apkFile != null) {
+                var study = if (apkFile != null) {
                     CraftAnythingEngine.studyApk(apkFile!!, r, studyMode, cloneAppName, customLogoText, selectedBrandPreset)
                 } else {
                     CraftAnythingEngine.studyWebsite(websiteTargetUrl ?: r.fileName, studyMode, cloneAppName, customLogoText, selectedBrandPreset)
                 }
+                // Real REA (github.com/morluto/rea) on GitHub Actions; unchanged when not signed in to GitHub.
+                study = com.aiapp.reverse.ReaCloud.enrich(getApplication(), study, apkFile, websiteTargetUrl, githubTokenOf()) { status = it }
                 craftStudy = study
 
                 if (dashboardAction == CraftAnythingEngine.DashboardAction.JUST_LOOK_INSIDE) {
@@ -556,6 +558,17 @@ class ReverseViewModel(app: Application) : AndroidViewModel(app) {
                             "• **Likeness Target**: `${likenessTargetPercent}%` · **Branding**: `${selectedBrandPreset.label}`",
                     ),
                 )
+
+                // Plan first: the model writes the plan from the evidence and the user sees it before any code.
+                status = "📝 Writing the plan from the evidence…"
+                val plan = runCatching {
+                    collectReply(provider, model, com.aiapp.reverse.ReaCloud.planPrompt(study, finalInstruction, cloneAppName, clonePackageName), com.aiapp.reverse.ReaCloud.PLAN_SYSTEM, effort)
+                }.getOrDefault("")
+                if (plan.isNotBlank()) {
+                    transcript.add(ChatMessage(Role.ASSISTANT, "📝 **Plan (nothing is built until this is shown)**\n\n$plan", thinking = liveThinking))
+                    study = com.aiapp.reverse.ReaCloud.withPlan(study, plan)
+                    craftStudy = study
+                }
 
                 // Human Oversight Check ("Auto Mode: OFF / Ask First")
                 if (!autoMode) {
