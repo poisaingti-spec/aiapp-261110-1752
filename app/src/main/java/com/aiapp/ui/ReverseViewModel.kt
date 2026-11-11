@@ -368,6 +368,8 @@ class ReverseViewModel(app: Application) : AndroidViewModel(app) {
         clonedZipAttachment = null
         clonedZipSavedNote = null
         clonedCodeHistory.clear()
+        discussion.clear()
+        pendingPlan = null
         requestHistoryLog.clear()
         contextCompactedBadge = null
         canResumeInterrupted = false
@@ -440,6 +442,8 @@ class ReverseViewModel(app: Application) : AndroidViewModel(app) {
         clonedZipAttachment = null
         clonedZipSavedNote = null
         clonedCodeHistory.clear()
+        discussion.clear()
+        pendingPlan = null
         requestHistoryLog.clear()
         contextCompactedBadge = null
         canResumeInterrupted = false
@@ -499,6 +503,8 @@ class ReverseViewModel(app: Application) : AndroidViewModel(app) {
         clonedZipAttachment = null
         clonedZipSavedNote = null
         clonedCodeHistory.clear()
+        discussion.clear()
+        pendingPlan = null
         requestHistoryLog.clear()
         contextCompactedBadge = null
         canResumeInterrupted = false
@@ -741,83 +747,214 @@ class ReverseViewModel(app: Application) : AndroidViewModel(app) {
             return
         }
 
-        // Nothing is built until the user says "build". Questions are answered; anything else is
-        // noted as a change and listed, and all noted changes are built together on "build".
-        if (!buildCommand.containsMatchIn(instruction)) {
-            val isQuestion = instruction.contains('?') || questionLike.containsMatchIn(instruction)
-            if (!isQuestion) {
-                queuedChanges += instruction
-                transcript.add(
-                    ChatMessage(
-                        Role.ASSISTANT,
-                        "📝 Noted as change #${queuedChanges.size}. Nothing is built yet.\n\n" +
-                            "**Changes to build:**\n" + queuedChanges.mapIndexed { i, c -> "${i + 1}. ${c.take(300)}" }.joinToString("\n") +
-                            "\n\nAdd more, or say **build** when you're ready.",
-                    ),
-                )
+        // A plan is on screen waiting for approval: "yes" / "approve" / "build" starts it;
+        // anything else reopens the discussion.
+        if (pendingPlan != null) {
+            if (approveWords.matches(instruction)) {
+                approvePendingPlan(provider, model, effort)
                 return
             }
-            viewModelScope.launch {
-                answering = true; error = null; canResumeInterrupted = false
-                try {
-                    lastInterruptedInstruction = instruction
-                    lastInterruptedWasClone = false
-                    answerQuestion(r, instruction, provider, model, effort)
-                } catch (e: Exception) {
-                    Log.e("Reverse", "question failed", e)
-                    canResumeInterrupted = true
-                    transcript.add(ChatMessage(Role.ASSISTANT, "⚠️ **Paused / API limit reached**: ${e.message}"))
-                } finally {
-                    answering = false; liveAnswer = ""; liveThinking = ""; status = null
-                }
-            }
-            return
-        }
-
-        // "build": collect every noted change (plus anything typed with "build") into one numbered list.
-        val extra = instruction.replace(buildCommand, " ").trim(' ', ',', '.', '!', '-', ':', '\n')
-        if (extra.length > 3 && !Regex("^(it|now|the app|app|please|ok|okay|it now|now please)$", RegexOption.IGNORE_CASE).matches(extra)) {
-            queuedChanges += extra
-        }
-        if (dashboardAction != CraftAnythingEngine.DashboardAction.JUST_LOOK_INSIDE && cloneAppName.isBlank()) {
-            error = "Please enter an app name first."
-            return
-        }
-        val changes = queuedChanges.toList()
-        queuedChanges.clear()
-        val numbered = changes.mapIndexed { i, c -> "${i + 1}. $c" }.joinToString("\n")
-        if (changes.isNotEmpty()) {
-            transcript.add(ChatMessage(Role.ASSISTANT, "🛠️ **Building now with these ${changes.size} change(s):**\n$numbered"))
-        }
-        if (craftStage == CraftAnythingEngine.CraftStage.AWAITING_APPROVAL) {
-            // A plan is waiting: "build" approves it, with the noted changes added.
-            if (changes.isNotEmpty()) {
-                pendingBuildInstruction = (pendingBuildInstruction + "\n\nAlso implement ALL of these changes:\n" + numbered).trim()
-            }
+            pendingPlan = null
+            transcript.add(
+                ChatMessage(
+                    Role.ASSISTANT,
+                    "✏️ Okay — the plan is on hold, let's keep talking. Say **build** again when you're ready and I'll show the updated plan before anything is built.",
+                ),
+            )
+        } else if (craftStage == CraftAnythingEngine.CraftStage.AWAITING_APPROVAL &&
+            (approveWords.matches(instruction) || buildCommand.containsMatchIn(instruction))
+        ) {
+            // The Start Craft Anything plan is already on screen: this approves it.
             approveAndContinueCraftBuild(provider, model, effort)
             return
         }
-        val buildInstruction = if (changes.isEmpty()) instruction else "Implement ALL of these changes:\n$numbered"
-        sendBuild(r, buildInstruction, provider, model, effort)
+
+        if (!buildCommand.containsMatchIn(instruction)) {
+            // Discussion: the model talks it through; everything said is remembered for the plan.
+            discussion += ChatMessage(Role.USER, instruction)
+            launchTurn(instruction, clone = false) { discuss(r, provider, model, effort) }
+            return
+        }
+
+        // "build": turn the whole discussion into a numbered plan and show it. Nothing is built
+        // until the user approves it.
+        val extra = instruction.replace(buildCommand, " ").trim(' ', ',', '.', '!', '-', ':', '\n')
+        if (extra.length > 3 && !Regex("^(it|now|the app|app|please|ok|okay|it now|now please)$", RegexOption.IGNORE_CASE).matches(extra)) {
+            discussion += ChatMessage(Role.USER, extra)
+        }
+        if (dashboardAction != CraftAnythingEngine.DashboardAction.JUST_LOOK_INSIDE && cloneAppName.isBlank()) {
+            error = "Please enter an app name first."
+            transcript.add(ChatMessage(Role.ASSISTANT, "✋ Please enter an **app name** in the Architect panel first, then say **build** again."))
+            return
+        }
+        if (discussion.none { it.role == Role.USER }) {
+            transcript.add(
+                ChatMessage(
+                    Role.ASSISTANT,
+                    "🤔 Tell me first what you'd like to build or change. Once we've talked it through, say **build** and I'll show the full plan for your approval.",
+                ),
+            )
+            return
+        }
+        launchTurn(instruction, clone = true) {
+            val plan = makePlan(r, provider, model, effort)
+            pendingPlan = plan
+            transcript.add(
+                ChatMessage(
+                    Role.ASSISTANT,
+                    "📋 **Before I build, here is everything I'll work on:**\n\n$plan\n\n" +
+                        "Tap **✅ Approve & build** (or say **yes**) to start. Say anything else to change the plan.",
+                ),
+            )
+        }
     }
 
-    /** Changes the user described in the Reverse tab, waiting for "build". */
-    private val queuedChanges = mutableListOf<String>()
+    /** Runs one model turn with the usual busy state and error handling. */
+    private fun launchTurn(instruction: String, clone: Boolean, block: suspend () -> Unit) {
+        viewModelScope.launch {
+            answering = true; error = null; canResumeInterrupted = false
+            try {
+                lastInterruptedInstruction = instruction
+                lastInterruptedWasClone = clone
+                block()
+            } catch (e: Exception) {
+                Log.e("Reverse", "turn failed", e)
+                canResumeInterrupted = true
+                transcript.add(ChatMessage(Role.ASSISTANT, "⚠️ **Paused / API limit reached**: ${e.message}"))
+            } finally {
+                answering = false; liveAnswer = ""; liveThinking = ""; status = null
+            }
+        }
+    }
+
+    private val DISCUSS_SYSTEM =
+        "You are helping the user plan what to build or change in an Android app they are rebuilding from the target " +
+            "described below. Have a normal, friendly conversation: answer questions, suggest ideas, and ask a short " +
+            "clarifying question when something is unclear. Do NOT write code or files yet, and do not claim anything " +
+            "has been built. Keep replies short. When the user seems ready, remind them they can say \"build\" — you " +
+            "will then show the full plan for approval before anything is built."
+
+    /** Everything said while planning the next build (user requests and the model's replies). */
+    private val discussion = mutableListOf<ChatMessage>()
+
+    /** The plan shown to the user after "build"; building starts only once it is approved. */
+    var pendingPlan by mutableStateOf<String?>(null); private set
 
     /** "build", "build it", "ok build now"… */
     private val buildCommand = Regex("\\bbuild\\b", RegexOption.IGNORE_CASE)
 
-    private fun sendBuild(r: ApkReport, instruction: String, provider: ProviderId, model: String, effort: Effort) {
+    /** Short replies that approve a plan on screen. */
+    private val approveWords = Regex(
+        "^\\s*(yes|y|yeah|yep|yup|ok|okay|approve|approved|go|go ahead|start|proceed|do it|confirm|sure|build|build it|build now|yes build|ok build)\\s*[.!]*\\s*$",
+        RegexOption.IGNORE_CASE,
+    )
+
+    private fun targetContext(r: ApkReport): String = buildString {
+        appendLine("TARGET STUDY BRIEFING:")
+        appendLine(r.toBriefing())
+        craftStudy?.let { appendLine(); appendLine(it.architectBlueprintMarkdown.take(9_000)) }
+            ?: deepReaSpec.takeIf { it.isNotBlank() }?.let { appendLine(); appendLine(it.take(9_000)) }
+        appendLine()
+        appendLine("New app name: ${cloneAppName.ifBlank { "(not set yet)" }}")
+    }
+
+    private fun discussionText(): String = discussion.takeLast(30).joinToString("\n\n") { m ->
+        (if (m.role == Role.USER) "USER: " else "ASSISTANT: ") + m.text.take(3_000)
+    }
+
+    /** One discussion reply: talks the request through, no code, nothing built. */
+    private suspend fun discuss(r: ApkReport, provider: ProviderId, model: String, effort: Effort) {
+        status = "Thinking with ${provider.label}…"
+        val prompt = buildString {
+            appendLine(targetContext(r))
+            appendLine()
+            appendLine("CONVERSATION SO FAR (planning what to build or change):")
+            appendLine(discussionText())
+            appendLine()
+            appendLine("Reply to the user's last message.")
+        }
+        val reply = streamWithFailover(
+            provider = provider,
+            model = model,
+            messages = listOf(ChatMessage(Role.USER, prompt)),
+            system = DISCUSS_SYSTEM,
+            effort = effort,
+            updateLivePreview = true,
+        )
+        discussion += ChatMessage(Role.ASSISTANT, reply)
+        transcript.add(ChatMessage(Role.ASSISTANT, reply, thinking = liveThinking))
+    }
+
+    /** Turns the whole discussion into a numbered list of everything to implement. */
+    private suspend fun makePlan(r: ApkReport, provider: ProviderId, model: String, effort: Effort): String {
+        status = "📋 Writing the plan from our conversation…"
+        val prompt = buildString {
+            appendLine(targetContext(r))
+            appendLine()
+            appendLine("CONVERSATION:")
+            appendLine(discussionText())
+            appendLine()
+            appendLine("List EVERY change or feature the user asked for in this conversation, as a numbered list, one concrete line each.")
+            appendLine("Keep earlier requests unless the user later dropped or replaced them. Do not add things they did not ask for.")
+            appendLine("After the list, add one line starting with 'Approach:' (1–2 sentences). No code.")
+        }
+        val plan = runCatching {
+            streamWithFailover(
+                provider = provider,
+                model = model,
+                messages = listOf(ChatMessage(Role.USER, prompt)),
+                system = "You turn a planning conversation into a precise, numbered build plan. Output only the list and the Approach line.",
+                effort = effort,
+                updateLivePreview = true,
+            )
+        }.getOrDefault("").trim()
+        if (plan.isNotBlank()) return plan
+        // Fallback if the model returned nothing: the user's own requests, numbered.
+        return discussion.filter { it.role == Role.USER }.mapIndexed { i, m -> "${i + 1}. ${m.text.take(300)}" }.joinToString("\n")
+    }
+
+    /** Called by "✅ Approve & build" (or the user saying yes): starts the approved build. */
+    fun approvePendingPlan(provider: ProviderId, model: String, effort: Effort) {
+        val plan = pendingPlan ?: return
+        val r = report ?: return
+        if (answering) { error = "Still working on the previous step — wait for it to finish."; return }
+        if (dashboardAction != CraftAnythingEngine.DashboardAction.JUST_LOOK_INSIDE && cloneAppName.isBlank()) {
+            error = "Please enter an app name first."
+            return
+        }
+        pendingPlan = null
+        discussion.clear()
+        transcript.add(ChatMessage(Role.ASSISTANT, "✅ Approved — building now."))
+        val brief = "Implement ALL of these changes exactly as planned and approved by the user:\n$plan"
+        if (craftStage == CraftAnythingEngine.CraftStage.AWAITING_APPROVAL) {
+            pendingBuildInstruction = (pendingBuildInstruction + "\n\n" + brief).trim()
+            approveAndContinueCraftBuild(provider, model, effort)
+            return
+        }
+        sendBuild(r, brief, provider, model, effort, preferCraft = dashboardAction != CraftAnythingEngine.DashboardAction.JUST_LOOK_INSIDE)
+    }
+
+    /** Drops the plan on screen and goes back to discussing. */
+    fun keepDiscussing() {
+        if (pendingPlan == null) return
+        pendingPlan = null
+        transcript.add(ChatMessage(Role.ASSISTANT, "✏️ Okay — tell me what to change. Say **build** again when you're ready."))
+    }
+
+    /** "build", "build it", "ok build now"… */
+    private val buildCommand = Regex("\\bbuild\\b", RegexOption.IGNORE_CASE)
+
+    private fun sendBuild(r: ApkReport, instruction: String, provider: ProviderId, model: String, effort: Effort, preferCraft: Boolean = false) {
         viewModelScope.launch {
             answering = true; error = null; canResumeInterrupted = false
             try {
                 when {
-                    errorLogPattern.containsMatchIn(instruction) -> {
+                    errorLogPattern.containsMatchIn(instruction) && (clonedCodeHistory.isNotEmpty() || !preferCraft) -> {
                         lastInterruptedInstruction = instruction
                         lastInterruptedWasClone = true
                         fixBuildErrorsAndRepackage(r, instruction, provider, model, effort)
                     }
-                    websiteTargetUrl != null || cloneIntentPattern.containsMatchIn(instruction) || clonedCodeHistory.isNotEmpty() -> {
+                    preferCraft || websiteTargetUrl != null || cloneIntentPattern.containsMatchIn(instruction) || clonedCodeHistory.isNotEmpty() -> {
                         lastInterruptedInstruction = instruction
                         lastInterruptedWasClone = true
                         val study = craftStudy ?: if (apkFile != null) {

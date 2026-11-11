@@ -206,6 +206,24 @@ fun ReverseScreen(chat: ChatViewModel, vm: ReverseViewModel, onBack: () -> Unit,
                                 label = { Text("⚡ Compact Context") },
                             )
                         }
+                        // A plan is on screen: nothing is built until it is approved.
+                        if (vm.pendingPlan != null) {
+                            Row(
+                                Modifier.fillMaxWidth().padding(bottom = 6.dp),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            ) {
+                                Button(
+                                    onClick = { vm.approvePendingPlan(chat.provider, chat.model, chat.effort) },
+                                    enabled = !vm.answering,
+                                    modifier = Modifier.weight(1f),
+                                ) { Text("✅ Approve & build", maxLines = 1) }
+                                OutlinedButton(
+                                    onClick = { vm.keepDiscussing() },
+                                    enabled = !vm.answering,
+                                    modifier = Modifier.weight(1f),
+                                ) { Text("✏️ Keep discussing", maxLines = 1) }
+                            }
+                        }
                         // Always visible, however much is typed below.
                         Row(
                             Modifier.fillMaxWidth().padding(bottom = 6.dp),
