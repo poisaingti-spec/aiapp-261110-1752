@@ -1,7 +1,6 @@
 package com.aiapp.ui
 
 import android.app.Application
-import androidx.compose.runtime.mutableStateListOf
 import androidx.lifecycle.AndroidViewModel
 import com.aiapp.builder.BuildRequest
 import com.aiapp.builder.BuildRunner
@@ -19,47 +18,23 @@ class BuildViewModel(private val app: Application) : AndroidViewModel(app) {
      * Everything the user has asked for, collected so one "Build" implements all of it at once.
      * Shown as a checklist in the Build tab before building.
      */
-    val requirements = mutableStateListOf<String>()
+    val requirements get() = com.aiapp.builder.BuildPlan.items
 
-    fun addRequirement(text: String) {
-        val t = text.trim()
-        if (t.isNotEmpty() && requirements.none { it.equals(t, ignoreCase = true) }) requirements.add(t)
-    }
+    fun addRequirement(text: String) = com.aiapp.builder.BuildPlan.add(text)
 
     fun addRequirements(texts: List<String>) = texts.forEach { addRequirement(it) }
 
-    fun removeRequirement(index: Int) {
-        if (index in requirements.indices) requirements.removeAt(index)
-    }
+    fun removeRequirement(index: Int) = com.aiapp.builder.BuildPlan.remove(index)
 
-    fun clearRequirements() = requirements.clear()
-
-    /** Chat messages already looked at, so a request the user removed (or already built) never comes back. */
-    private val seenChat = mutableSetOf<String>()
-
-    /** Short replies that are not requests ("build", "ok", "thanks"…). */
-    private val notARequest = Regex(
-        "^\\s*(build|build it|build now|start|go|ok|okay|yes|no|thanks?|thank you|hi|hello|hey|continue|retry|done)\\s*[.!?]*\\s*$",
-        RegexOption.IGNORE_CASE,
-    )
-
-    /** Adds every new request the user typed in Chat to the list, in order. */
-    fun syncFromChat(userMessages: List<String>) {
-        for (m in userMessages) {
-            val t = m.trim()
-            if (!seenChat.add(t)) continue
-            if (t.length < 4 || notARequest.matches(t)) continue
-            addRequirement(t)
-        }
-    }
+    fun clearRequirements() = com.aiapp.builder.BuildPlan.clear()
 
     /** The requirements plus any final text, as one brief for the build agent. */
     fun combinedBrief(finalText: String): String {
         val all = (requirements.toList() + finalText.trim()).map { it.trim() }.filter { it.isNotEmpty() }.distinct()
         return when {
             all.isEmpty() -> ""
-            all.size == 1 -> all[0]
-            else -> "Implement ALL of these requirements in the app:\n" +
+            all.size == 1 && requirements.isEmpty() -> all[0]
+            else -> com.aiapp.builder.BuildPlan.BRIEF_HEADER + "\n" +
                 all.mapIndexed { i, r -> "${i + 1}. $r" }.joinToString("\n")
         }
     }

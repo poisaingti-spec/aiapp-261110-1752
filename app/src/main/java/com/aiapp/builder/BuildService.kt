@@ -169,8 +169,11 @@ class BuildService : Service() {
 
         fun start(context: Context, request: BuildRequest) {
             if (BuildRunner.running) return
-            BuildRunner.pending = request
-            BuildRunner.timeline += TimelineItem.User(request.description)
+            // Attach everything the user asked for (Chat, Reverse, Build tab) as a numbered list.
+            val withPlan = request.copy(description = BuildPlan.describe(request.description))
+            BuildPlan.clear()
+            BuildRunner.pending = withPlan
+            BuildRunner.timeline += TimelineItem.User(withPlan.description)
             BuildRunner.running = true
             BuildRunner.save(context)
             context.startForegroundService(Intent(context, BuildService::class.java))

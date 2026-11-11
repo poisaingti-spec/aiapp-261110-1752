@@ -124,10 +124,6 @@ fun BuildScreen(chat: ChatViewModel, vm: BuildViewModel, onBack: () -> Unit, onO
         return
     }
 
-    // Everything asked for in Chat is listed here automatically.
-    LaunchedEffect(chat.messages.size) {
-        vm.syncFromChat(chat.messages.filter { it.role == com.aiapp.llm.Role.USER }.map { it.text })
-    }
     val listState = rememberLazyListState()
     LaunchedEffect(vm.timeline.size) {
         if (vm.timeline.isNotEmpty()) listState.animateScrollToItem(vm.timeline.size - 1)
