@@ -281,7 +281,13 @@ class ReverseViewModel(app: Application) : AndroidViewModel(app) {
                 val dst = File(dir, "from-zip.apk")
                 ZipFile(tmpZip).use { zip ->
                     val entry = zip.entries().asSequence().firstOrNull { it.name.endsWith(".apk", true) }
-                        ?: throw IllegalStateException("No .apk file found inside that zip.")
+                        ?: run {
+                            val isProject = zip.entries().asSequence().any { it.name.substringAfterLast('/').startsWith("settings.gradle") }
+                            throw IllegalStateException(
+                                if (isProject) "This zip is an Android Studio project, not an app. To compile or change it, open the Build tab and upload it there."
+                                else "No app (.apk) found inside that zip. Upload an .apk, .apks, .xapk or .apkm, or a zip that contains one.",
+                            )
+                        }
                     zip.getInputStream(entry).use { input -> dst.outputStream().use { input.copyTo(it) } }
                 }
                 tmpZip.delete()

@@ -25,6 +25,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.AttachFile
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -84,9 +85,41 @@ import kotlin.math.roundToInt
 fun ReverseScreen(chat: ChatViewModel, vm: ReverseViewModel, onBack: () -> Unit, onOpenBuild: () -> Unit) {
     val context = LocalContext.current
     val clipboard = LocalClipboardManager.current
-    val apkPicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri -> if (uri != null) vm.loadApk(uri) }
-    val zipPicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri -> if (uri != null) vm.loadZip(uri) }
     var input by remember { mutableStateOf("") }
+    // File names decide how a picked file is used; pickers accept every type because many file
+    // managers label .zip / .xapk / .apks as "octet-stream" and would grey them out otherwise.
+    fun nameOf(uri: android.net.Uri): String = runCatching {
+        context.contentResolver.query(uri, arrayOf(android.provider.OpenableColumns.DISPLAY_NAME), null, null, null)?.use { c ->
+            if (c.moveToFirst()) c.getString(0) else null
+        }
+    }.getOrNull() ?: uri.lastPathSegment.orEmpty()
+    fun openTarget(uri: android.net.Uri) {
+        val n = nameOf(uri).lowercase()
+        if (n.endsWith(".zip")) vm.loadZip(uri) else vm.loadApk(uri) // .apk, .apks, .xapk, .apkm
+    }
+    val apkPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri -> if (uri != null) openTarget(uri) }
+    val zipPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri -> if (uri != null) openTarget(uri) }
+    // Attach in the chat box: an app file loads as the new target; any other file (build log,
+    // notes, code) is added to the message as text.
+    val attachPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        val n = nameOf(uri)
+        val lower = n.lowercase()
+        if (listOf(".apk", ".apks", ".xapk", ".apkm", ".zip").any { lower.endsWith(it) }) {
+            openTarget(uri)
+        } else {
+            val text = runCatching {
+                context.contentResolver.openInputStream(uri)?.use { it.readBytes() }?.let { b ->
+                    String(b.copyOf(minOf(b.size, 60_000)), Charsets.UTF_8)
+                }
+            }.getOrNull()
+            if (text.isNullOrBlank()) {
+                android.widget.Toast.makeText(context, "Couldn't read $n as text.", android.widget.Toast.LENGTH_SHORT).show()
+            } else {
+                input = (input.trimEnd() + "\n\n[$n]\n" + text).trim()
+            }
+        }
+    }
     var url by remember { mutableStateOf("") }
     var showAdvanced by remember { mutableStateOf(false) }
     var showCraftConfig by remember { mutableStateOf(true) }
@@ -174,6 +207,9 @@ fun ReverseScreen(chat: ChatViewModel, vm: ReverseViewModel, onBack: () -> Unit,
                             )
                         }
                         Row(verticalAlignment = Alignment.CenterVertically) {
+                            IconButton(onClick = { attachPicker.launch(arrayOf("*/*")) }) {
+                                Icon(Icons.Filled.AttachFile, contentDescription = "Attach a file or load another app")
+                            }
                             OutlinedTextField(
                                 value = input,
                                 onValueChange = { input = it },
@@ -206,8 +242,8 @@ fun ReverseScreen(chat: ChatViewModel, vm: ReverseViewModel, onBack: () -> Unit,
                     vm = vm,
                     url = url,
                     onUrlChange = { url = it },
-                    onPickApk = { apkPicker.launch("application/vnd.android.package-archive") },
-                    onPickZip = { zipPicker.launch("application/zip") },
+                    onPickApk = { apkPicker.launch(arrayOf("*/*")) },
+                    onPickZip = { zipPicker.launch(arrayOf("*/*")) },
                 )
             } else {
                 // Model picker — supports ALL providers (Free Cloud / 9Router / Radox AI, OpenRouter, Claude, Gemini, ChatGPT, Offline)
