@@ -1,9 +1,0 @@
-name: Diag2
-on: push
-jobs:
-  diag:
-    runs-on: ubuntu-latest
-    steps:
-      - run: curl -sSL -o jadx.zip https://github.com/skylot/jadx/releases/download/v1.5.3/jadx-1.5.3.zip
-      - run: unzip -q jadx.zip -d jadx && chmod +x jadx/bin/jadx
-      - run: ./jadx/bin/jadx --help 2>&1 | head -60

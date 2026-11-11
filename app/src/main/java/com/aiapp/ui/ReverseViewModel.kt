@@ -306,6 +306,65 @@ class ReverseViewModel(app: Application) : AndroidViewModel(app) {
         localInstallReady?.let { ApkInstaller.install(getApplication(), it) }
     }
 
+    /** Set once reconstruction hands off to the Build tab, so the screen can navigate there. */
+    var openBuild by mutableStateOf(false); private set
+    fun consumeOpenBuild() { openBuild = false }
+
+    /**
+     * Decompiles the loaded APK into an independent, openable Android Studio project (jadx on GitHub
+     * Actions, verified to support `--export-gradle`), then hands it to the Build tab's existing
+     * "uploaded project, fix compile errors against the model" pipeline to make it build. For apps you
+     * are authorized to reconstruct — your own apps, open-source apps, security research, learning.
+     * The output is a new, independent project you then build and modify yourself.
+     */
+    fun reconstructAsProject(instruction: String, provider: ProviderId, model: String, effort: Effort) {
+        val r = report ?: return
+        val apk = apkFile ?: return
+        if (answering) { error = "Still working on the previous request — wait for it to finish."; return }
+        val token = githubTokenOf()
+        if (token.isBlank()) {
+            transcript.add(ChatMessage(Role.ASSISTANT, "Add a GitHub token in Settings first — reconstruction needs it for both decompiling and building."))
+            return
+        }
+        transcript.add(ChatMessage(Role.USER, "Reverse engineer this app" + instruction.takeIf { it.isNotBlank() }?.let { ": $it" }.orEmpty()))
+        viewModelScope.launch {
+            answering = true; error = null
+            try {
+                transcript.add(ChatMessage(Role.ASSISTANT, "Extracting and decompiling the app on GitHub Actions…"))
+                val runner = com.aiapp.reverse.ReverseReconstructRunner(token) { s -> status = s }
+                val result = runner.run(apk, r.appLabel.ifBlank { r.packageName })
+                transcript.add(ChatMessage(Role.ASSISTANT, "Decompiled into an Android Studio project. Handing it to Build to make it compile — ${provider.label} will fix any errors, same as any uploaded project."))
+
+                val app = getApplication<Application>()
+                val appName = r.appLabel.ifBlank { r.packageName }
+                com.aiapp.builder.BuildRunner.newProject(app)
+                com.aiapp.builder.BuildService.start(
+                    app,
+                    com.aiapp.builder.BuildRequest(
+                        description = ("Reconstruct this decompiled app as an independent, working Android app, under a new package " +
+                            "name so it installs alongside the original, preserving its UI and functionality. Fix any decompiler " +
+                            "artifacts so it compiles." + instruction.takeIf { it.isNotBlank() }?.let { " Also: $it" }.orEmpty()),
+                        appName = appName,
+                        provider = provider,
+                        model = model,
+                        apiKey = keys.get(provider),
+                        effort = effort,
+                        githubToken = token,
+                        allowOtherSites = false,
+                        zipPath = result.projectZip.path,
+                        zipName = "${appName}-decompiled.zip",
+                    ),
+                )
+                openBuild = true
+            } catch (e: Exception) {
+                Log.e("Reverse", "reconstruct failed", e)
+                transcript.add(ChatMessage(Role.ASSISTANT, "Reconstruction failed: ${e.message}"))
+            } finally {
+                answering = false; status = null
+            }
+        }
+    }
+
     private suspend fun collectReply(provider: ProviderId, model: String, prompt: String, system: String, effort: Effort): String {
         val sb = StringBuilder()
         Providers.get(provider).stream(keys.get(provider), model, listOf(ChatMessage(Role.USER, prompt)), effort, system)

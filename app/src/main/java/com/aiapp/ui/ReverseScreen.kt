@@ -60,13 +60,17 @@ import com.aiapp.llm.Role
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun ReverseScreen(chat: ChatViewModel, vm: ReverseViewModel, onBack: () -> Unit) {
+fun ReverseScreen(chat: ChatViewModel, vm: ReverseViewModel, onBack: () -> Unit, onOpenBuild: () -> Unit) {
     val apkPicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri -> if (uri != null) vm.loadApk(uri) }
     val zipPicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri -> if (uri != null) vm.loadZip(uri) }
     var input by remember { mutableStateOf("") }
     var url by remember { mutableStateOf("") }
     var showAdvanced by remember { mutableStateOf(false) }
     val listState = rememberLazyListState()
+
+    androidx.compose.runtime.LaunchedEffect(vm.openBuild) {
+        if (vm.openBuild) { vm.consumeOpenBuild(); onOpenBuild() }
+    }
 
     androidx.compose.runtime.LaunchedEffect(vm.transcript.size, vm.liveAnswer.length) {
         val count = vm.transcript.size + if (vm.answering && vm.liveAnswer.isNotEmpty()) 1 else 0
@@ -136,6 +140,19 @@ fun ReverseScreen(chat: ChatViewModel, vm: ReverseViewModel, onBack: () -> Unit)
                 }
 
                 vm.error?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(horizontal = 12.dp)) }
+
+                if (vm.transcript.isEmpty()) {
+                    Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Button(onClick = { vm.reconstructAsProject("", chat.provider, chat.model, chat.effort) }) { Text("Reverse Engineer App") }
+                    }
+                    Text(
+                        "Decompiles it into a new, independent Android Studio project and has ${chat.provider.label} fix it " +
+                            "until it builds — or just ask a question / describe a smaller change below.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(horizontal = 12.dp),
+                    )
+                }
 
                 LazyColumn(
                     state = listState,

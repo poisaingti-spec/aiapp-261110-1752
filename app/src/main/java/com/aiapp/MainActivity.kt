@@ -66,7 +66,7 @@ class MainActivity : ComponentActivity() {
                     "codespace" -> CodespaceScreen(onBack = { screen = "chat" })
                     "create" -> CreateScreen(createVm, onBack = { screen = "chat" }, onOpenSettings = { screen = "settings" })
                     "build" -> BuildScreen(vm, buildVm, onBack = { screen = "chat" }, onOpenSettings = { screen = "settings" })
-                    "reverse" -> ReverseScreen(vm, reverseVm, onBack = { screen = "chat" })
+                    "reverse" -> ReverseScreen(vm, reverseVm, onBack = { screen = "chat" }, onOpenBuild = { screen = "build" })
                     else -> SettingsScreen(vm, onBack = { screen = "chat" })
                 }
             }

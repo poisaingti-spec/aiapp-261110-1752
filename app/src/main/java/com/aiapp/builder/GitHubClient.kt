@@ -253,11 +253,14 @@ class GitHubClient(private val token: String) {
         return notes.joinToString("\n").ifBlank { "The build failed, but its error details couldn't be read." }.take(6000)
     }
 
-    suspend fun latestApkUrl(repo: Repo): String? {
+    suspend fun latestApkUrl(repo: Repo): String? = latestAssetUrl(repo, ".apk")
+
+    /** The latest release's first asset URL whose name ends with [suffix] (e.g. ".apk" or ".zip"). */
+    suspend fun latestAssetUrl(repo: Repo, suffix: String): String? {
         val rel = runCatching { call("GET", "/repos/${repo.owner}/${repo.name}/releases/latest") }.getOrNull() ?: return null
         val assets = (rel as? JsonObject)?.get("assets") as? JsonArray ?: return null
         return assets.mapNotNull { (it as? JsonObject)?.get("browser_download_url") as? JsonPrimitive }
-            .map { it.content }.firstOrNull { it.endsWith(".apk") }
+            .map { it.content }.firstOrNull { it.endsWith(suffix) }
     }
 
     companion object {
