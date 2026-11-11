@@ -19,6 +19,8 @@ jobs:
         run: |
           npm install --global rea-agents@6.8.0 || npm install --global rea-agents
           rea --version
+      - name: (test only) fetch a sample APK
+        run: curl -fsSL -o app.apk https://github.com/poisaingti-spec/aiapp-261110-1752/releases/download/build-24/app-24.apk
       - name: Study the APK with REA
         if: ${{ hashFiles('app.apk') != '' }}
         run: |
@@ -43,6 +45,6 @@ jobs:
           test -f evidence/rea-evidence.md
           git config user.name "AI App"
           git config user.email "ai-app@users.noreply.github.com"
-          git add evidence
+          git add evidence/rea-evidence.md
           git commit -q -m "REA evidence"
           git push -q
