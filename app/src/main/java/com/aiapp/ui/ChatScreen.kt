@@ -61,6 +61,7 @@ import com.aiapp.llm.ChatMessage
 import com.aiapp.llm.Effort
 import com.aiapp.llm.ProviderId
 import com.aiapp.llm.Role
+import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -452,7 +453,37 @@ private fun MessageBubble(message: ChatMessage, onBuildZip: (com.aiapp.llm.Attac
                     MarkdownText(message.text, modifier = Modifier.fillMaxWidth())
                 }
             }
+            message.apkInstallUrl?.let { InstallApkButton(it) }
         }
+    }
+}
+
+/** Downloads a GitHub-built APK (from a chat `build:` command) and opens Android's installer. */
+@Composable
+private fun InstallApkButton(url: String) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val scope = androidx.compose.runtime.rememberCoroutineScope()
+    var busy by remember { mutableStateOf(false) }
+    var problem by remember { mutableStateOf<String?>(null) }
+    Column {
+        Button(
+            onClick = {
+                busy = true; problem = null
+                scope.launch {
+                    try {
+                        val file = com.aiapp.data.ApkInstaller.download(context, url) { }
+                        com.aiapp.data.ApkInstaller.install(context, file)
+                    } catch (e: Exception) {
+                        com.aiapp.data.Log.e("Reverse", "chat install failed", e)
+                        problem = e.message ?: "Download failed."
+                    } finally {
+                        busy = false
+                    }
+                }
+            },
+            enabled = !busy,
+        ) { Text(if (busy) "Downloading…" else "Install") }
+        problem?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
     }
 }
 
