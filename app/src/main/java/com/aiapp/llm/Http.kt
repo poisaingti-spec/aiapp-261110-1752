@@ -26,10 +26,26 @@ object Http {
 
     private val jsonType = "application/json".toMediaType()
 
+    /** Browser-like User-Agent for sites that refuse unknown clients. */
+    const val DEFAULT_UA = "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130 Mobile Safari/537.36"
+
     val client: OkHttpClient = OkHttpClient.Builder()
         .connectTimeout(30, TimeUnit.SECONDS)
         .readTimeout(5, TimeUnit.MINUTES)
         .build()
+
+    /** GETs [url] and returns the body as text (blocking; call it off the main thread). Throws on HTTP errors. */
+    fun getText(url: String, headers: Map<String, String> = emptyMap()): String {
+        val request = Request.Builder().url(url)
+            .apply { headers.forEach { (k, v) -> header(k, v) } }
+            .get()
+            .build()
+        return client.newCall(request).execute().use { resp ->
+            val body = resp.body?.string().orEmpty()
+            if (!resp.isSuccessful) throw ProviderException(resp.code, errorMessage(resp.code, body))
+            body
+        }
+    }
 
     suspend fun getJson(url: String, headers: Map<String, String>): JsonObject = withContext(Dispatchers.IO) {
         val request = Request.Builder().url(url)

@@ -17,7 +17,7 @@ import java.util.zip.ZipFile
  * 1. `inspect_apk_signature` (`docs/apk-signature.md`):
  *    - Computes SHA-256 artifact digest, inspects the ZIP tail for the APK Signing Block
  *      (`APK Sig Block 42` — v2 `0x7109871a`, v3 `0xf05368c0`, v3.1 `0x1b93ad61`), and parses
- *      `META-INF/*.RSA|*.DSA|*.EC` X.509 signer certificates.
+ *      `META-INF/ *.RSA|*.DSA|*.EC` X.509 signer certificates.
  * 2. `inspect_android_package` (`docs/android-analysis.md`):
  *    - Full Binary XML (`AXML`) tree decoder (`decodeBinaryXml`) that reconstructs human-readable
  *      `AndroidManifest.xml` (package, versionCode, versionName, minSdk, targetSdk, permissions,
@@ -26,12 +26,12 @@ import java.util.zip.ZipFile
  *      `field_ids`, `method_ids`, `class_defs`) that extracts domain classes, method signatures
  *      (`ClassName.method(params): ReturnType`), and field declarations (`ClassName.field: Type`).
  * 3. `apktool_resource_analysis` (`docs/apktool-resource-analysis.md`):
- *    - Decodes binary XML screen layouts (`res/layout/*.xml`) into readable XML view trees,
+ *    - Decodes binary XML screen layouts (`res/layout/ *.xml`) into readable XML view trees,
  *      extracts UI string literals from `resources.arsc` / DEX pools, and inventories drawables,
  *      raw media, and `assets/`.
  * 4. `project_android_application_graph` & `extractReusableResources`:
- *    - Maps `lib/<abi>/*.so` JNI libraries and extracts reusable raster drawables (`.png`, `.jpg`,
- *      `.webp`), fonts (`.ttf`, `.otf`), raw media (`res/raw/*`), and `assets/**` from the uploaded
+ *    - Maps `lib/<abi>/ *.so` JNI libraries and extracts reusable raster drawables (`.png`, `.jpg`,
+ *      `.webp`), fonts (`.ttf`, `.otf`), raw media (`res/raw/ *`), and `assets/ **` from the uploaded
  *      APK so the rebuilt app can bundle and use the original app's real resources under a new name.
  */
 object ReaEngine {
@@ -79,7 +79,7 @@ And build a COMPLETE, WORKING Android app in Kotlin + Jetpack Compose (Material 
     data class ExtractedResourcesBundle(
         /** Map of relative project path (`app/src/main/res/drawable/...` or `app/src/main/assets/...`) to raw bytes. */
         val files: Map<String, ByteArray>,
-        /** Prompt note listing every extracted `R.drawable.*`, `R.font.*`, `R.raw.*`, and `assets/*` reference. */
+        /** Prompt note listing every extracted `R.drawable.*`, `R.font.*`, `R.raw.*`, and `assets/ *` reference. */
         val promptSummary: String,
     )
 
@@ -405,7 +405,7 @@ And build a COMPLETE, WORKING Android app in Kotlin + Jetpack Compose (Material 
 
     /**
      * Extracts reusable non-compiled resources (raster drawables `.png`/`.jpg`/`.webp`,
-     * fonts `.ttf`/`.otf`, raw media `res/raw/*`, and `assets/*`) from [apkFile] so they can be
+     * fonts `.ttf`/`.otf`, raw media `res/raw/ *`, and `assets/ *`) from [apkFile] so they can be
      * bundled directly into the rebuilt Android Studio project.
      */
     fun extractReusableResources(apkFile: File, maxTotalBytes: Long = 18L * 1024 * 1024): ExtractedResourcesBundle {

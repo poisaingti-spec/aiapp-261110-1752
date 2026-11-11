@@ -99,7 +99,7 @@ object ReverseEngine {
 
     /**
      * Produces the deep REA + Clozed Code architectural & UI evidence specification for [apk]
-     * (decoded `res/layout/*.xml` trees, DEX method signatures, field declarations, discovered URLs,
+     * (decoded `res/layout/ *.xml` trees, DEX method signatures, field declarations, discovered URLs,
      * UI strings, and bundled original resource inventory) so ANY model can clone or modify the app accurately.
      */
     suspend fun extractDeepReaSpec(apk: File): String = withContext(Dispatchers.IO) {
