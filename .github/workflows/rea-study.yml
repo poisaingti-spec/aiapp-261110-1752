@@ -41,7 +41,7 @@ jobs:
           unzip -q jadx.zip -d jadx && chmod +x jadx/bin/jadx
           export JAVA_OPTS="-Xmx6g"
           timeout 900 ./jadx/bin/jadx --no-res --no-imports -j 4 -d src app.apk > jadx-net.log 2>&1
-          PKG=$(grep -oE '"package_name":"[^"]*"' evidence/raw/inspect-android-package.json 2>/dev/null | head -1 | sed -E 's/.*:"([^"]*)"/\1/')
+          PKG=$(python3 -c "import json;print(json.load(open('evidence/raw/inspect-android-package.json'))['normalized_result'].get('package_name') or '')" 2>/dev/null)
           echo "" >> evidence/rea-evidence.md
           if [ -d src ]; then
             python3 netmap.py src "$PKG" >> evidence/rea-evidence.md || echo "- (network map step failed)" >> evidence/rea-evidence.md
