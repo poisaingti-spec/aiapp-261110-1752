@@ -941,9 +941,6 @@ class ReverseViewModel(app: Application) : AndroidViewModel(app) {
         transcript.add(ChatMessage(Role.ASSISTANT, "✏️ Okay — tell me what to change. Say **build** again when you're ready."))
     }
 
-    /** "build", "build it", "ok build now"… */
-    private val buildCommand = Regex("\\bbuild\\b", RegexOption.IGNORE_CASE)
-
     private fun sendBuild(r: ApkReport, instruction: String, provider: ProviderId, model: String, effort: Effort, preferCraft: Boolean = false) {
         viewModelScope.launch {
             answering = true; error = null; canResumeInterrupted = false
