@@ -20,7 +20,7 @@ jobs:
           npm install --global rea-agents@6.8.0 || npm install --global rea-agents
           rea --version
       - name: (test only) fetch a sample APK
-        run: curl -fsSL -o app.apk https://github.com/poisaingti-spec/aiapp-261110-1752/releases/download/build-24/app-24.apk
+        run: curl -fsSL -o app.apk https://github.com/poisaingti-spec/aiapp-261110-1752/releases/download/build-26/app-26.apk
       - name: Study the APK with REA
         if: ${{ hashFiles('app.apk') != '' }}
         run: |
@@ -30,6 +30,24 @@ jobs:
           echo "6e5eacf500b64292bfb73c49797c1958f6ee44646e43e868039ae7feb573ff75  $JAR" | sha256sum -c -
           export REA_JADX_MCP_JAR="$JAR"
           python3 rea_study.py apk "$PWD/app.apk" evidence
+      - name: Map the network (servers, endpoints, keys) from the decompiled APK
+        if: ${{ hashFiles('app.apk') != '' }}
+        run: |
+          set +e
+          FALLBACK=https://github.com/skylot/jadx/releases/download/v1.5.3/jadx-1.5.3.zip
+          URL=$(curl -sSL -H "Authorization: Bearer ${{ github.token }}" https://api.github.com/repos/skylot/jadx/releases/latest | grep -oE 'https://[^"]*/jadx-[0-9][0-9.]*\.zip' | head -n 1)
+          [ -z "$URL" ] && URL=$FALLBACK
+          curl -fsSL -o jadx.zip "$URL" || curl -fsSL -o jadx.zip "$FALLBACK"
+          unzip -q jadx.zip -d jadx && chmod +x jadx/bin/jadx
+          export JAVA_OPTS="-Xmx6g"
+          timeout 900 ./jadx/bin/jadx --no-res --no-imports -j 4 -d src app.apk > jadx-net.log 2>&1
+          PKG=$(grep -oE '"package_name":"[^"]*"' evidence/raw/inspect-android-package.json 2>/dev/null | head -1 | sed -E 's/.*:"([^"]*)"/\1/')
+          echo "" >> evidence/rea-evidence.md
+          if [ -d src ]; then
+            python3 netmap.py src "$PKG" >> evidence/rea-evidence.md || echo "- (network map step failed)" >> evidence/rea-evidence.md
+          else
+            printf '## Network, servers and secrets\n- Could not decompile the APK for the network map (jadx produced no output).\n' >> evidence/rea-evidence.md
+          fi
       - name: Study the website with REA
         if: ${{ hashFiles('target.txt') != '' }}
         run: |
