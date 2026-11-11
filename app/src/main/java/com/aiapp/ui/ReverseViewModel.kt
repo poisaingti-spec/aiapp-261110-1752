@@ -368,13 +368,9 @@ class ReverseViewModel(app: Application) : AndroidViewModel(app) {
         craftCheck = null
         craftStage = CraftAnythingEngine.CraftStage.STUDY
 
-        val hostSlug = webUrl.removePrefix("https://").removePrefix("http://").removePrefix("www.")
-            .substringBefore('/').substringBefore('.')
-            .replaceFirstChar { it.uppercase() }
-            .ifBlank { "Web" }
-        val defaultName = if (hostSlug.equals("Excalidraw", true)) "MaitisBoard" else "${hostSlug}Craft"
-        updateCloneAppName(defaultName)
-        customLogoText = defaultName
+        // Leave the app name blank on purpose: the user chooses it. (Nothing is auto-filled.)
+        updateCloneAppName("")
+        customLogoText = ""
 
         status = "🔍 Craft Anything Architect studying $webUrl (colors, fonts, layout & viewports)…"
         val study = CraftAnythingEngine.studyWebsite(
@@ -450,11 +446,9 @@ class ReverseViewModel(app: Application) : AndroidViewModel(app) {
         report = rep
         deepReaSpec = ReverseEngine.extractDeepReaSpec(dst)
 
-        val baseTitle = rep.appLabel.ifBlank {
-            rep.packageName.substringAfterLast('.').replaceFirstChar { it.uppercase() }
-        }.ifBlank { "My App" }
-        updateCloneAppName("${baseTitle}Craft")
-        customLogoText = "${baseTitle}Craft"
+        // Leave the app name blank on purpose: the user chooses it. (Nothing is auto-filled.)
+        updateCloneAppName("")
+        customLogoText = ""
 
         craftStudy = CraftAnythingEngine.studyApk(
             apkFile = dst,
@@ -519,6 +513,11 @@ class ReverseViewModel(app: Application) : AndroidViewModel(app) {
     fun startCraftAnythingWorkflow(instruction: String, provider: ProviderId, model: String, effort: Effort) {
         val r = report ?: run { error = "Load a website URL or APK first."; return }
         if (answering) { error = "Still working on the previous step — wait or steer below."; return }
+        // "Just Look Inside" only explains the app, so it needs no name; building does.
+        if (dashboardAction != CraftAnythingEngine.DashboardAction.JUST_LOOK_INSIDE && cloneAppName.isBlank()) {
+            error = "Please enter an app name first."
+            return
+        }
 
         val defaultPrompt = when (dashboardAction) {
             CraftAnythingEngine.DashboardAction.MAKE_MY_OWN ->
@@ -1255,6 +1254,7 @@ class ReverseViewModel(app: Application) : AndroidViewModel(app) {
             return
         }
         if (answering) { error = "Still working on the previous request — wait for it to finish."; return }
+        if (cloneAppName.isBlank()) { error = "Please enter an app name first."; return }
         val token = githubTokenOf()
         if (token.isBlank()) {
             startCraftAnythingWorkflow(instruction, provider, model, effort)

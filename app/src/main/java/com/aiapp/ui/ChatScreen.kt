@@ -65,12 +65,13 @@ import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun ChatScreen(vm: ChatViewModel, onOpenSettings: () -> Unit, onOpenBuild: () -> Unit, onOpenHistory: () -> Unit, onOpenCreate: () -> Unit, onOpenReverse: () -> Unit, onOpenLog: () -> Unit, onOpenCode: () -> Unit) {
+fun ChatScreen(vm: ChatViewModel, onOpenSettings: () -> Unit, onOpenBuild: () -> Unit, onOpenHistory: () -> Unit, onOpenCreate: () -> Unit, onOpenReverse: () -> Unit, onOpenLog: () -> Unit, onOpenCode: () -> Unit, onVoiceModeChange: (Boolean) -> Unit = {}) {
     var input by rememberSaveable { mutableStateOf("") }
     val listState = rememberLazyListState()
     val context = androidx.compose.ui.platform.LocalContext.current
     val voice = remember { VoiceController(context) }
     var voiceMode by rememberSaveable { mutableStateOf(false) }
+    androidx.compose.runtime.LaunchedEffect(voiceMode) { onVoiceModeChange(voiceMode) }
     var spokenCount by rememberSaveable { mutableStateOf(-1) }
     var live by remember { mutableStateOf<GeminiLive?>(null) }
     fun newLive() = GeminiLive(vm.geminiKey(), vm.liveVoice, vm.liveSystemPrompt()) { u, m -> vm.addVoiceTurn(u, m) }

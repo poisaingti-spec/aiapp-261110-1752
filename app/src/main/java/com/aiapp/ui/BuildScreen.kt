@@ -431,6 +431,31 @@ private fun BuildComposer(chat: ChatViewModel, vm: BuildViewModel, onOpenSetting
                     }
                 }
             }
+            if (vm.requirements.isNotEmpty()) {
+                Surface(
+                    color = MaterialTheme.colorScheme.surfaceVariant,
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        Text(
+                            "Will build these ${vm.requirements.size}:",
+                            style = MaterialTheme.typography.labelLarge,
+                            color = MaterialTheme.colorScheme.primary,
+                        )
+                        vm.requirements.forEachIndexed { i, r ->
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text(
+                                    "${i + 1}. $r",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    modifier = Modifier.weight(1f),
+                                )
+                                TextButton(onClick = { vm.removeRequirement(i) }) { Text("✕") }
+                            }
+                        }
+                    }
+                }
+            }
             Row(verticalAlignment = Alignment.CenterVertically) {
                 IconButton(onClick = { pickFiles.launch(arrayOf("*/*")) }) {
                     Icon(Icons.Filled.Add, contentDescription = "Attach files")
@@ -479,7 +504,7 @@ private fun BuildComposer(chat: ChatViewModel, vm: BuildViewModel, onOpenSetting
                         return@Button
                     }
                     problem = when {
-                        text.isBlank() && attached.isEmpty() -> "Describe what you want."
+                        text.isBlank() && attached.isEmpty() && vm.requirements.isEmpty() -> "Add at least one thing to build."
                         project == null && name.isBlank() -> "Give the app a name."
                         chat.githubToken().isBlank() -> "Sign in with GitHub in Settings first."
                         chat.provider.needsKey && chat.key(chat.provider).isBlank() -> "Add your ${chat.provider.label} key in Settings."
@@ -492,7 +517,7 @@ private fun BuildComposer(chat: ChatViewModel, vm: BuildViewModel, onOpenSetting
                         }
                         vm.start(
                             BuildRequest(
-                                description = text.trim(),
+                                description = vm.combinedBrief(text),
                                 appName = name.trim(),
                                 provider = chat.provider,
                                 model = chat.model,
@@ -506,8 +531,20 @@ private fun BuildComposer(chat: ChatViewModel, vm: BuildViewModel, onOpenSetting
                         )
                         text = ""
                         attached.clear()
+                        vm.clearRequirements()
                     }
                 }) { Text(if (project == null) "Build" else "Send") }
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                TextButton(onClick = { vm.addRequirement(text); text = "" }, enabled = text.isNotBlank()) {
+                    Text("＋ Add to list")
+                }
+                TextButton(onClick = {
+                    vm.addRequirements(chat.messages.filter { it.role == com.aiapp.llm.Role.USER }.map { it.text })
+                }) { Text("Add from chat") }
+                if (vm.requirements.isNotEmpty()) {
+                    TextButton(onClick = { vm.clearRequirements() }) { Text("Clear") }
+                }
             }
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(

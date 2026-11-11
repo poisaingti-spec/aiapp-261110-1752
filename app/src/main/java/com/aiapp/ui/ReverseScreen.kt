@@ -490,7 +490,8 @@ private fun CraftArchitectConfigCard(
                 OutlinedTextField(
                     value = vm.cloneAppName,
                     onValueChange = { vm.updateCloneAppName(it) },
-                    label = { Text("Crafted App Name") },
+                    label = { Text("App name (required)") },
+                    placeholder = { Text("Enter a name") },
                     singleLine = true,
                     modifier = Modifier.weight(1f),
                 )
