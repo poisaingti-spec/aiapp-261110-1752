@@ -740,6 +740,74 @@ class ReverseViewModel(app: Application) : AndroidViewModel(app) {
             transcript.add(ChatMessage(Role.ASSISTANT, "Got it — I'll factor that in at the next step."))
             return
         }
+
+        // Nothing is built until the user says "build". Questions are answered; anything else is
+        // noted as a change and listed, and all noted changes are built together on "build".
+        if (!buildCommand.containsMatchIn(instruction)) {
+            val isQuestion = instruction.contains('?') || questionLike.containsMatchIn(instruction)
+            if (!isQuestion) {
+                queuedChanges += instruction
+                transcript.add(
+                    ChatMessage(
+                        Role.ASSISTANT,
+                        "📝 Noted as change #${queuedChanges.size}. Nothing is built yet.\n\n" +
+                            "**Changes to build:**\n" + queuedChanges.mapIndexed { i, c -> "${i + 1}. ${c.take(300)}" }.joinToString("\n") +
+                            "\n\nAdd more, or say **build** when you're ready.",
+                    ),
+                )
+                return
+            }
+            viewModelScope.launch {
+                answering = true; error = null; canResumeInterrupted = false
+                try {
+                    lastInterruptedInstruction = instruction
+                    lastInterruptedWasClone = false
+                    answerQuestion(r, instruction, provider, model, effort)
+                } catch (e: Exception) {
+                    Log.e("Reverse", "question failed", e)
+                    canResumeInterrupted = true
+                    transcript.add(ChatMessage(Role.ASSISTANT, "⚠️ **Paused / API limit reached**: ${e.message}"))
+                } finally {
+                    answering = false; liveAnswer = ""; liveThinking = ""; status = null
+                }
+            }
+            return
+        }
+
+        // "build": collect every noted change (plus anything typed with "build") into one numbered list.
+        val extra = instruction.replace(buildCommand, " ").trim(' ', ',', '.', '!', '-', ':', '\n')
+        if (extra.length > 3 && !Regex("^(it|now|the app|app|please|ok|okay|it now|now please)$", RegexOption.IGNORE_CASE).matches(extra)) {
+            queuedChanges += extra
+        }
+        if (dashboardAction != CraftAnythingEngine.DashboardAction.JUST_LOOK_INSIDE && cloneAppName.isBlank()) {
+            error = "Please enter an app name first."
+            return
+        }
+        val changes = queuedChanges.toList()
+        queuedChanges.clear()
+        val numbered = changes.mapIndexed { i, c -> "${i + 1}. $c" }.joinToString("\n")
+        if (changes.isNotEmpty()) {
+            transcript.add(ChatMessage(Role.ASSISTANT, "🛠️ **Building now with these ${changes.size} change(s):**\n$numbered"))
+        }
+        if (craftStage == CraftAnythingEngine.CraftStage.AWAITING_APPROVAL) {
+            // A plan is waiting: "build" approves it, with the noted changes added.
+            if (changes.isNotEmpty()) {
+                pendingBuildInstruction = (pendingBuildInstruction + "\n\nAlso implement ALL of these changes:\n" + numbered).trim()
+            }
+            approveAndContinueCraftBuild(provider, model, effort)
+            return
+        }
+        val buildInstruction = if (changes.isEmpty()) instruction else "Implement ALL of these changes:\n$numbered"
+        sendBuild(r, buildInstruction, provider, model, effort)
+    }
+
+    /** Changes the user described in the Reverse tab, waiting for "build". */
+    private val queuedChanges = mutableListOf<String>()
+
+    /** "build", "build it", "ok build now"… */
+    private val buildCommand = Regex("\\bbuild\\b", RegexOption.IGNORE_CASE)
+
+    private fun sendBuild(r: ApkReport, instruction: String, provider: ProviderId, model: String, effort: Effort) {
         viewModelScope.launch {
             answering = true; error = null; canResumeInterrupted = false
             try {
@@ -759,11 +827,6 @@ class ReverseViewModel(app: Application) : AndroidViewModel(app) {
                         }
                         craftStudy = study
                         executeCraftBuildCheckReady(r, study, instruction, provider, model, effort)
-                    }
-                    instruction.contains('?') || questionLike.containsMatchIn(instruction) -> {
-                        lastInterruptedInstruction = instruction
-                        lastInterruptedWasClone = false
-                        answerQuestion(r, instruction, provider, model, effort)
                     }
                     else -> {
                         lastInterruptedInstruction = instruction

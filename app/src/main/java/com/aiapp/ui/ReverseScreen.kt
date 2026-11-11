@@ -241,8 +241,7 @@ fun ReverseScreen(chat: ChatViewModel, vm: ReverseViewModel, onBack: () -> Unit,
                                     Text(
                                         when {
                                             vm.answering -> "Say something to steer…"
-                                            vm.craftStage == CraftAnythingEngine.CraftStage.READY -> "Ask for changes (e.g. 'make main color purple')…"
-                                            else -> "Ask a question, describe changes, or paste build errors…"
+                                            else -> "Describe changes or ask a question — say \"build\" to start building"
                                         },
                                     )
                                 },
