@@ -658,17 +658,26 @@ private fun LoadTargetPanel(
             )
         }
 
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Button(onClick = onPickApk, enabled = !vm.loading) { Text("📂 Upload APK") }
-            OutlinedButton(onClick = onPickZip, enabled = !vm.loading) { Text("📦 Upload .zip") }
+        // Three equal-width, equal-height buttons so they line up on any screen size.
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            val btn = Modifier.weight(1f).heightIn(min = 64.dp)
+            val pad = PaddingValues(horizontal = 6.dp, vertical = 8.dp)
+            Button(onClick = onPickApk, enabled = !vm.loading, modifier = btn, contentPadding = pad) {
+                UploadLabel("📂", "Upload APK")
+            }
+            OutlinedButton(onClick = onPickZip, enabled = !vm.loading, modifier = btn, contentPadding = pad) {
+                UploadLabel("📦", "Upload .zip")
+            }
             OutlinedButton(
                 onClick = {
                     showInstalledPicker = !showInstalledPicker
                     if (showInstalledPicker && vm.installedApps.isEmpty()) vm.refreshInstalledApps()
                 },
                 enabled = !vm.loading,
+                modifier = btn,
+                contentPadding = pad,
             ) {
-                Text("📱 Installed Apps")
+                UploadLabel("📱", "Installed apps")
             }
         }
 
@@ -783,5 +792,19 @@ private fun AdvancedPanel(vm: ReverseViewModel) {
                 }
             }
         }
+    }
+}
+
+/** Icon above a short label, so the three upload buttons have the same shape. */
+@Composable
+private fun UploadLabel(icon: String, text: String) {
+    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        Text(icon)
+        Text(
+            text,
+            style = MaterialTheme.typography.labelMedium,
+            textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+            maxLines = 2,
+        )
     }
 }
