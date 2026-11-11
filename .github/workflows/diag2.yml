@@ -1,0 +1,11 @@
+name: Diag2
+on: push
+jobs:
+  diag:
+    runs-on: ubuntu-latest
+    steps:
+      - run: java -version
+      - run: curl -sSL -o jadx.zip https://github.com/skylot/jadx/releases/download/v1.5.3/jadx-1.5.3.zip
+      - run: unzip -q jadx.zip -d jadx && chmod +x jadx/bin/jadx
+      - run: ./jadx/bin/jadx --version
+      - run: PM=$(find "$ANDROID_HOME" -iname 'packagemanifest*' 2>/dev/null | head -1); echo "ok"
