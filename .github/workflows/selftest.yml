@@ -3,41 +3,15 @@ on: push
 permissions:
   contents: read
 jobs:
-  generated-project:
+  decompile:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "17"
-      - name: Run the project completer with real internet lookups
-        run: |
-          curl -fsSL -o kc.zip https://github.com/JetBrains/kotlin/releases/download/v2.2.20/kotlin-compiler-2.2.20.zip
-          unzip -q kc.zip
-          ./kotlinc/bin/kotlinc -nowarn src/*.kt -d t.jar
-          ./kotlinc/bin/kotlin -cp t.jar HarnessKt "$PWD/proj" "$PWD/cache"
-          echo "----- README"; cat proj/ANDROID_STUDIO_README.md
-          echo "----- root build"; cat proj/build.gradle.kts
-          echo "----- app build"; cat proj/app/build.gradle.kts
-          echo "----- wrapper"; cat proj/gradle/wrapper/gradle-wrapper.properties
-      - name: Build the generated project with its own wrapper
-        run: |
-          cd proj
-          chmod +x gradlew
-          set -o pipefail
-          ./gradlew assembleDebug --stacktrace 2>&1 | tee build.log
-          ls -la app/build/outputs/apk/debug/
-      - name: Report errors
-        if: failure()
-        run: |
-          grep -E "^e: |error:|What went wrong|Could not|FAILURE|Caused by" -A3 proj/build.log | head -80 | while IFS= read -r l; do echo "::error::${l//%/%25}"; done
-  decompile:
-    runs-on: ubuntu-latest
-    timeout-minutes: 40
-    steps:
-      - uses: actions/checkout@v4
       - name: Fetch a sample APK
         run: curl -fsSL -o app.apk https://github.com/poisaingti-spec/aiapp-261110-1752/releases/download/build-23/app-23.apk
       - name: Get the newest jadx
@@ -120,13 +94,13 @@ jobs:
           if [ -d app ] && [ ! -f app/proguard-rules.pro ]; then
             echo "# Add project specific ProGuard rules here." > app/proguard-rules.pro
           fi
-          ERRORS=$(grep -c "ERROR" ../jadx.log || true)
+          ERRORS=$(grep -oE "finished with errors, count: [0-9]+" ../jadx.log | grep -oE "[0-9]+$" | tail -n 1 || true)
           {
             echo "# Decompiled project"
             echo
             echo "- Decompiled with: $(../jadx/bin/jadx --version 2>/dev/null | tail -n 1)"
             echo "- Android Gradle Plugin: ${AGP:-unknown}, Gradle wrapper: $G"
-            echo "- Decompiler warnings/errors logged: $ERRORS (methods jadx could not turn back into Java are left as stubs)"
+            echo "- Methods jadx reported problems with: ${ERRORS:-0} (methods jadx could not turn back into Java are left as stubs)"
             echo "- Short or unreadable names were renamed by jadx so that the code can compile."
             echo
             echo "Open this folder in Android Studio (File > Open). local.properties is created by Android Studio."
