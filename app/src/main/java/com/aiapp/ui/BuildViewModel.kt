@@ -34,6 +34,25 @@ class BuildViewModel(private val app: Application) : AndroidViewModel(app) {
 
     fun clearRequirements() = requirements.clear()
 
+    /** Chat messages already looked at, so a request the user removed (or already built) never comes back. */
+    private val seenChat = mutableSetOf<String>()
+
+    /** Short replies that are not requests ("build", "ok", "thanks"…). */
+    private val notARequest = Regex(
+        "^\\s*(build|build it|build now|start|go|ok|okay|yes|no|thanks?|thank you|hi|hello|hey|continue|retry|done)\\s*[.!?]*\\s*$",
+        RegexOption.IGNORE_CASE,
+    )
+
+    /** Adds every new request the user typed in Chat to the list, in order. */
+    fun syncFromChat(userMessages: List<String>) {
+        for (m in userMessages) {
+            val t = m.trim()
+            if (!seenChat.add(t)) continue
+            if (t.length < 4 || notARequest.matches(t)) continue
+            addRequirement(t)
+        }
+    }
+
     /** The requirements plus any final text, as one brief for the build agent. */
     fun combinedBrief(finalText: String): String {
         val all = (requirements.toList() + finalText.trim()).map { it.trim() }.filter { it.isNotEmpty() }.distinct()

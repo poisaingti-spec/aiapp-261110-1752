@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
@@ -123,6 +124,10 @@ fun BuildScreen(chat: ChatViewModel, vm: BuildViewModel, onBack: () -> Unit, onO
         return
     }
 
+    // Everything asked for in Chat is listed here automatically.
+    LaunchedEffect(chat.messages.size) {
+        vm.syncFromChat(chat.messages.filter { it.role == com.aiapp.llm.Role.USER }.map { it.text })
+    }
     val listState = rememberLazyListState()
     LaunchedEffect(vm.timeline.size) {
         if (vm.timeline.isNotEmpty()) listState.animateScrollToItem(vm.timeline.size - 1)
@@ -157,12 +162,14 @@ fun BuildScreen(chat: ChatViewModel, vm: BuildViewModel, onBack: () -> Unit, onO
         },
         bottomBar = { BuildComposer(chat, vm, onOpenSettings) },
     ) { padding ->
+      Column(Modifier.padding(padding).fillMaxSize()) {
+        RequirementsCard(vm)
         if (vm.timeline.isEmpty()) {
-            EmptyState(chat, Modifier.padding(padding))
+            EmptyState(chat, Modifier.weight(1f))
         } else {
             LazyColumn(
                 state = listState,
-                modifier = Modifier.padding(padding).fillMaxSize(),
+                modifier = Modifier.weight(1f).fillMaxWidth(),
                 contentPadding = PaddingValues(12.dp),
                 verticalArrangement = Arrangement.spacedBy(6.dp),
             ) {
@@ -184,6 +191,54 @@ fun BuildScreen(chat: ChatViewModel, vm: BuildViewModel, onBack: () -> Unit, onO
                             } else null,
                         )
                     }
+                }
+            }
+        }
+      }
+    }
+}
+
+/**
+ * Everything the user asked for, numbered, at the top of the Build screen, so they can see the full
+ * list before building. Requests typed in Chat are added automatically; ✕ removes one.
+ */
+@Composable
+private fun RequirementsCard(vm: BuildViewModel) {
+    if (vm.requirements.isEmpty()) return
+    Surface(
+        color = MaterialTheme.colorScheme.secondaryContainer,
+        shape = RoundedCornerShape(14.dp),
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
+    ) {
+        Column(
+            Modifier.padding(12.dp).heightIn(max = 260.dp).verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(2.dp),
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    "📋 Will build these ${vm.requirements.size}",
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = androidx.compose.ui.text.font.FontWeight.Bold,
+                    modifier = Modifier.weight(1f),
+                )
+                TextButton(onClick = { vm.clearRequirements() }) { Text("Clear") }
+            }
+            vm.requirements.forEachIndexed { i, r ->
+                Row(verticalAlignment = Alignment.Top) {
+                    Text(
+                        "${i + 1}.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = androidx.compose.ui.text.font.FontWeight.Bold,
+                        modifier = Modifier.width(28.dp).padding(top = 12.dp),
+                    )
+                    Text(
+                        r,
+                        style = MaterialTheme.typography.bodyMedium,
+                        maxLines = 3,
+                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f).padding(top = 12.dp),
+                    )
+                    TextButton(onClick = { vm.removeRequirement(i) }) { Text("✕") }
                 }
             }
         }
@@ -431,31 +486,6 @@ private fun BuildComposer(chat: ChatViewModel, vm: BuildViewModel, onOpenSetting
                     }
                 }
             }
-            if (vm.requirements.isNotEmpty()) {
-                Surface(
-                    color = MaterialTheme.colorScheme.surfaceVariant,
-                    shape = RoundedCornerShape(12.dp),
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                        Text(
-                            "Will build these ${vm.requirements.size}:",
-                            style = MaterialTheme.typography.labelLarge,
-                            color = MaterialTheme.colorScheme.primary,
-                        )
-                        vm.requirements.forEachIndexed { i, r ->
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Text(
-                                    "${i + 1}. $r",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    modifier = Modifier.weight(1f),
-                                )
-                                TextButton(onClick = { vm.removeRequirement(i) }) { Text("✕") }
-                            }
-                        }
-                    }
-                }
-            }
             Row(verticalAlignment = Alignment.CenterVertically) {
                 IconButton(onClick = { pickFiles.launch(arrayOf("*/*")) }) {
                     Icon(Icons.Filled.Add, contentDescription = "Attach files")
@@ -538,12 +568,6 @@ private fun BuildComposer(chat: ChatViewModel, vm: BuildViewModel, onOpenSetting
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                 TextButton(onClick = { vm.addRequirement(text); text = "" }, enabled = text.isNotBlank()) {
                     Text("＋ Add to list")
-                }
-                TextButton(onClick = {
-                    vm.addRequirements(chat.messages.filter { it.role == com.aiapp.llm.Role.USER }.map { it.text })
-                }) { Text("Add from chat") }
-                if (vm.requirements.isNotEmpty()) {
-                    TextButton(onClick = { vm.clearRequirements() }) { Text("Clear") }
                 }
             }
             Row(verticalAlignment = Alignment.CenterVertically) {
