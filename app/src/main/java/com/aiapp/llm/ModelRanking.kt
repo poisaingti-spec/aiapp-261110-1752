@@ -18,10 +18,19 @@ object ModelRanking {
         ProviderId.OPENAI to listOf(
             "-pro" to 50, "sol" to 45, "nano" to 10, "mini" to 20, "luna" to 30,
         ),
-        // Biggest open-weight model lines first.
+        // Biggest open-weight & unrestricted/coding model lines first.
         ProviderId.OPEN to listOf(
-            "kimi" to 60, "deepseek" to 55, "glm" to 50, "qwen" to 45, "minimax" to 40,
+            "rea" to 70, "deepseek-r1" to 68, "nemotron-3-ultra" to 66, "qwen3" to 64, "glm-5" to 62,
+            "dolphin" to 60, "venice" to 60, "heretic" to 59, "abliterated" to 58, "uncensored" to 58,
+            "kimi" to 56, "deepseek" to 55, "glm" to 50, "qwen" to 45, "minimax" to 40,
             "gpt-oss" to 35, "llama" to 30, "mistral" to 25, "gemma" to 20,
+        ),
+        // Free cloud / Token Harbor (keyless): keep curated flagship models at the very top.
+        ProviderId.FREE to listOf(
+            "rea-agent" to 100, "glm-5.3-flash" to 98, "evil" to 96, "uncensored-roleplay" to 94,
+            "heretic-uncensored" to 92, "qwen-coder" to 90, "deepseek-reasoning" to 88,
+            "deepseek" to 60, "gpt-oss" to 56, "qwen" to 52, "glm" to 50, "kimi" to 48,
+            "nemotron" to 46, "llama" to 40, "mistral" to 34, "gemma" to 30, "openai" to 24,
         ),
     )
 
@@ -50,13 +59,20 @@ object ModelRanking {
     /**
      * Claude and Gemini: strongest family first (Fable above Opus above Sonnet; Pro above Flash), newest
      * version within each family. ChatGPT: newest version first, then Pro above standard above mini.
-     * Stable aliases sort before dated or preview snapshots.
+     * For FREE and OPEN providers, curated starred models stay at the top in their exact catalog order.
      */
     fun rank(provider: ProviderId, models: List<ModelInfo>): List<ModelInfo> {
         if (models.isEmpty()) return models
-        val byFamily = compareByDescending<ModelInfo> { familyScore(provider, it.id) }
+        if (provider == ProviderId.FREE) {
+            val starred = models.filter { it.name.startsWith("★") }
+            val rest = models.filterNot { it.name.startsWith("★") }
+            return starred + rest
+        }
+        val byFamily = compareByDescending<ModelInfo> { it.name.startsWith("★") }
+            .thenByDescending { familyScore(provider, it.id) }
             .thenByDescending { version(it.id) }
-        val byVersion = compareByDescending<ModelInfo> { version(it.id) }
+        val byVersion = compareByDescending<ModelInfo> { it.name.startsWith("★") }
+            .thenByDescending { version(it.id) }
             .thenByDescending { familyScore(provider, it.id) }
         val primary = if (provider == ProviderId.OPENAI) byVersion else byFamily
         val sorted = models.sortedWith(
@@ -65,6 +81,7 @@ object ModelRanking {
                 .thenBy { it.id },
         )
         val best = sorted.first()
-        return listOf(best.copy(name = "★ ${best.name}")) + sorted.drop(1)
+        val bestStarred = if (best.name.startsWith("★")) best else best.copy(name = "★ ${best.name}")
+        return listOf(bestStarred) + sorted.drop(1)
     }
 }

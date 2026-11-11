@@ -34,31 +34,168 @@ data class OfflineModel(
     val approxSizeGb: Double,
     /** Phones with less RAM than this get the smaller model recommended. */
     val minRamGb: Int,
+    /** Optional known filename in the Hugging Face repo for direct download fallback. */
+    val defaultFileName: String = "",
+    /** Human-readable description of the model's strengths (REA, coding, unrestricted chat). */
+    val description: String = "",
+    val isCodingFocused: Boolean = false,
+    val isUnrestricted: Boolean = false,
 )
 
 object OfflineCatalog {
-    /** Built-in picks; users can add more from any Hugging Face repo with a .litertlm file. */
+    /**
+     * Complete built-in catalog of free, download-and-use on-device models (no API key or PC required).
+     * Includes all Gemma 4 Abliterated/Heretic, SuperGemma 4, Qwen 2.5 Coder, DeepSeek R1 Distill,
+     * and official LiteRT-LM models from our previous app.
+     */
     val builtIn = listOf(
         OfflineModel(
+            id = "khoido-gemma4-e4b-heretic",
+            name = "★ Gemma 4 E4B Heretic Flagship (8.35 GB · 12 GB+ RAM · REA & Code)",
+            repo = "khoido/gemma-4-E4B-it-ultra-uncensored-heretic-litertlm",
+            approxSizeGb = 8.35,
+            minRamGb = 12,
+            defaultFileName = "model.litertlm",
+            description = "Full-precision Gemma 4 E4B Heretic LiteRT-LM build for high-RAM flagship Android devices (12 GB+ RAM).",
+            isCodingFocused = true,
+            isUnrestricted = true,
+        ),
+        OfflineModel(
+            id = "huihui-gemma4-e4b-abliterated",
+            name = "★ Huihui Gemma 4 E4B Abliterated (7.8 GB Multimodal · 10 GB+ RAM)",
+            repo = "vokash3/Huihui-gemma-4-E4B-it-abliterated-LiteRT-LM",
+            approxSizeGb = 7.8,
+            minRamGb = 10,
+            defaultFileName = "Huihui-gemma-4-E4B-it-abliterated.litertlm",
+            description = "High-precision LiteRT-LM conversion of Huihui-ai/Huihui-gemma-4-E4B-it-abliterated with multimodal support.",
+            isCodingFocused = true,
+            isUnrestricted = true,
+        ),
+        OfflineModel(
+            id = "duoneural-gemma4-e4b-abliterated",
+            name = "★ Gemma 4 E4B Abliterated (3.7 GB · 8 GB+ RAM · Unrestricted & Coding)",
+            repo = "DuoNeural/Gemma-4-Abliterated-LiteRT",
+            approxSizeGb = 3.7,
+            minRamGb = 8,
+            defaultFileName = "Gemma-4-E4B-Abliterated.litertlm",
+            description = "Abliterated Gemma 4 E4B for Android (8 GB+ RAM) supporting open-ended chat, REA analysis, and Android coding offline.",
+            isCodingFocused = true,
+            isUnrestricted = true,
+        ),
+        OfflineModel(
+            id = "supergemma4-e4b-abliterated",
+            name = "★ SuperGemma 4 E4B Abliterated (3.65 GB · 8 GB+ RAM · Chat & Code)",
+            repo = "typomonster/supergemma4-e4b-abliterated-litert-lm",
+            approxSizeGb = 3.65,
+            minRamGb = 8,
+            defaultFileName = "supergemma4-e4b-abliterated.litertlm",
+            description = "On-device LiteRT-LM build of Jiunsong/supergemma4-e4b-abliterated for fast on-device chat and coding.",
+            isCodingFocused = true,
+            isUnrestricted = true,
+        ),
+        OfflineModel(
+            id = "gemma-4-e4b-abliterated",
+            name = "★ Gemma 4 E4B MTP Abliterated (3.7 GB · Fast Multi-Token Prediction)",
+            repo = "olekk/gemma-4-E4B-it-abliterated-litert-lm",
+            approxSizeGb = 3.7,
+            minRamGb = 8,
+            defaultFileName = "gemma-4-E4B-it-abliterated.litertlm",
+            description = "Abliterated Gemma 4 E4B with Multi-Token Prediction (MTP), 128K context, and coding/REA capabilities.",
+            isCodingFocused = true,
+            isUnrestricted = true,
+        ),
+        OfflineModel(
             id = "gemma-4-e4b",
-            name = "Gemma 4 E4B (best offline)",
+            name = "★ Gemma 4 E4B Official (3.7 GB · 8 GB+ RAM · Best Official Offline)",
             repo = "litert-community/gemma-4-E4B-it-litert-lm",
             approxSizeGb = 3.7,
             minRamGb = 8,
+            defaultFileName = "gemma-4-E4B-it.litertlm",
+            description = "Official Google LiteRT-LM Gemma 4 E4B model for 8 GB+ RAM phones.",
+            isCodingFocused = true,
+        ),
+        OfflineModel(
+            id = "gemma-4-e2b-heretic",
+            name = "★ Gemma 4 E2B Heretic (2.5 GB · 4 GB+ RAM Phones · Unrestricted Chat)",
+            repo = "jamarag/gemma-4-E2B-it-ultra-uncensored-heretic-litertlm",
+            approxSizeGb = 2.5,
+            minRamGb = 4,
+            defaultFileName = "model.litertlm",
+            description = "Heretic fine-tune of Gemma 4 E2B converted to LiteRT-LM for open-ended chat and coding on 4 GB+ RAM devices.",
+            isCodingFocused = true,
+            isUnrestricted = true,
+        ),
+        OfflineModel(
+            id = "gemma-4-e2b-uncensored-max",
+            name = "★ Gemma 4 E2B Uncensored-MAX (2.4 GB · 4 GB+ RAM Phones)",
+            repo = "PeppX/gemma-4-e2b-uncensored-litertlm",
+            approxSizeGb = 2.4,
+            minRamGb = 4,
+            defaultFileName = "gemma-4-E2B-it-Uncensored-MAX.litertlm",
+            description = "Uncensored-MAX fine-tune (prithivMLmods/gemma-4-E2B-it-Uncensored-MAX) with 32K context window.",
+            isCodingFocused = true,
+            isUnrestricted = true,
+        ),
+        OfflineModel(
+            id = "duoneural-gemma4-e2b-abliterated",
+            name = "★ Gemma 4 E2B Abliterated (2.5 GB · 4 GB+ RAM)",
+            repo = "DuoNeural/Gemma-4-Abliterated-LiteRT",
+            approxSizeGb = 2.5,
+            minRamGb = 4,
+            defaultFileName = "Gemma-4-E2B-Abliterated.litertlm",
+            description = "Abliterated Gemma 4 E2B for fast, private on-device chat and coding.",
+            isCodingFocused = true,
+            isUnrestricted = true,
         ),
         OfflineModel(
             id = "gemma-4-e2b",
-            name = "Gemma 4 E2B (smaller phones)",
+            name = "Gemma 4 E2B Official (2.6 GB · Smaller Phones · 4 GB+ RAM)",
             repo = "litert-community/gemma-4-E2B-it-litert-lm",
             approxSizeGb = 2.6,
             minRamGb = 4,
+            defaultFileName = "gemma-4-E2B-it.litertlm",
+            description = "Official Google LiteRT-LM Gemma 4 E2B model for 4 GB+ RAM phones.",
+            isCodingFocused = true,
+        ),
+        OfflineModel(
+            id = "qwen25-coder-1.5b-uncensored",
+            name = "★ Qwen 2.5 Coder 1.5B Uncensored (1.7 GB · Fast Open-Weight Coder)",
+            repo = "Shaurya2020/Qwen2.5-1.5B-Instruct-uncensored-litert",
+            approxSizeGb = 1.7,
+            minRamGb = 4,
+            defaultFileName = "Qwen2.5-1.5B-Instruct-uncensored_dynamic_wi8_afp32_ekv1280.litertlm",
+            description = "Uncensored Qwen 2.5 Coder 1.5B fine-tune for fast on-device code generation, REA analysis, and bug fixing.",
+            isCodingFocused = true,
+            isUnrestricted = true,
+        ),
+        OfflineModel(
+            id = "qwen25-coder-1.5b",
+            name = "Qwen 2.5 Coder 1.5B (1.6 GB · Dedicated Android & Kotlin Coder)",
+            repo = "litert-community/Qwen2.5-Coder-1.5B-Instruct",
+            approxSizeGb = 1.6,
+            minRamGb = 4,
+            defaultFileName = "Qwen2.5-Coder-1.5B-Instruct_multi-prefill-seq_q8_ekv1280.litertlm",
+            description = "Alibaba Qwen 2.5 Coder 1.5B optimized for on-device Kotlin, Java, and XML coding.",
+            isCodingFocused = true,
+        ),
+        OfflineModel(
+            id = "deepseek-r1-1.5b",
+            name = "DeepSeek R1 Distill Qwen 1.5B (1.7 GB · Step-by-Step Reasoning)",
+            repo = "litert-community/DeepSeek-R1-Distill-Qwen-1.5B",
+            approxSizeGb = 1.7,
+            minRamGb = 4,
+            defaultFileName = "DeepSeek-R1-Distill-Qwen-1.5B_multi-prefill-seq_q8_ekv1280.litertlm",
+            description = "DeepSeek R1 Distill 1.5B with on-device chain-of-thought reasoning.",
+            isCodingFocused = true,
         ),
         OfflineModel(
             id = "gemma-3-1b",
-            name = "Gemma 3 1B (fastest, any phone)",
+            name = "Gemma 3 1B (1.0 GB · Fastest, Any Phone · 3 GB+ RAM)",
             repo = "litert-community/Gemma3-1B-IT",
             approxSizeGb = 1.0,
             minRamGb = 3,
+            defaultFileName = "gemma3-1b-it-int4.litertlm",
+            description = "Ultra-lightweight Gemma 3 1B model that runs on any Android phone.",
         ),
     )
 
@@ -146,24 +283,32 @@ class OfflineProvider(context: Context) : LlmProvider {
             ModelInfo(m.id, m.name + suffix)
         }
 
-    /** Finds the .litertlm file name in the Hugging Face repo, so a renamed file doesn't break downloads. */
+    /** Finds the .litertlm file name in the Hugging Face repo, with fallback to [OfflineModel.defaultFileName]. */
     private suspend fun remoteFileName(model: OfflineModel): String {
         val info = try {
             Http.getJson("https://huggingface.co/api/models/${model.repo}", hfHeaders())
         } catch (e: ProviderException) {
+            if (model.defaultFileName.isNotBlank()) return model.defaultFileName
             if (e.code == 401 || e.code == 403) {
                 throw ProviderException(e.code, "This model needs a Hugging Face token: accept its licence on huggingface.co, then add your token in Settings.")
             }
             if (e.code == 404) throw ProviderException(404, "Model ${model.repo} not found on Hugging Face.")
             throw e
+        } catch (_: Throwable) {
+            if (model.defaultFileName.isNotBlank()) return model.defaultFileName
+            throw IOException("Couldn't reach Hugging Face to inspect ${model.repo}.")
         }
         val names = (info["siblings"] as? JsonArray).orEmpty().mapNotNull {
             ((it as? JsonObject)?.get("rfilename") as? JsonPrimitive)?.contentOrNull
         }.filter { it.endsWith(".litertlm") }
+        if (model.defaultFileName.isNotBlank() && model.defaultFileName in names) {
+            return model.defaultFileName
+        }
         // Prefer the general build over web or chip-specific ones.
         val chipTags = listOf("web", "qualcomm", "mediatek", "sm8", "mt6", "npu", "ios", "tpu")
         return names.firstOrNull { n -> chipTags.none { n.lowercase().contains(it) } }
             ?: names.firstOrNull()
+            ?: model.defaultFileName.takeIf { it.isNotBlank() }
             ?: throw IOException("${model.repo} has no .litertlm file. Only LiteRT-LM models work offline (search Hugging Face for \"litert-lm\").")
     }
 
@@ -261,11 +406,12 @@ class OfflineProvider(context: Context) : LlmProvider {
         else -> 8_192
     }
 
-    /** Keeps the newest messages that fit (about 3 characters per token, leaving room for the reply). */
+    /** Keeps the newest messages that fit (with ContextCompactor first), leaving room for the reply. */
     private fun fit(messages: List<ChatMessage>, system: String): List<ChatMessage> {
+        val compacted = ContextCompactor.compactIfNeeded(messages, ProviderId.OFFLINE).messages
         var budget = (contextTokens() - 2_500) * 3 - system.length
         val kept = ArrayDeque<ChatMessage>()
-        for (m in messages.asReversed()) {
+        for (m in compacted.asReversed()) {
             val t = AttachmentContent.text(m, AttachmentContent.Target.TEXT_ONLY, false)
             if (t.length > budget) {
                 if (kept.isEmpty()) kept.addFirst(m.copy(text = t.takeLast(budget.coerceAtLeast(2_000)), attachments = emptyList()))
@@ -324,9 +470,16 @@ class OfflineProvider(context: Context) : LlmProvider {
                 initialMessages = history,
             )
             scheduleIdleRelease()
-            eng.createConversation(config).use { conversation ->
-                conversation.sendMessageAsync(AttachmentContent.text(last, AttachmentContent.Target.TEXT_ONLY, false))
-                    .collect { emit(it.toString()) }
+            try {
+                eng.createConversation(config).use { conversation ->
+                    conversation.sendMessageAsync(AttachmentContent.text(last, AttachmentContent.Target.TEXT_ONLY, false))
+                        .collect { emit(it.toString()) }
+                }
+            } catch (e: Exception) {
+                if (e.message?.contains("template", ignoreCase = true) == true) {
+                    throw ProviderException(500, "${m.name} isn't compatible with this app (its chat template fails to load). Pick a different offline model in Settings.")
+                }
+                throw e
             }
         }
     }.flowOn(Dispatchers.Default)

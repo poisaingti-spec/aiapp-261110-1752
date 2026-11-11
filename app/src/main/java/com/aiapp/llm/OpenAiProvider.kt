@@ -51,6 +51,7 @@ class OpenAiProvider : LlmProvider {
         effort: Effort,
         system: String,
     ): Flow<String> {
+        val messages = ContextCompactor.compactIfNeeded(messages, ProviderId.OPENAI).messages
         val level = effortValue(effort)
         val attempts = mutableListOf<() -> Flow<String>>()
         if (level != null) attempts += { request(apiKey, model, messages, system, level) }

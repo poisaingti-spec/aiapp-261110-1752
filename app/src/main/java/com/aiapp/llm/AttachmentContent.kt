@@ -1,5 +1,6 @@
 package com.aiapp.llm
 
+import com.aiapp.media.VideoEditor
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonPrimitive
@@ -13,8 +14,9 @@ import java.util.Base64
 /**
  * Turns attachments into each provider's request format. Text (including text pulled out of Office
  * files and zips) goes in as text for every model; photos, PDFs, audio and video go in natively where
- * the model supports them, within each provider's size limits. Anything that can't be sent gets a
- * short note so the model knows it's there. Only the most recent files are re-sent in long chats.
+ * the model supports them, within each provider's size limits. For video files on OpenAI/FreeCloud/Offline
+ * models, real video metadata (duration, resolution, audio track, and estimated Editor V1 render time)
+ * is injected so GLM-5.3-Flash (Editor V1) can generate a complete `video-edit` timeline spec.
  */
 object AttachmentContent {
     private const val MAX_INLINE_TEXT = 60_000
@@ -59,17 +61,21 @@ object AttachmentContent {
     }
 
     private fun note(a: Attachment, target: Target): String {
+        if (a.isVideo) {
+            val meta = VideoEditor.inspectVideo(a.path)
+            return "[Attached video for Editor V1 AI Video Editing: ${meta.summary(a.name)}. " +
+                "Include a ```video-edit JSON block so the app can render the edited MP4 directly on the phone.]"
+        }
         val mb = size(a) / MB
         val kind = when {
             a.isImage -> "photo"
             a.isPdf -> "PDF"
             a.mime.startsWith("audio/") -> "audio file"
-            a.mime.startsWith("video/") -> "video"
             else -> "file (${a.mime})"
         }
         val hint = when {
             target == Target.TEXT_ONLY && (a.isImage || a.isPdf) -> "this model can't open it; suggest switching to Claude, Gemini or ChatGPT"
-            a.mime.startsWith("audio/") || a.mime.startsWith("video/") -> "only Gemini can listen to or watch it; suggest switching to Gemini"
+            a.mime.startsWith("audio/") -> "only Gemini can listen to it; suggest switching to Gemini"
             (a.isImage || a.isPdf) -> "it's too large ($mb MB) for this model; suggest Gemini, which takes large files"
             else -> "its contents can't be read as text"
         }

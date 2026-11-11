@@ -49,10 +49,13 @@ class GeminiProvider : LlmProvider {
         messages: List<ChatMessage>,
         effort: Effort,
         system: String,
-    ): Flow<String> = fallbackOn400(
-        primary = { request(apiKey, model, messages, system, thinkingBudget(effort), thoughts = true) },
-        fallback = { request(apiKey, model, messages, system, null) },
-    )
+    ): Flow<String> {
+        val compacted = ContextCompactor.compactIfNeeded(messages, ProviderId.GEMINI).messages
+        return fallbackOn400(
+            primary = { request(apiKey, model, compacted, system, thinkingBudget(effort), thoughts = true) },
+            fallback = { request(apiKey, model, compacted, system, null) },
+        )
+    }
 
     private fun request(
         apiKey: String,

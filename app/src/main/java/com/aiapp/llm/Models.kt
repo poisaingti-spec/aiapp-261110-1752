@@ -9,6 +9,7 @@ enum class ProviderId(val label: String, val needsKey: Boolean = true) {
     GEMINI("Gemini"),
     OPENAI("ChatGPT"),
     OPEN("Open models"),
+    FREE("Free cloud", needsKey = false),
     OFFLINE("Offline", needsKey = false),
 }
 
@@ -38,6 +39,8 @@ data class Attachment(
     val isImage get() = mime.startsWith("image/")
     val isPdf get() = mime == "application/pdf"
     val isZip get() = mime == "application/zip"
+    val isVideo get() = mime.startsWith("video/")
+    val isApk get() = mime == "application/vnd.android.package-archive" || name.endsWith(".apk", ignoreCase = true)
 }
 
 /** An image or video found on the web, shown under a reply. */
@@ -56,6 +59,8 @@ data class ChatMessage(
     val text: String,
     val attachments: List<Attachment> = emptyList(),
     val media: List<MediaItem> = emptyList(),
+    /** Set when this reply has a GitHub-built APK ready to download and install. */
+    val apkInstallUrl: String? = null,
     /** The model's visible reasoning for this reply, if it shared any. */
     val thinking: String = "",
     val thoughtSeconds: Int = 0,
@@ -115,6 +120,7 @@ object Providers {
         GeminiProvider(),
         OpenAiProvider(),
         OpenModelsProvider(),
+        FreeCloudProvider(),
     ).associateBy { it.id }
 
     private lateinit var offlineProvider: OfflineProvider

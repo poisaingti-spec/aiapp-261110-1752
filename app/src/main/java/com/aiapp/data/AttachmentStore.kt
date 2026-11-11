@@ -48,6 +48,7 @@ object AttachmentStore {
         if (ext in textExtensions && !mime.startsWith("text/")) mime = "text/plain"
         if (ext == "pdf") mime = "application/pdf"
         if (ext == "zip") mime = "application/zip"
+        if (ext == "apk") mime = "application/vnd.android.package-archive"
 
         val safe = name.replace(Regex("[^A-Za-z0-9._-]"), "_").take(80)
         val out = File(dir, "${UUID.randomUUID().toString().take(8)}_$safe")
@@ -82,6 +83,11 @@ object AttachmentStore {
                 // Projects: keep the zip (for building) and a readable summary (for any model to read).
                 val summary = runCatching { com.aiapp.builder.ZipImport.summary(out) }.getOrNull()
                 Attachment(name, "application/zip", out.absolutePath, summary)
+            }
+            ext == "apk" -> {
+                // Android APK: inspect via REA Engine to extract manifest, components, DEX classes & architecture specification
+                val summary = runCatching { com.aiapp.builder.ReaEngine.inspectApk(out).fullMarkdownSpec }.getOrNull()
+                Attachment(name, "application/vnd.android.package-archive", out.absolutePath, summary)
             }
             ext in listOf("docx", "xlsx", "pptx", "odt", "ods", "odp") ->
                 Attachment(name, mime, out.absolutePath, runCatching { officeText(out, ext) }.getOrNull())

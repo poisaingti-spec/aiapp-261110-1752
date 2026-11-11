@@ -38,6 +38,9 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         Providers.init(app)
         WebTools.downloader = { url -> com.aiapp.data.Downloads.save(app, url) }
         Providers.offline.hfToken = keys.getExtra("HF")
+        com.aiapp.llm.FreeCloudProvider.customRouterEndpoint = keys.getExtra("ROUTER_URL")
+        com.aiapp.llm.FreeCloudProvider.customRouterKey = keys.getExtra("ROUTER_KEY")
+        com.aiapp.llm.FreeCloudProvider.customRouterModel = keys.getExtra("ROUTER_MODEL")
     }
     private val prefs = app.getSharedPreferences("chat_prefs", Context.MODE_PRIVATE)
 
@@ -117,7 +120,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         private set
 
     var provider by mutableStateOf(
-        enumValueOrDefault(prefs.getString("provider", null), ProviderId.CLAUDE),
+        enumValueOrDefault(prefs.getString("provider", null), ProviderId.FREE),
     )
         private set
     var models by mutableStateOf<List<ModelInfo>>(emptyList())
@@ -248,6 +251,19 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
     fun hfToken(): String = keys.getExtra("HF")
 
+    fun customRouterUrl(): String = keys.getExtra("ROUTER_URL")
+    fun customRouterKey(): String = keys.getExtra("ROUTER_KEY")
+    fun customRouterModel(): String = keys.getExtra("ROUTER_MODEL")
+
+    fun saveCustomRouter(url: String, key: String, modelName: String) {
+        keys.setExtra("ROUTER_URL", url)
+        keys.setExtra("ROUTER_KEY", key)
+        keys.setExtra("ROUTER_MODEL", modelName)
+        com.aiapp.llm.FreeCloudProvider.customRouterEndpoint = url.trim()
+        com.aiapp.llm.FreeCloudProvider.customRouterKey = key.trim()
+        com.aiapp.llm.FreeCloudProvider.customRouterModel = modelName.trim()
+    }
+
     fun saveHfToken(value: String) {
         keys.setExtra("HF", value)
         Providers.offline.hfToken = value.trim()
@@ -343,6 +359,11 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         if (p == provider) refreshModels()
     }
 
+    fun resetProviderLimits(p: ProviderId? = null) {
+        keys.resetLimitFlags(p)
+        error = null
+    }
+
     fun selectProvider(p: ProviderId) {
         if (p == provider) return
         provider = p
@@ -392,6 +413,142 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     var openBuild by mutableStateOf(false)
 
     private val buildWords = Regex("\\b(apk|build|compile|compil)", RegexOption.IGNORE_CASE)
+    /** An explicit command, not just the word anywhere — "only when I say build". */
+    private val buildCommand = Regex("^/?build[:\\s]+(.+)", setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL))
+
+    // ---------- Reverse engineering, inline in chat ----------
+
+    private var reverseApkFile: java.io.File? = null
+    private var reverseReport: com.aiapp.reverse.ApkReport? = null
+
+    /**
+     * Decodes an attached APK on-device (read-only), posts the findings, then either answers your
+     * question about it or — for a `build: <change>` command — has GitHub Actions apply the change,
+     * rebuild and sign it (the model only decides the edit; GitHub does the rest, like the Build tab).
+     * For apps you are authorized to inspect — your own apps, open-source apps, security research.
+     */
+    private fun handleApkAttachment(a: com.aiapp.llm.Attachment, buildInstruction: String?, question: String) {
+        viewModelScope.launch {
+            status = "Decoding ${a.name} on-device…"
+            val file = java.io.File(a.path)
+            val report = try {
+                com.aiapp.reverse.ReverseEngine.inspect(file)
+            } catch (e: Exception) {
+                com.aiapp.data.Log.e("Reverse", "chat inspect failed", e)
+                messages += ChatMessage(Role.ASSISTANT, "Couldn't decode ${a.name}: ${e.message}")
+                persist(); status = null; return@launch
+            }
+            reverseApkFile = file
+            reverseReport = report
+            messages += ChatMessage(
+                Role.ASSISTANT,
+                "Decoded **${report.appLabel.ifBlank { report.packageName }}**:\n\n```\n${report.toBriefing().trim()}\n```" +
+                    if (buildInstruction == null && question.isBlank()) {
+                        "\n\nAsk me anything about it, or type `build: <change>` to have GitHub Actions apply it."
+                    } else "",
+            )
+            persist()
+
+            if (buildInstruction != null) {
+                applyReverseBuildCommand(report, file, buildInstruction)
+            } else if (question.isNotBlank()) {
+                status = "Thinking…"
+                try {
+                    val context = "DECODED APK (on-device):\n" + report.toBriefing() + "\n\nQuestion: $question"
+                    val reply = StringBuilder()
+                    Providers.get(provider).stream(keys.get(provider), model, listOf(ChatMessage(Role.USER, context)), effort, SYSTEM_PROMPT)
+                        .collect { chunk -> if (!chunk.startsWith(com.aiapp.llm.THOUGHT)) reply.append(chunk) }
+                    messages += ChatMessage(Role.ASSISTANT, reply.toString())
+                    persist()
+                } catch (e: Exception) {
+                    com.aiapp.data.Log.e("Reverse", "chat apk question failed", e)
+                    messages += ChatMessage(Role.ASSISTANT, "That failed: ${e.message}")
+                    persist()
+                }
+            }
+            status = null
+        }
+    }
+
+    /**
+     * Applies a `build: <instruction>` command to a decoded APK. The model's only job is deciding the
+     * edit — GitHub Actions decodes, patches, rebuilds, zipaligns and signs it (same split as the Build
+     * tab), and the result is posted back with an install link.
+     */
+    private suspend fun applyReverseBuildCommand(report: com.aiapp.reverse.ApkReport, apk: java.io.File, instruction: String) {
+        val token = githubToken()
+        if (token.isBlank()) {
+            messages += ChatMessage(Role.ASSISTANT, "Add a GitHub token in Settings first, then try `build: $instruction` again.")
+            persist()
+            return
+        }
+        status = "Planning the change…"
+        try {
+            val strings = com.aiapp.reverse.ReverseEngine.readStrings(apk)
+            val prompt = com.aiapp.reverse.ReverseAgent.buildPrompt(report, strings, instruction)
+            val reply = StringBuilder()
+            Providers.get(provider).stream(keys.get(provider), model, listOf(ChatMessage(Role.USER, prompt)), effort, com.aiapp.reverse.ReverseAgent.SYSTEM)
+                .collect { chunk -> if (!chunk.startsWith(com.aiapp.llm.THOUGHT)) reply.append(chunk) }
+            val plan = com.aiapp.reverse.ReverseAgent.parsePlan(reply.toString())
+            val edits = plan.toApkEdits()
+            if (edits.isEmpty()) {
+                messages += ChatMessage(
+                    Role.ASSISTANT,
+                    plan.summary.ifBlank { "That needs a code change, not just text/version/name — try describing it more concretely, or use the Reverse tab's \"Change the code\"." },
+                )
+                persist(); return
+            }
+            messages += ChatMessage(Role.ASSISTANT, "Plan: ${plan.summary.ifBlank { "${edits.size} edit(s)" }}\n\nBuilding on GitHub Actions…")
+            persist()
+            val runner = com.aiapp.reverse.ReverseCiRunner(token) { s -> status = s }
+            val result = runner.run(apk, report.appLabel.ifBlank { report.packageName }, edits, emptyMap())
+            messages += ChatMessage(Role.ASSISTANT, "Built and signed. Tap below to download and install.", apkInstallUrl = result.apkUrl)
+            persist()
+        } catch (e: Exception) {
+            com.aiapp.data.Log.e("Reverse", "chat build command failed", e)
+            messages += ChatMessage(Role.ASSISTANT, "Build failed: ${e.message}")
+            persist()
+        }
+    }
+
+    /** `build: <description>` with no attachment: writes a brand-new app, same as the Build tab. */
+    private fun startNewAppBuild(description: String) {
+        val token = githubToken()
+        if (token.isBlank()) {
+            messages += ChatMessage(Role.ASSISTANT, "Sign in with GitHub in Settings first, then try `build: $description` again.")
+            persist()
+            return
+        }
+        if (com.aiapp.builder.BuildRunner.running) {
+            messages += ChatMessage(Role.ASSISTANT, "A build is already running. Open Build to see it.")
+            persist()
+            return
+        }
+        val app = getApplication<Application>()
+        val appName = description.trim().split(Regex("\\s+")).take(4).joinToString(" ")
+            .replaceFirstChar { it.uppercase() }.ifBlank { "My App" }
+        com.aiapp.builder.BuildRunner.newProject(app)
+        com.aiapp.builder.BuildService.start(
+            app,
+            com.aiapp.builder.BuildRequest(
+                description = description,
+                appName = appName,
+                provider = provider,
+                model = model,
+                apiKey = keys.get(provider),
+                effort = effort,
+                githubToken = token,
+                allowOtherSites = false,
+            ),
+        )
+        messages += ChatMessage(
+            Role.ASSISTANT,
+            "Building **$appName** on your GitHub. ${provider.label} will try to fix any build errors. " +
+                "Follow progress on the Build screen; you'll get a notification when it's ready.",
+        )
+        persist()
+        openBuild = true
+    }
 
     /** Compiles an uploaded Android Studio project (.zip) into an APK on GitHub. */
     fun buildZip(zip: com.aiapp.llm.Attachment) {
@@ -533,6 +690,21 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             messages += ChatMessage(Role.USER, trimmed, attached)
             pendingAttachments.clear()
             buildZip(zip)
+            return
+        }
+        val apk = attached.firstOrNull { it.isApk }
+        val buildMatch = buildCommand.find(trimmed)
+        if (apk != null) {
+            messages += ChatMessage(Role.USER, trimmed, attached)
+            pendingAttachments.clear()
+            val question = if (buildMatch == null) trimmed else ""
+            handleApkAttachment(apk, buildMatch?.groupValues?.get(1)?.trim(), question)
+            return
+        }
+        if (buildMatch != null) {
+            messages += ChatMessage(Role.USER, trimmed, attached)
+            pendingAttachments.clear()
+            startNewAppBuild(buildMatch.groupValues[1].trim())
             return
         }
         messages += ChatMessage(Role.USER, trimmed, attached)

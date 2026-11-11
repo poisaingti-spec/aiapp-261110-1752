@@ -11,13 +11,13 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.Button
-import androidx.compose.material3.HorizontalDivider
-import androidx.compose.material3.LinearProgressIndicator
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
@@ -59,10 +59,11 @@ fun SettingsScreen(vm: ChatViewModel, onBack: () -> Unit) {
             verticalArrangement = Arrangement.spacedBy(20.dp),
         ) {
             Text(
-                "API keys are stored encrypted on this phone only.",
+                "API keys are stored encrypted on this phone only. Tip: You can paste multiple keys separated by commas (,) for automatic rotation when one key hits a rate limit!",
                 style = MaterialTheme.typography.bodyMedium,
             )
             ProviderId.entries.filter { it.needsKey }.forEach { KeyField(it, vm) }
+            NineRouterSection(vm)
             GithubTokenField(vm)
             OfflineSection(vm)
         }
@@ -73,7 +74,8 @@ private fun keyUrl(p: ProviderId): String = when (p) {
     ProviderId.CLAUDE -> "console.anthropic.com/settings/keys"
     ProviderId.GEMINI -> "aistudio.google.com/apikey"
     ProviderId.OPENAI -> "platform.openai.com/api-keys"
-    ProviderId.OPEN -> "openrouter.ai/keys (one key for Kimi, DeepSeek, GLM, Qwen; some are free)"
+    ProviderId.OPEN -> "openrouter.ai/keys (one key for Kimi, DeepSeek, GLM, Qwen, Dolphin; many are free)"
+    ProviderId.FREE -> ""
     ProviderId.OFFLINE -> ""
 }
 
@@ -89,7 +91,7 @@ private fun KeyField(p: ProviderId, vm: ChatViewModel) {
                 text = it
                 note = null
             },
-            label = { Text("${p.label} API key") },
+            label = { Text("${p.label} API key(s) (comma-separated for auto-rotation)") },
             singleLine = true,
             visualTransformation = PasswordVisualTransformation(),
             modifier = Modifier.fillMaxWidth(),
@@ -99,17 +101,21 @@ private fun KeyField(p: ProviderId, vm: ChatViewModel) {
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
-        Row(verticalAlignment = Alignment.CenterVertically) {
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             Button(onClick = {
                 vm.saveKey(p, text)
                 note = "Saved"
             }) { Text("Save") }
+            OutlinedButton(onClick = {
+                vm.resetProviderLimits(p)
+                note = "Limit flag reset ✓"
+            }) { Text("Reset Limit Flag") }
             TextButton(onClick = {
                 text = ""
                 vm.saveKey(p, "")
                 note = "Cleared"
             }) { Text("Clear") }
-            note?.let { Text(it, style = MaterialTheme.typography.labelMedium) }
+            note?.let { Text(it, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary) }
         }
     }
 }
@@ -119,7 +125,7 @@ private fun OfflineSection(vm: ChatViewModel) {
     val recommended = vm.recommendedOffline()
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
         HorizontalDivider()
-        Text("Offline models", style = MaterialTheme.typography.titleMedium)
+        Text("Offline models (14 Built-in LiteRT-LM Models)", style = MaterialTheme.typography.titleMedium)
         Text(
             "Run on this phone with no internet or API key. Your phone has about ${vm.deviceRamGb()} GB " +
                 "of RAM, so ${recommended.name} is recommended. Keep the app open while it downloads; " +
@@ -138,12 +144,19 @@ private fun OfflineRow(m: OfflineModel, vm: ChatViewModel) {
     val downloaded = vm.offlineDownloaded(m)
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
         Text(m.name, style = MaterialTheme.typography.bodyLarge)
+        if (m.description.isNotBlank()) {
+            Text(
+                m.description,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
         Text(
             when {
                 downloaded -> "Downloaded · ready offline"
                 progress != null -> "Downloading… ${(progress * 100).toInt()}%"
                 m.approxSizeGb == 0.0 -> "From huggingface.co/${m.repo}"
-                else -> "About ${m.approxSizeGb} GB · needs ${m.minRamGb} GB+ RAM"
+                else -> "About ${m.approxSizeGb} GB · needs ${m.minRamGb} GB+ RAM · ${m.repo}"
             },
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -179,7 +192,7 @@ private fun GithubTokenField(vm: ChatViewModel) {
     var token by remember { mutableStateOf("") }
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         HorizontalDivider()
-        Text("GitHub (for Build app)", style = MaterialTheme.typography.titleMedium)
+        Text("GitHub (for Build app & REA CI)", style = MaterialTheme.typography.titleMedium)
         val code = vm.githubCode
         when {
             vm.githubToken().isNotBlank() -> {
@@ -254,7 +267,8 @@ private fun AddOfflineModel(vm: ChatViewModel) {
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Text("Add a model", style = MaterialTheme.typography.titleSmall)
         Text(
-            "Paste a Hugging Face link to any LiteRT-LM model (.litertlm), for example from huggingface.co/litert-community.",
+            "Paste a Hugging Face link to any LiteRT-LM model (.litertlm), for example from huggingface.co/litert-community. " +
+                "Some conversions use a chat template this app can't run (you'll get a clear error if so) — try a different one.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -296,6 +310,61 @@ private fun AddOfflineModel(vm: ChatViewModel) {
                 tokenNote = "Saved"
             }) { Text("Save token") }
             tokenNote?.let { Text("  $it", style = MaterialTheme.typography.labelMedium) }
+        }
+    }
+}
+
+
+@Composable
+private fun NineRouterSection(vm: ChatViewModel) {
+    var routerUrl by remember { mutableStateOf(vm.customRouterUrl()) }
+    var routerKey by remember { mutableStateOf(vm.customRouterKey()) }
+    var routerModel by remember { mutableStateOf(vm.customRouterModel()) }
+    var savedNote by remember { mutableStateOf<String?>(null) }
+
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        HorizontalDivider()
+        Text("Free AI Doors: 9Router / Radox AI / Custom Endpoint (Optional)", style = MaterialTheme.typography.titleMedium)
+        Text(
+            "Free Cloud already includes 10 built-in $0 gateways automatically. You can also connect a 9Router (Nine Router) or Radox AI OpenAI-compatible endpoint here (from Maitis's Craft Anything guide).",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        OutlinedTextField(
+            value = routerUrl,
+            onValueChange = { routerUrl = it; savedNote = null },
+            label = { Text("9Router / Radox AI Base URL (e.g. https://api.radox.ai/v1)") },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth(),
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+            OutlinedTextField(
+                value = routerKey,
+                onValueChange = { routerKey = it; savedNote = null },
+                label = { Text("API Key (optional)") },
+                singleLine = true,
+                visualTransformation = PasswordVisualTransformation(),
+                modifier = Modifier.weight(1f),
+            )
+            OutlinedTextField(
+                value = routerModel,
+                onValueChange = { routerModel = it; savedNote = null },
+                label = { Text("Model ID (optional)") },
+                singleLine = true,
+                modifier = Modifier.weight(1f),
+            )
+        }
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Button(onClick = {
+                vm.saveCustomRouter(routerUrl, routerKey, routerModel)
+                savedNote = "Saved 9Router / Radox endpoint ✓"
+            }) { Text("Save Router") }
+            TextButton(onClick = {
+                routerUrl = ""; routerKey = ""; routerModel = ""
+                vm.saveCustomRouter("", "", "")
+                savedNote = "Cleared (using built-in Free Cloud)"
+            }) { Text("Clear") }
+            savedNote?.let { Text(it, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary) }
         }
     }
 }

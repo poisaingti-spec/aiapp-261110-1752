@@ -62,6 +62,7 @@ class AnthropicProvider : LlmProvider {
         effort: Effort,
         system: String,
     ): Flow<String> {
+        val messages = ContextCompactor.compactIfNeeded(messages, ProviderId.CLAUDE).messages
         val attempts = mutableListOf<() -> Flow<String>>()
         val level = effortValue(effort)
         if (level != null) {

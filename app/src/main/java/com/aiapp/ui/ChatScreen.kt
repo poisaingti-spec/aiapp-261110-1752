@@ -30,6 +30,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
@@ -60,10 +61,11 @@ import com.aiapp.llm.ChatMessage
 import com.aiapp.llm.Effort
 import com.aiapp.llm.ProviderId
 import com.aiapp.llm.Role
+import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun ChatScreen(vm: ChatViewModel, onOpenSettings: () -> Unit, onOpenBuild: () -> Unit, onOpenHistory: () -> Unit, onOpenCreate: () -> Unit) {
+fun ChatScreen(vm: ChatViewModel, onOpenSettings: () -> Unit, onOpenBuild: () -> Unit, onOpenHistory: () -> Unit, onOpenCreate: () -> Unit, onOpenReverse: () -> Unit, onOpenLog: () -> Unit, onOpenCode: () -> Unit) {
     var input by rememberSaveable { mutableStateOf("") }
     val listState = rememberLazyListState()
     val context = androidx.compose.ui.platform.LocalContext.current
@@ -248,12 +250,22 @@ fun ChatScreen(vm: ChatViewModel, onOpenSettings: () -> Unit, onOpenBuild: () ->
             TopAppBar(
                 title = { Text("AI App") },
                 actions = {
-                    TextButton(onClick = onOpenBuild) { Text("Build") }
-                    TextButton(onClick = onOpenCreate) { Text("Create") }
-                    TextButton(onClick = onOpenHistory) { Text("Chats") }
                     TextButton(onClick = vm::newChat) { Text("New") }
                     IconButton(onClick = onOpenSettings) {
                         Icon(Icons.Filled.Settings, contentDescription = "Settings")
+                    }
+                    var menuOpen by remember { mutableStateOf(false) }
+                    IconButton(onClick = { menuOpen = true }) {
+                        Icon(Icons.Filled.MoreVert, contentDescription = "Menu")
+                    }
+                    DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                        DropdownMenuItem(text = { Text("Build") }, onClick = { menuOpen = false; onOpenBuild() })
+                        DropdownMenuItem(text = { Text("Create") }, onClick = { menuOpen = false; onOpenCreate() })
+                        DropdownMenuItem(text = { Text("Reverse") }, onClick = { menuOpen = false; onOpenReverse() })
+                        DropdownMenuItem(text = { Text("Code") }, onClick = { menuOpen = false; onOpenCode() })
+                        DropdownMenuItem(text = { Text("Chats") }, onClick = { menuOpen = false; onOpenHistory() })
+                        DropdownMenuItem(text = { Text("Error log") }, onClick = { menuOpen = false; onOpenLog() })
+                        DropdownMenuItem(text = { Text("Settings") }, onClick = { menuOpen = false; onOpenSettings() })
                     }
                 },
             )
@@ -355,7 +367,7 @@ private fun PickerRow(vm: ChatViewModel) {
 }
 
 @Composable
-private fun <T> Dropdown(
+fun <T> Dropdown(
     label: String,
     options: List<T>,
     display: (T) -> String,
@@ -413,7 +425,7 @@ private fun ErrorBanner(message: String, onOpenSettings: () -> Unit) {
 }
 
 @Composable
-private fun MessageBubble(message: ChatMessage, onBuildZip: (com.aiapp.llm.Attachment) -> Unit = {}) {
+fun MessageBubble(message: ChatMessage, onBuildZip: (com.aiapp.llm.Attachment) -> Unit = {}) {
     if (message.role == Role.USER) {
         Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.End) {
             message.attachments.forEach { a ->
@@ -441,7 +453,37 @@ private fun MessageBubble(message: ChatMessage, onBuildZip: (com.aiapp.llm.Attac
                     MarkdownText(message.text, modifier = Modifier.fillMaxWidth())
                 }
             }
+            message.apkInstallUrl?.let { InstallApkButton(it) }
         }
+    }
+}
+
+/** Downloads a GitHub-built APK (from a chat `build:` command) and opens Android's installer. */
+@Composable
+private fun InstallApkButton(url: String) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val scope = androidx.compose.runtime.rememberCoroutineScope()
+    var busy by remember { mutableStateOf(false) }
+    var problem by remember { mutableStateOf<String?>(null) }
+    Column {
+        Button(
+            onClick = {
+                busy = true; problem = null
+                scope.launch {
+                    try {
+                        val file = com.aiapp.data.ApkInstaller.download(context, url) { }
+                        com.aiapp.data.ApkInstaller.install(context, file)
+                    } catch (e: Exception) {
+                        com.aiapp.data.Log.e("Reverse", "chat install failed", e)
+                        problem = e.message ?: "Download failed."
+                    } finally {
+                        busy = false
+                    }
+                }
+            },
+            enabled = !busy,
+        ) { Text(if (busy) "Downloading…" else "Install") }
+        problem?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
     }
 }
 

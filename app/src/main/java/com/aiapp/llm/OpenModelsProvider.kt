@@ -13,8 +13,9 @@ import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonArray
 
 /**
- * The biggest open-weight models (Kimi, DeepSeek, GLM, Qwen and others), hosted in the cloud by
- * OpenRouter, so no PC is needed. One OpenRouter key reaches all of them; some have free versions.
+ * The biggest open-weight & unrestricted models (DeepSeek R1, Qwen 3.8 Coder, GLM-5.3-Flash,
+ * Nemotron 3 Ultra 550B, Dolphin Venice 24B, Kimi K2, Llama 3.3 70B, Gemma 4 31B and others),
+ * hosted in the cloud by OpenRouter, so no PC is needed.
  */
 class OpenModelsProvider : LlmProvider {
     override val id = ProviderId.OPEN
@@ -26,27 +27,45 @@ class OpenModelsProvider : LlmProvider {
         "X-OpenRouter-Title" to "AI App",
     )
 
-    /** Makers of open-weight models. Closed models are reached through their own providers instead. */
+    /** Curated flagship OpenRouter models (including :free models for REA, coding & open-ended chat). */
+    private val curatedOpenModels = listOf(
+        ModelInfo("deepseek/deepseek-r1:free", "★ DeepSeek R1 671B Reasoning (Free · REA & Android Architect)"),
+        ModelInfo("qwen/qwen3-coder:free", "★ Qwen 3 Coder 480B (Free · Best APK Cloner & Kotlin Builder)"),
+        ModelInfo("z-ai/glm-5.3-flash:free", "★ GLM-5.3-Flash 321B (Free · Editor V1 Video & Multimodal Code)"),
+        ModelInfo("nvidia/nemotron-3-ultra-550b-a55b:free", "★ NVIDIA Nemotron 3 Ultra 550B (Free · Deep Thinking & REA)"),
+        ModelInfo("cognitivecomputations/dolphin-mistral-24b-venice-edition:free", "★ Dolphin Mistral 24B Venice Edition (Free · Unrestricted)"),
+        ModelInfo("google/gemma-4-31b-it:free", "★ Gemma 4 31B Instruct (Free · Multimodal & Coding)"),
+        ModelInfo("meta-llama/llama-3.3-70b-instruct:free", "★ Llama 3.3 70B Instruct (Free · Full-Stack Coding)"),
+        ModelInfo("moonshotai/kimi-k2:free", "★ Moonshot Kimi K2 (Free · Agentic Coding & REA)"),
+        ModelInfo("deepseek/deepseek-chat-v3-0324:free", "★ DeepSeek V3 0324 (Free · Fast Code & Smali Patching)"),
+        ModelInfo("mistralai/mistral-nemo:free", "★ Mistral Nemo 12B (Free · Creative & Roleplay)"),
+    )
+
+    /** Makers of open-weight & unrestricted models on OpenRouter. */
     private val openVendors = listOf(
         "moonshotai/", "deepseek/", "z-ai/", "qwen/", "minimax/", "meta-llama/", "mistralai/",
         "google/gemma", "openai/gpt-oss", "nvidia/", "microsoft/phi", "stepfun", "baidu/", "xiaomi/",
+        "cognitivecomputations/", "nousresearch/", "gryphe/", "sao10k/", "thedrummer/", "neversleep/",
+        "cohere/", "anthracite-org/", "eva-unit-01/", "openrouter/", "arliai/", "featherless/",
     )
 
-    /** Uncensored re-releases are left out (blueprint §10). */
-    private val excluded = listOf("uncensored", "abliterated", "dolphin", "venice")
-
     override suspend fun listModels(apiKey: String): List<ModelInfo> {
-        val data = Http.getJson("$base/models", headers(apiKey))["data"] as? JsonArray ?: return emptyList()
-        return data.mapNotNull { el ->
-            val o = el as? JsonObject ?: return@mapNotNull null
-            val id = (o["id"] as? JsonPrimitive)?.contentOrNull ?: return@mapNotNull null
-            val lower = id.lowercase()
-            if (openVendors.none { lower.startsWith(it) } || excluded.any { lower.contains(it) }) return@mapNotNull null
-            val outputs = ((o["architecture"] as? JsonObject)?.get("output_modalities") as? JsonArray)
-                ?.mapNotNull { (it as? JsonPrimitive)?.contentOrNull }
-            if (outputs != null && "text" !in outputs) return@mapNotNull null
-            ModelInfo(id, (o["name"] as? JsonPrimitive)?.contentOrNull ?: id)
-        }
+        val remote = runCatching {
+            val data = Http.getJson("$base/models", headers(apiKey))["data"] as? JsonArray ?: return@runCatching emptyList()
+            data.mapNotNull { el ->
+                val o = el as? JsonObject ?: return@mapNotNull null
+                val id = (o["id"] as? JsonPrimitive)?.contentOrNull ?: return@mapNotNull null
+                val lower = id.lowercase()
+                if (openVendors.none { lower.startsWith(it) }) return@mapNotNull null
+                val outputs = ((o["architecture"] as? JsonObject)?.get("output_modalities") as? JsonArray)
+                    ?.mapNotNull { (it as? JsonPrimitive)?.contentOrNull }
+                if (outputs != null && "text" !in outputs) return@mapNotNull null
+                ModelInfo(id, (o["name"] as? JsonPrimitive)?.contentOrNull ?: id)
+            }
+        }.getOrDefault(emptyList())
+
+        val seen = curatedOpenModels.map { it.id }.toMutableSet()
+        return curatedOpenModels + remote.filter { seen.add(it.id) }
     }
 
     private fun effortValue(effort: Effort): String? = when (effort) {
@@ -64,11 +83,12 @@ class OpenModelsProvider : LlmProvider {
         effort: Effort,
         system: String,
     ): Flow<String> {
+        val compacted = ContextCompactor.compactIfNeeded(messages, ProviderId.OPEN).messages
         val level = effortValue(effort)
         val attempts = mutableListOf<() -> Flow<String>>()
-        if (level != null) attempts += { request(apiKey, model, messages, system, level) }
-        if (level == "xhigh") attempts += { request(apiKey, model, messages, system, "high") }
-        attempts += { request(apiKey, model, messages, system, null) }
+        if (level != null) attempts += { request(apiKey, model, compacted, system, level) }
+        if (level == "xhigh") attempts += { request(apiKey, model, compacted, system, "high") }
+        attempts += { request(apiKey, model, compacted, system, null) }
         return fallbackChain(attempts)
     }
 
