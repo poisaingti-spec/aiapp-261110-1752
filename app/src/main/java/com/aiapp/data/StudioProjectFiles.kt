@@ -139,7 +139,12 @@ object StudioProjectFiles {
             step("agp9") { adaptToBuiltInKotlin(files, notes) }
             step("namespace") { fixNamespaceAndManifest(files, packageName, notes) }
         }
+        if (!imported) {
+            step("components") { addMissingComponents(files, packageName, notes) }
+            step("libraries") { addMissingLibraries(files, notes) }
+        }
         step("resources") { addMissingResources(files, appName, packageName, notes) }
+        step("imports") { reportUnresolvedImports(files, packageName, notes) }
         step("wrapper") { addGradleWrapper(env, files, tc, replaceProperties = !imported, notes = notes) }
         if (!imported) step("workflow") { useWrapperInWorkflows(files) }
         step("readme") { files["ANDROID_STUDIO_README.md"] = readme(appName, files, tc, notes).toByteArray() }
@@ -688,6 +693,210 @@ object StudioProjectFiles {
         if (count > 0) notes += "Created $count stand-in resource(s) that the code refers to but the project did not define (see res/values/studio_generated*.xml, drawable, mipmap, xml)."
         if (notStubbed.isNotEmpty()) {
             notes += "Still missing and not created automatically (add these files yourself or ask for a fix): ${notStubbed.take(25).joinToString()}."
+        }
+    }
+
+    // ---- 5b. Checks after generation: manifest classes, libraries, imports ---------------------------
+
+    private val declRegex = Regex("\\b(?:class|object|interface|typealias)\\s+([A-Za-z_]\\w*)")
+    private val memberRegex = Regex("\\b(?:fun|val|var)\\s+(?:<[^>]+>\\s*)?(?:[\\w<>?,.\\s]+?\\.)?([A-Za-z_]\\w*)")
+
+    /** package → names declared in it (classes, objects, top-level functions and properties). */
+    private fun declarations(files: Map<String, ByteArray>, module: String): Map<String, Set<String>> {
+        val out = HashMap<String, MutableSet<String>>()
+        for ((path, bytes) in files) {
+            if (!path.startsWith("$module/src/") || !(path.endsWith(".kt") || path.endsWith(".java"))) continue
+            val t = String(bytes, Charsets.UTF_8)
+            val pkg = packageRegex.find(t)?.groupValues?.get(1) ?: ""
+            val set = out.getOrPut(pkg) { HashSet() }
+            declRegex.findAll(t).forEach { set += it.groupValues[1] }
+            if (path.endsWith(".kt")) memberRegex.findAll(t).forEach { set += it.groupValues[1] }
+            set += path.substringAfterLast('/').substringBeforeLast('.')
+        }
+        return out
+    }
+
+    private fun namespaceOf(files: Map<String, ByteArray>, module: String, fallback: String): String {
+        val build = text(files, "$module/build.gradle.kts") ?: text(files, "$module/build.gradle")
+        return build?.let { Regex("\\bnamespace\\s*=?\\s*[\"']([A-Za-z0-9_.]+)[\"']").find(it)?.groupValues?.get(1) } ?: fallback
+    }
+
+    /**
+     * Every activity, service, receiver, provider and application class named in the manifest must
+     * exist, or the app fails to build or crashes at launch. Missing ones get a small working class.
+     */
+    private fun addMissingComponents(files: MutableMap<String, ByteArray>, packageName: String, notes: MutableList<String>) {
+        val module = appModule(files)
+        val manifest = text(files, "$module/src/main/AndroidManifest.xml") ?: return
+        val ns = namespaceOf(files, module, packageName)
+        val decl = declarations(files, module)
+        val tag = Regex("<(application|activity|service|receiver|provider)\\b[^>]*?android:name\\s*=\\s*\"([^\"]+)\"")
+        val created = mutableListOf<String>()
+        for (m in tag.findAll(manifest)) {
+            val kind = m.groupValues[1]
+            val raw = m.groupValues[2]
+            if (raw.contains('$') || raw.startsWith("@")) continue
+            val fqcn = when {
+                raw.startsWith(".") -> ns + raw
+                !raw.contains('.') -> "$ns.$raw"
+                else -> raw
+            }
+            if (listOf("android.", "androidx.", "com.google.", "kotlin.", "java.").any { fqcn.startsWith(it) }) continue
+            val pkg = fqcn.substringBeforeLast('.')
+            val simple = fqcn.substringAfterLast('.')
+            if (!Regex("^[A-Za-z_]\\w*$").matches(simple)) continue
+            if (decl[pkg]?.contains(simple) == true) continue
+            val body = when (kind) {
+                "application" -> "class $simple : android.app.Application()\n"
+                "activity" -> """
+                    class $simple : android.app.Activity() {
+                        override fun onCreate(savedInstanceState: android.os.Bundle?) {
+                            super.onCreate(savedInstanceState)
+                            setContentView(
+                                android.widget.TextView(this).apply {
+                                    text = "$simple"
+                                    textSize = 20f
+                                    setPadding(48, 96, 48, 48)
+                                },
+                            )
+                        }
+                    }
+                """.trimIndent() + "\n"
+                "service" -> """
+                    class $simple : android.app.Service() {
+                        override fun onBind(intent: android.content.Intent?): android.os.IBinder? = null
+                    }
+                """.trimIndent() + "\n"
+                "receiver" -> """
+                    class $simple : android.content.BroadcastReceiver() {
+                        override fun onReceive(context: android.content.Context, intent: android.content.Intent) {}
+                    }
+                """.trimIndent() + "\n"
+                else -> """
+                    class $simple : android.content.ContentProvider() {
+                        override fun onCreate(): Boolean = true
+                        override fun query(uri: android.net.Uri, projection: Array<out String>?, selection: String?, selectionArgs: Array<out String>?, sortOrder: String?): android.database.Cursor? = null
+                        override fun getType(uri: android.net.Uri): String? = null
+                        override fun insert(uri: android.net.Uri, values: android.content.ContentValues?): android.net.Uri? = null
+                        override fun delete(uri: android.net.Uri, selection: String?, selectionArgs: Array<out String>?): Int = 0
+                        override fun update(uri: android.net.Uri, values: android.content.ContentValues?, selection: String?, selectionArgs: Array<out String>?): Int = 0
+                    }
+                """.trimIndent() + "\n"
+            }
+            val path = "$module/src/main/java/${pkg.replace('.', '/')}/$simple.kt"
+            if (files.containsKey(path)) continue
+            files[path] = ("package $pkg\n\n// Stand-in created automatically: the manifest names this class but the project had no code for it.\n$body")
+                .toByteArray(Charsets.UTF_8)
+            created += fqcn
+        }
+        if (created.isNotEmpty()) {
+            notes += "The manifest names ${created.size} class(es) the project had no code for; simple stand-ins were created: ${created.joinToString()}."
+        }
+    }
+
+    /** import prefix → library to add when the code uses it but no build file lists it. */
+    private val knownLibraries = listOf(
+        "coil.compose" to "io.coil-kt:coil-compose:2.7.0",
+        "coil" to "io.coil-kt:coil:2.7.0",
+        "androidx.datastore.preferences" to "androidx.datastore:datastore-preferences:1.1.1",
+        "androidx.lifecycle.compose" to "androidx.lifecycle:lifecycle-runtime-compose:2.8.7",
+        "androidx.constraintlayout.compose" to "androidx.constraintlayout:constraintlayout-compose:1.0.1",
+        "androidx.constraintlayout.widget" to "androidx.constraintlayout:constraintlayout:2.1.4",
+        "androidx.appcompat" to "androidx.appcompat:appcompat:1.7.0",
+        "com.google.android.material" to "com.google.android.material:material:1.12.0",
+        "androidx.work" to "androidx.work:work-runtime-ktx:2.9.1",
+        "androidx.media3.exoplayer" to "androidx.media3:media3-exoplayer:1.4.1",
+        "androidx.media3.ui" to "androidx.media3:media3-ui:1.4.1",
+        "androidx.webkit" to "androidx.webkit:webkit:1.12.1",
+        "androidx.core.splashscreen" to "androidx.core:core-splashscreen:1.0.1",
+        "androidx.biometric" to "androidx.biometric:biometric:1.1.0",
+        "androidx.browser" to "androidx.browser:browser:1.8.0",
+        "androidx.documentfile" to "androidx.documentfile:documentfile:1.0.1",
+        "androidx.fragment" to "androidx.fragment:fragment-ktx:1.8.5",
+        "androidx.preference" to "androidx.preference:preference-ktx:1.2.1",
+        "androidx.recyclerview" to "androidx.recyclerview:recyclerview:1.3.2",
+        "androidx.viewpager2" to "androidx.viewpager2:viewpager2:1.1.0",
+        "androidx.swiperefreshlayout" to "androidx.swiperefreshlayout:swiperefreshlayout:1.1.0",
+        "androidx.cardview" to "androidx.cardview:cardview:1.0.0",
+        "androidx.security.crypto" to "androidx.security:security-crypto:1.1.0-alpha06",
+        "com.google.accompanist.permissions" to "com.google.accompanist:accompanist-permissions:0.36.0",
+        "com.google.accompanist.systemuicontroller" to "com.google.accompanist:accompanist-systemuicontroller:0.36.0",
+        "com.airbnb.lottie.compose" to "com.airbnb.android:lottie-compose:6.5.2",
+        "retrofit2.converter.gson" to "com.squareup.retrofit2:converter-gson:2.11.0",
+        "retrofit2" to "com.squareup.retrofit2:retrofit:2.11.0",
+        "com.google.gson" to "com.google.code.gson:gson:2.11.0",
+        "okhttp3.logging" to "com.squareup.okhttp3:logging-interceptor:4.12.0",
+        "okhttp3" to "com.squareup.okhttp3:okhttp:4.12.0",
+        "org.jsoup" to "org.jsoup:jsoup:1.18.1",
+        "com.bumptech.glide" to "com.github.bumptech.glide:glide:4.16.0",
+        "androidx.navigation.compose" to "androidx.navigation:navigation-compose:2.8.5",
+        "androidx.compose.material.icons" to "androidx.compose.material:material-icons-extended:1.7.8",
+        "kotlinx.serialization.json" to "org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.3",
+        "kotlinx.coroutines" to "org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0",
+    )
+
+    /** Adds libraries the code imports but the build file forgot (a frequent "Unresolved reference" cause). */
+    private fun addMissingLibraries(files: MutableMap<String, ByteArray>, notes: MutableList<String>) {
+        val module = appModule(files)
+        val buildPath = listOf("$module/build.gradle.kts", "$module/build.gradle").firstOrNull { files.containsKey(it) } ?: return
+        val gradleText = files.filterKeys { it.isGradleFile() }.values.joinToString("\n") { String(it, Charsets.UTF_8) }
+        val imports = HashSet<String>()
+        val importRegex = Regex("(?m)^\\s*import\\s+([A-Za-z0-9_.]+)")
+        for ((path, bytes) in files) {
+            if (!path.startsWith("$module/src/") || !(path.endsWith(".kt") || path.endsWith(".java"))) continue
+            importRegex.findAll(String(bytes, Charsets.UTF_8)).forEach { imports += it.groupValues[1] }
+        }
+        val toAdd = LinkedHashSet<String>()
+        for ((prefix, coordinate) in knownLibraries) {
+            if (imports.none { it == prefix || it.startsWith("$prefix.") }) continue
+            val groupArtifact = coordinate.substringBeforeLast(':')
+            val artifact = groupArtifact.substringAfter(':')
+            // Listed already, directly or through a version catalog entry for the same artifact.
+            if (gradleText.contains(groupArtifact) || Regex("name\\s*=\\s*\"${Regex.escape(artifact)}\"").containsMatchIn(gradleText)) continue
+            toAdd += coordinate
+        }
+        if (toAdd.isEmpty()) return
+        val build = text(files, buildPath) ?: return
+        val m = Regex("(?m)^dependencies\\s*\\{[ \\t]*\\r?\\n").find(build) ?: return
+        val kts = buildPath.endsWith(".kts")
+        val lines = toAdd.joinToString("") { c -> if (kts) "    implementation(\"$c\")\n" else "    implementation '$c'\n" }
+        files[buildPath] = build.replaceRange(m.range, m.value + lines).toByteArray(Charsets.UTF_8)
+        notes += "Added ${toAdd.size} library line(s) the code imports but the build file did not list: ${toAdd.joinToString()}."
+    }
+
+    /** Lists imports of the app's own classes that no file declares, so they can be fixed before building. */
+    private fun reportUnresolvedImports(files: Map<String, ByteArray>, packageName: String, notes: MutableList<String>) {
+        val module = appModule(files)
+        val ns = namespaceOf(files, module, packageName)
+        val decl = declarations(files, module)
+        if (decl.isEmpty()) return
+        val roots = setOf(ns, packageName).filter { it.isNotBlank() }
+        val importRegex = Regex("(?m)^\\s*import\\s+(?:static\\s+)?([A-Za-z0-9_.]+)(\\.\\*)?")
+        val missing = LinkedHashMap<String, String>() // import → first file using it
+        for ((path, bytes) in files) {
+            if (!path.startsWith("$module/src/") || !(path.endsWith(".kt") || path.endsWith(".java"))) continue
+            for (m in importRegex.findAll(String(bytes, Charsets.UTF_8))) {
+                val name = m.groupValues[1]
+                if (roots.none { name == it || name.startsWith("$it.") }) continue
+                val parts = name.split('.')
+                if (m.groupValues[2].isNotEmpty()) {
+                    if (decl.containsKey(name) || decl[name.substringBeforeLast('.')]?.contains(parts.last()) == true) continue
+                } else {
+                    if (parts.any { it == "R" || it == "BuildConfig" || it == "databinding" }) continue
+                    // Accept a top-level name, or a nested one (pkg.Outer.Inner).
+                    var found = false
+                    for (cut in parts.size - 1 downTo 1) {
+                        val pkg = parts.take(cut).joinToString(".")
+                        if (decl[pkg]?.contains(parts[cut]) == true) { found = true; break }
+                    }
+                    if (found) continue
+                }
+                missing.putIfAbsent(name, path.substringAfterLast('/'))
+            }
+        }
+        if (missing.isNotEmpty()) {
+            notes += "Imports that point to code not present in the project (${missing.size}); ask for a fix round for these: " +
+                missing.entries.take(30).joinToString { "${it.key} (used in ${it.value})" } + "."
         }
     }
 

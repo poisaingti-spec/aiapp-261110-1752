@@ -268,6 +268,7 @@ class ReverseViewModel(app: Application) : AndroidViewModel(app) {
                     requireNotNull(input) { "Can't open that file." }
                     tmpZip.outputStream().use { input.copyTo(it) }
                 }
+                if (com.aiapp.reverse.SplitApk.isBundle(tmpZip)) { finishLoad(tmpZip); return@launch }
                 val dst = File(dir, "from-zip.apk")
                 ZipFile(tmpZip).use { zip ->
                     val entry = zip.entries().asSequence().firstOrNull { it.name.endsWith(".apk", true) }
@@ -421,7 +422,8 @@ class ReverseViewModel(app: Application) : AndroidViewModel(app) {
         )
     }
 
-    private suspend fun finishLoad(dst: File) {
+    private suspend fun finishLoad(picked: File) {
+        val dst = com.aiapp.reverse.SplitApk.mergeIfBundle(picked) // .apks / .xapk / .apkm -> one APK
         apkFile = dst
         websiteTargetUrl = null
         clonedZipAttachment = null

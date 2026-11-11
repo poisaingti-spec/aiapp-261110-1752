@@ -42,7 +42,7 @@ class ReverseReconstructRunner(
         onStep("Uploading the APK (${"%.1f".format(apk.length() / 1_048_576.0)} MB)")
         val sha = gh.commit(
             repo,
-            files = mapOf(".github/workflows/decompile.yml" to WORKFLOW_YML.toByteArray()),
+            files = mapOf(".github/workflows/decompile.yml" to ReconstructWorkflow.YML.toByteArray()),
             diskFiles = mapOf("app.apk" to apk),
             message = "Decompile for reconstruction",
         )

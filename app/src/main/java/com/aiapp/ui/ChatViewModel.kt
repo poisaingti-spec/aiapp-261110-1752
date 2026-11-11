@@ -538,7 +538,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 apiKey = keys.get(provider),
                 effort = effort,
                 githubToken = token,
-                allowOtherSites = false,
+                allowOtherSites = true,
             ),
         )
         messages += ChatMessage(
@@ -573,7 +573,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 apiKey = keys.get(provider),
                 effort = effort,
                 githubToken = token,
-                allowOtherSites = false,
+                allowOtherSites = true,
                 zipPath = zip.path,
                 zipName = zip.name,
             ),
