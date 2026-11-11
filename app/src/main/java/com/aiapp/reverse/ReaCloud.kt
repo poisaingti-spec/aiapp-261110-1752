@@ -30,7 +30,8 @@ import java.util.Locale
  * REA is a desktop tool (Node.js, a Chrome browser, JADX with a JDK), so it cannot run inside an
  * Android app. Like JADX Reconstruct, the work is done on GitHub Actions:
  *
- * 1. a **private** repository is created in the user's GitHub account,
+ * 1. a repository is created in the user's GitHub account (private when the sign-in allows it,
+ *    otherwise public, like the app's other GitHub features),
  * 2. the APK (or the website address) is uploaded together with the workflow in `assets/rea/`,
  * 3. REA inspects the target on GitHub's runner and saves `evidence/rea-evidence.md`,
  * 4. the app downloads that report and puts it in front of the model.
@@ -197,18 +198,23 @@ object ReaCloud {
             val label = (apk?.nameWithoutExtension ?: websiteUrl.orEmpty().removePrefix("https://").removePrefix("http://"))
                 .lowercase().replace(Regex("[^a-z0-9]+"), "-").trim('-').ifBlank { "target" }.take(28)
             val name = "rea-study-$label-" + SimpleDateFormat("yyMMdd-HHmmss", Locale.US).format(Date())
+            fun createBody(private: Boolean) = buildJsonObject {
+                put("name", name)
+                put("description", "REA study by AI App")
+                put("private", private)
+                put("auto_init", true)
+            }.toString()
             onStep("🔬 REA: creating private GitHub repo $name")
-            val created = Http.json.parseToJsonElement(
-                call(
-                    "POST", "/user/repos",
-                    buildJsonObject {
-                        put("name", name)
-                        put("description", "REA study by AI App")
-                        put("private", true) // the target is uploaded here, so keep it out of public view
-                        put("auto_init", true)
-                    }.toString(),
-                ),
-            ).jsonObject
+            // Private first, so an uploaded APK stays out of public view. The app's GitHub sign-in asks
+            // only for public-repo access, so GitHub may refuse; then a public repo is used, as the
+            // app's other GitHub features do, and the status line says so.
+            val createdText = try {
+                call("POST", "/user/repos", createBody(private = true))
+            } catch (e: ProviderException) {
+                onStep("🔬 REA: this GitHub sign-in can't create private repos, using a public repo ($name)")
+                call("POST", "/user/repos", createBody(private = false))
+            }
+            val created = Http.json.parseToJsonElement(createdText).jsonObject
             fun JsonObject.str(k: String) = (this[k] as? JsonPrimitive)?.contentOrNull
             val repo = GitHubClient.Repo(
                 owner = (created["owner"] as? JsonObject)?.str("login") ?: login,
