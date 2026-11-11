@@ -140,11 +140,23 @@ fun ReverseScreen(chat: ChatViewModel, vm: ReverseViewModel, onBack: () -> Unit)
                     Text("AI: " + vm.liveAnswer, style = MaterialTheme.typography.bodyMedium)
                 }
 
-                // Instruction-driven change: model plans edits, engine applies + rebuilds in one tap.
+                val hasGithubToken = chat.githubToken().isNotBlank()
+                Text(
+                    if (hasGithubToken)
+                        "GitHub connected: the model only decides the edit — GitHub Actions decodes, patches, " +
+                            "rebuilds, zipaligns and signs the APK (same as the Build tab)."
+                    else
+                        "Add a GitHub token in Settings so the model only decides the edit and GitHub Actions " +
+                            "does the rest (decode, patch, rebuild, sign) — more reliable than on-device rebuild.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (hasGithubToken) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error,
+                )
+
+                // Instruction-driven change: model plans edits; GitHub (or on-device fallback) builds.
                 Text("Change the app", style = MaterialTheme.typography.titleSmall)
                 Text(
-                    "Describe a change to the app's text, name or version. The model plans it, and it's " +
-                        "applied, rebuilt and signed in one step. Deeper code changes need the rea backend.",
+                    "Describe a change to the app's text, name or version. Deeper code changes need " +
+                        "\"Change the code\" below, or the rea backend.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -155,17 +167,19 @@ fun ReverseScreen(chat: ChatViewModel, vm: ReverseViewModel, onBack: () -> Unit)
                     minLines = 2,
                 )
                 Button(
-                    onClick = { vm.applyInstruction(instruction.trim(), chat.provider, chat.model, chat.effort) },
+                    onClick = { vm.applyInstruction(instruction.trim(), chat.provider, chat.model, chat.effort, chat.githubToken()) },
                     enabled = !vm.busy && !vm.answering && instruction.isNotBlank(),
-                ) { Text("Apply change & rebuild") }
+                ) { Text(if (hasGithubToken) "Apply change (via GitHub)" else "Apply change & rebuild on-device") }
                 vm.planSummary?.let { Text("Plan: $it", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
 
-                // Advanced: on-device code (smali/bytecode) change.
+                // Code/logic change via smali. The model only writes the patch; GitHub (apktool) applies it.
                 Text("Change the code (advanced)", style = MaterialTheme.typography.titleSmall)
                 Text(
-                    "Edit app logic (e.g. disable a check, change behaviour). The DEX is disassembled to " +
-                        "smali on your phone, the model patches it, and it's reassembled, rebuilt and signed. " +
-                        "Slow and experimental — use a strong model, and only on apps you're authorized to modify.",
+                    "Edit app logic (e.g. disable a check, change behaviour). The model only finds the code " +
+                        "and writes the patch; " +
+                        (if (hasGithubToken) "GitHub Actions reassembles, rebuilds and signs it."
+                         else "without a GitHub token it reassembles on-device instead — slower and experimental.") +
+                        " Only on apps you're authorized to modify.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -176,9 +190,21 @@ fun ReverseScreen(chat: ChatViewModel, vm: ReverseViewModel, onBack: () -> Unit)
                     minLines = 2,
                 )
                 Button(
-                    onClick = { vm.applyCodeChange(codeInstruction.trim(), chat.provider, chat.model, chat.effort) },
+                    onClick = { vm.applyCodeChange(codeInstruction.trim(), chat.provider, chat.model, chat.effort, chat.githubToken()) },
                     enabled = !vm.busy && !vm.answering && codeInstruction.isNotBlank(),
-                ) { Text("Patch code & rebuild") }
+                ) { Text(if (hasGithubToken) "Patch code (via GitHub)" else "Patch code & rebuild on-device") }
+
+                vm.ciResult?.let { res ->
+                    Card(Modifier.fillMaxWidth()) {
+                        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            Text("Built on GitHub Actions", style = MaterialTheme.typography.titleSmall)
+                            Text("Repo: ${res.repoUrl}", style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            Button(onClick = { vm.installCi() }, enabled = !vm.installingCi) {
+                                Text(if (vm.installingCi) "Downloading…" else "Download & Install")
+                            }
+                        }
+                    }
+                }
 
                 // Manual rebuild + re-sign (rename / version only).
                 Text("Rebuild & re-sign", style = MaterialTheme.typography.titleSmall)

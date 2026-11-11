@@ -23,6 +23,7 @@ import com.aiapp.reverse.SmaliEngine
 import com.aiapp.reverse.ReaConfig
 import com.aiapp.reverse.ReaTool
 import com.aiapp.reverse.RebuildResult
+import com.aiapp.reverse.ReverseCiRunner
 import com.aiapp.reverse.ReverseEngine
 import kotlinx.coroutines.launch
 import java.io.File
@@ -42,6 +43,9 @@ class ReverseViewModel(app: Application) : AndroidViewModel(app) {
     var error by mutableStateOf<String?>(null); private set
     var report by mutableStateOf<ApkReport?>(null); private set
     var rebuilt by mutableStateOf<RebuildResult?>(null); private set
+    /** Set when the rebuild ran on GitHub Actions instead of on-device (apktool decode/patch/sign). */
+    var ciResult by mutableStateOf<ReverseCiRunner.CiResult?>(null); private set
+    var installingCi by mutableStateOf(false); private set
 
     private var apkFile: File? = null
 
@@ -122,15 +126,18 @@ class ReverseViewModel(app: Application) : AndroidViewModel(app) {
     var planSummary by mutableStateOf<String?>(null); private set
 
     /**
-     * One-tap: ask the model to turn [instruction] into concrete edits, apply them on-device, then
-     * rebuild and re-sign — the whole process at once. For apps you are authorized to modify.
+     * One-tap: ask the model to turn [instruction] into concrete edits, then build the result.
+     *
+     * With a GitHub token, the model's job stops at deciding the edits — GitHub Actions does the
+     * rest (apktool decode/patch/rebuild, zipalign, apksigner), the same split the Build tab uses
+     * for whole apps. Without a token, this falls back to the on-device rebuild.
      */
-    fun applyInstruction(instruction: String, provider: ProviderId, model: String, effort: Effort) {
+    fun applyInstruction(instruction: String, provider: ProviderId, model: String, effort: Effort, githubToken: String) {
         val r = report ?: return
         val apk = apkFile ?: return
         if (busy || answering) return
         viewModelScope.launch {
-            busy = true; error = null; rebuilt = null; planSummary = null
+            busy = true; error = null; rebuilt = null; ciResult = null; planSummary = null
             try {
                 status = "Reading the app's text…"
                 val strings = ReverseEngine.readStrings(apk)
@@ -144,15 +151,20 @@ class ReverseViewModel(app: Application) : AndroidViewModel(app) {
                 val edits = plan.toApkEdits()
                 if (edits.isEmpty()) {
                     error = plan.summary.ifBlank {
-                        "The model couldn't express that as an on-device edit. It may need code changes — connect the rea backend."
+                        "The model couldn't express that as an edit. It may need code changes — try \"Change the code\", or connect the rea backend."
                     }
                     status = null
                     return@launch
                 }
-                status = "Applying ${edits.size} edit(s), rebuilding & signing…"
-                val outDir = File(getApplication<Application>().cacheDir, "reverse/out")
-                outDir.deleteRecursively()
-                rebuilt = ReverseEngine.rebuild(getApplication(), apk, edits, outDir)
+                if (githubToken.isNotBlank()) {
+                    val runner = ReverseCiRunner(githubToken) { status = it }
+                    ciResult = runner.run(apk, r.appLabel.ifBlank { r.packageName }, edits, emptyMap())
+                } else {
+                    status = "Applying ${edits.size} edit(s), rebuilding & signing on-device…"
+                    val outDir = File(getApplication<Application>().cacheDir, "reverse/out")
+                    outDir.deleteRecursively()
+                    rebuilt = ReverseEngine.rebuild(getApplication(), apk, edits, outDir)
+                }
                 status = null
             } catch (e: Exception) {
                 com.aiapp.data.Log.e("Reverse", "operation failed", e)
@@ -172,16 +184,19 @@ class ReverseViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /**
-     * Advanced: a code/logic change via smali. The model picks search terms, the matching classes are
-     * disassembled on-device, the model patches them, they're reassembled, and the APK is rebuilt and
-     * re-signed. Slow and experimental; use a strong model. For apps you are authorized to modify.
+     * A code/logic change via smali. The model only picks search terms and writes the patch; finding
+     * candidate classes is a quick on-device read. Applying the patch — reassembling the DEX,
+     * rebuilding, zipaligning and signing — runs on GitHub Actions (apktool + the Android SDK build
+     * tools already on its runners), not on the phone, when a GitHub token is set. Without a token,
+     * it falls back to the slower, experimental on-device reassembly. For apps you are authorized to
+     * modify; use a strong model.
      */
-    fun applyCodeChange(instruction: String, provider: ProviderId, model: String, effort: Effort) {
+    fun applyCodeChange(instruction: String, provider: ProviderId, model: String, effort: Effort, githubToken: String) {
         val r = report ?: return
         val apk = apkFile ?: return
         if (busy || answering) return
         viewModelScope.launch {
-            busy = true; error = null; rebuilt = null; planSummary = null
+            busy = true; error = null; rebuilt = null; ciResult = null; planSummary = null
             try {
                 val api = r.minSdk.toIntOrNull() ?: 21
                 val work = File(getApplication<Application>().cacheDir, "reverse/smali").apply { deleteRecursively(); mkdirs() }
@@ -191,7 +206,7 @@ class ReverseViewModel(app: Application) : AndroidViewModel(app) {
                 val termsReply = collectReply(provider, model, ReverseAgent.termsPrompt(r, instruction), ReverseAgent.TERMS_SYSTEM, effort)
                 val terms = ReverseAgent.parseTerms(termsReply, instruction)
 
-                status = "Disassembling & searching (this can be slow)…"
+                status = "Reading candidate classes (on-device, read-only)…"
                 val candidates = engine.search(apk, terms)
                 if (candidates.isEmpty()) {
                     error = "Couldn't find code matching that. Try naming the class, SDK, or exact text involved. (searched: ${terms.joinToString()})"
@@ -207,15 +222,20 @@ class ReverseViewModel(app: Application) : AndroidViewModel(app) {
                 }
                 planSummary = "Patching ${smaliEdits.size} class(es): ${smaliEdits.keys.joinToString().take(200)}"
 
-                status = "Reassembling, rebuilding & signing…"
-                val dexEdits = engine.buildEdits(apk, smaliEdits)
-                if (dexEdits.isEmpty()) {
-                    error = "The edited classes weren't found in the app's DEX files."
-                    status = null; return@launch
+                if (githubToken.isNotBlank()) {
+                    val runner = ReverseCiRunner(githubToken) { status = it }
+                    ciResult = runner.run(apk, r.appLabel.ifBlank { r.packageName }, emptyList(), smaliEdits)
+                } else {
+                    status = "Reassembling on-device, rebuilding & signing (slow)…"
+                    val dexEdits = engine.buildEdits(apk, smaliEdits)
+                    if (dexEdits.isEmpty()) {
+                        error = "The edited classes weren't found in the app's DEX files."
+                        status = null; return@launch
+                    }
+                    val outDir = File(getApplication<Application>().cacheDir, "reverse/out")
+                    outDir.deleteRecursively()
+                    rebuilt = ReverseEngine.rebuild(getApplication(), apk, dexEdits, outDir)
                 }
-                val outDir = File(getApplication<Application>().cacheDir, "reverse/out")
-                outDir.deleteRecursively()
-                rebuilt = ReverseEngine.rebuild(getApplication(), apk, dexEdits, outDir)
                 status = null
             } catch (e: Exception) {
                 com.aiapp.data.Log.e("Reverse", "operation failed", e)
@@ -256,6 +276,24 @@ class ReverseViewModel(app: Application) : AndroidViewModel(app) {
     fun install() {
         val out = rebuilt?.outApk ?: return
         com.aiapp.data.ApkInstaller.install(getApplication(), out)
+    }
+
+    /** Downloads the GitHub-built APK, then opens Android's installer. */
+    fun installCi() {
+        val url = ciResult?.apkUrl ?: return
+        viewModelScope.launch {
+            installingCi = true; error = null
+            try {
+                val app = getApplication<Application>()
+                val file = com.aiapp.data.ApkInstaller.download(app, url) { }
+                com.aiapp.data.ApkInstaller.install(app, file)
+            } catch (e: Exception) {
+                com.aiapp.data.Log.e("Reverse", "CI APK install failed", e)
+                error = e.message ?: "Couldn't download the built APK."
+            } finally {
+                installingCi = false
+            }
+        }
     }
 
     // ---------- remote rea ----------
