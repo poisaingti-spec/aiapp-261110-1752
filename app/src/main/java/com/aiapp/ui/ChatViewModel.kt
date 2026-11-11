@@ -112,8 +112,16 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     private var thinkingStart = 0L
     private var thoughtSeconds = 0
         private set
-    var streaming by mutableStateOf(false)
-        private set
+    private val _streaming = mutableStateOf(false)
+    /** True while a reply is streaming. Setting it keeps the app online in the background (see [com.aiapp.builder.KeepAliveService]). */
+    var streaming: Boolean
+        get() = _streaming.value
+        private set(v) {
+            if (v == _streaming.value) return
+            _streaming.value = v
+            if (v) com.aiapp.builder.KeepAliveService.begin(getApplication(), "Connected to the model…")
+            else com.aiapp.builder.KeepAliveService.end(getApplication())
+        }
     var status by mutableStateOf<String?>(null)
         private set
     var error by mutableStateOf<String?>(null)

@@ -75,7 +75,7 @@ object ReaCloud {
         evidence: String,
         isWebsite: Boolean,
     ): CraftAnythingEngine.CraftStudyEvidence {
-        val shortEvidence = evidence.take(11_500)
+        val shortEvidence = evidence.take(17_000)
         val original = study.architectBlueprintMarkdown
         // For websites the on-device study can only see the page's raw HTML; what REA observed in a
         // real browser replaces its generic component list.
@@ -123,7 +123,7 @@ object ReaCloud {
     const val PLAN_SYSTEM: String =
         "You are a senior Android engineer planning how to rebuild an app or website as a new, original " +
             "Android app (Kotlin, Jetpack Compose, Material 3). Write a plan only. Do not write any code. " +
-            "Use only what the evidence shows; when you have to guess, say it is an assumption. Be concrete and brief."
+            "Use only what the evidence shows; when you have to guess, say it is an assumption. Be concrete and brief. " + "When the evidence lists backend hosts, endpoints or headers, the new app must call those same servers with the same request shape; " + "note where a server will likely reject a third-party client (app-signature attestation, certificate pinning, or a key that is not in the APK)."
 
     /** Prompt for the plan the user sees (and approves) before anything is built. */
     fun planPrompt(
@@ -138,13 +138,13 @@ object ReaCloud {
         appendLine()
         appendLine("Evidence collected about the target:")
         appendLine()
-        appendLine(study.architectBlueprintMarkdown.replace(MARK_EVIDENCE, "").take(14_000))
+        appendLine(study.architectBlueprintMarkdown.replace(MARK_EVIDENCE, "").take(18_000))
         appendLine()
         appendLine("Write the plan in at most 450 words with exactly these headings:")
         appendLine("## What the target is")
         appendLine("## Screens to build")
         appendLine("## Features, screen by screen")
-        appendLine("## Data and network")
+        appendLine("## Data and network (use the REAL base URLs, endpoints and headers from the evidence — do not invent them; wire the new app to the same servers)")
         appendLine("## Look and feel")
         appendLine("## Files I will write")
         appendLine("## What cannot be reproduced, and assumptions")

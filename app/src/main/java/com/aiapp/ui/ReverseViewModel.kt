@@ -129,7 +129,16 @@ class ReverseViewModel(app: Application) : AndroidViewModel(app) {
 
     /** The whole conversation about this app: your messages, live progress, and final results. */
     val transcript = mutableStateListOf<ChatMessage>()
-    var answering by mutableStateOf(false); private set
+    private val _answering = mutableStateOf(false)
+    /** True while a model/REA/build step runs. Setting it keeps the app online in the background (see [com.aiapp.builder.KeepAliveService]). */
+    var answering: Boolean
+        get() = _answering.value
+        private set(v) {
+            if (v == _answering.value) return
+            _answering.value = v
+            if (v) com.aiapp.builder.KeepAliveService.begin(getApplication(), "Working in the background…")
+            else com.aiapp.builder.KeepAliveService.end(getApplication())
+        }
     var liveAnswer by mutableStateOf(""); private set
     var liveThinking by mutableStateOf(""); private set
 
