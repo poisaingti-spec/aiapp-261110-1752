@@ -367,7 +367,7 @@ private fun PickerRow(vm: ChatViewModel) {
 }
 
 @Composable
-private fun <T> Dropdown(
+fun <T> Dropdown(
     label: String,
     options: List<T>,
     display: (T) -> String,
@@ -425,7 +425,7 @@ private fun ErrorBanner(message: String, onOpenSettings: () -> Unit) {
 }
 
 @Composable
-private fun MessageBubble(message: ChatMessage, onBuildZip: (com.aiapp.llm.Attachment) -> Unit = {}) {
+fun MessageBubble(message: ChatMessage, onBuildZip: (com.aiapp.llm.Attachment) -> Unit = {}) {
     if (message.role == Role.USER) {
         Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.End) {
             message.attachments.forEach { a ->

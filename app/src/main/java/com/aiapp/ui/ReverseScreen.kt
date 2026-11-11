@@ -4,17 +4,24 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.Button
-import androidx.compose.material3.Card
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -23,236 +30,190 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.text.font.FontFamily
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.aiapp.llm.ChatMessage
+import com.aiapp.llm.Effort
+import com.aiapp.llm.ProviderId
 import com.aiapp.llm.Role
 
 /**
- * Reverse Engineering tab.
+ * Reverse Engineering tab — the same conversational interface as Chat.
  *
- * A mobile APK-analysis / reverse-engineering workbench (same category as `morluto/rea`, Apktool,
- * and JADX). Load an APK, decode it on the phone, ask the model about it, connect an optional
- * remote `rea` backend for deep analysis, and rebuild a re-signed APK with authorized edits.
+ * Load the target (APK, a .zip holding one, or a direct download URL), pick a model, then talk to it:
+ * ask a question or describe a change. You can send another message while it's working — it's folded
+ * in at the next checkpoint, right up to the moment GitHub Actions is kicked off (that external build
+ * itself can't be redirected once started, same as any dispatched tool call — but the next one can be).
  *
  * For apps you are authorized to inspect and modify — your own apps, open-source apps, security
- * research, learning, and personal modding.
+ * research, and personal modding.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ReverseScreen(chat: ChatViewModel, vm: ReverseViewModel, onBack: () -> Unit) {
-    val picker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
-        if (uri != null) vm.loadApk(uri)
-    }
-    var question by remember { mutableStateOf("") }
-    var instruction by remember { mutableStateOf("") }
-    var codeInstruction by remember { mutableStateOf("") }
-    var newLabel by remember { mutableStateOf("") }
-    var newVersion by remember { mutableStateOf("") }
+    val apkPicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri -> if (uri != null) vm.loadApk(uri) }
+    val zipPicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri -> if (uri != null) vm.loadZip(uri) }
+    var input by remember { mutableStateOf("") }
+    var url by remember { mutableStateOf("") }
+    var showAdvanced by remember { mutableStateOf(false) }
+    val listState = rememberLazyListState()
 
+    androidx.compose.runtime.LaunchedEffect(vm.transcript.size, vm.liveAnswer.length) {
+        val count = vm.transcript.size + if (vm.answering && vm.liveAnswer.isNotEmpty()) 1 else 0
+        if (count > 0) listState.scrollToItem(count - 1)
+    }
+
+    val title = vm.report?.let { it.appLabel.ifBlank { it.packageName } } ?: "Reverse Engineering"
     Scaffold(
         topBar = {
-            androidx.compose.material3.TopAppBar(
-                title = { Text("Reverse Engineering") },
-                navigationIcon = {
-                    IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") }
+            TopAppBar(
+                title = { Text(title) },
+                navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") } },
+                actions = {
+                    if (vm.report != null) TextButton(onClick = { showAdvanced = !showAdvanced }) { Text(if (showAdvanced) "Simple" else "Advanced") }
                 },
             )
         },
-    ) { pad ->
-        Column(
-            Modifier.padding(pad).padding(16.dp).fillMaxSize().verticalScroll(rememberScrollState()),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
-        ) {
-            Text(
-                "Analyse and modify APKs you are authorized to work on — your own apps, open-source " +
-                    "apps, security research or personal modding. Decoding runs on your phone.",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            Text(
-                "Model tip: planning edits and fixing builds needs a capable model. Small offline models " +
-                    "often can't. Pick a strong FREE one in Chat first: Gemini (free AI Studio key) or an " +
-                    "Open model like DeepSeek / Qwen-Coder / GLM / Kimi (free OpenRouter key). " +
-                    "Current model: ${chat.provider.label}.",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.primary,
-            )
-
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Button(onClick = { picker.launch("application/vnd.android.package-archive") }, enabled = !vm.busy) {
-                    Text("Load APK")
-                }
-                OutlinedButton(onClick = { picker.launch("*/*") }, enabled = !vm.busy) { Text("Pick any file") }
-            }
-
-            vm.status?.let { Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
-                CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
-                Text("  $it", style = MaterialTheme.typography.bodySmall)
-            } }
-            vm.error?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
-
-            vm.report?.let { r ->
-                Card(Modifier.fillMaxWidth()) {
-                    Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                        Text(r.appLabel.ifBlank { r.packageName }, style = MaterialTheme.typography.titleMedium)
-                        Field("Package", r.packageName)
-                        Field("Version", "${r.versionName} (${r.versionCode})")
-                        Field("SDK", "min ${r.minSdk} · target ${r.targetSdk}")
-                        Field("Runtime", r.runtimeHint)
-                        Field("ABIs", r.abis.joinToString().ifBlank { "—" })
-                        Field("Signing", r.signature.summary)
-                        Field("Permissions", r.permissions.size.toString())
-                        Field("Activities", r.activities.size.toString())
-                        Field("Services / Receivers", "${r.services.size} / ${r.receivers.size}")
-                        Field("DEX / native libs", "${r.dexFiles.size} / ${r.nativeLibs.size}")
-                        Field("Classes / methods", "${r.classCount} / ${r.methodCount}")
-                    }
-                }
-
-                // Ask the model about the decoded app.
-                Text("Ask about this app", style = MaterialTheme.typography.titleSmall)
-                OutlinedTextField(
-                    value = question, onValueChange = { question = it },
-                    modifier = Modifier.fillMaxWidth(),
-                    placeholder = { Text("e.g. How does it store settings? Where are the ads?") },
-                    minLines = 2,
-                )
-                Button(
-                    onClick = { vm.ask(question.trim(), chat.provider, chat.model, chat.effort); question = "" },
-                    enabled = !vm.answering && question.isNotBlank(),
-                ) { Text(if (vm.answering) "Thinking…" else "Ask ${chat.provider.label}") }
-
-                vm.transcript.forEach { m ->
-                    Text(
-                        (if (m.role == Role.USER) "You: " else "AI: ") + m.text,
-                        style = MaterialTheme.typography.bodyMedium,
-                    )
-                }
-                if (vm.answering && vm.liveAnswer.isNotBlank()) {
-                    Text("AI: " + vm.liveAnswer, style = MaterialTheme.typography.bodyMedium)
-                }
-
-                val hasGithubToken = chat.githubToken().isNotBlank()
-                Text(
-                    if (hasGithubToken)
-                        "GitHub connected: the model only decides the edit — GitHub Actions decodes, patches, " +
-                            "rebuilds, zipaligns and signs the APK (same as the Build tab)."
-                    else
-                        "Add a GitHub token in Settings so the model only decides the edit and GitHub Actions " +
-                            "does the rest (decode, patch, rebuild, sign) — more reliable than on-device rebuild.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = if (hasGithubToken) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error,
-                )
-
-                // Instruction-driven change: model plans edits; GitHub (or on-device fallback) builds.
-                Text("Change the app", style = MaterialTheme.typography.titleSmall)
-                Text(
-                    "Describe a change to the app's text, name or version. Deeper code changes need " +
-                        "\"Change the code\" below, or the rea backend.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                OutlinedTextField(
-                    value = instruction, onValueChange = { instruction = it },
-                    modifier = Modifier.fillMaxWidth(),
-                    placeholder = { Text("e.g. change the welcome text to \"Hello\" and rename the app to Demo") },
-                    minLines = 2,
-                )
-                Button(
-                    onClick = { vm.applyInstruction(instruction.trim(), chat.provider, chat.model, chat.effort, chat.githubToken()) },
-                    enabled = !vm.busy && !vm.answering && instruction.isNotBlank(),
-                ) { Text(if (hasGithubToken) "Apply change (via GitHub)" else "Apply change & rebuild on-device") }
-                vm.planSummary?.let { Text("Plan: $it", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
-
-                // Code/logic change via smali. The model only writes the patch; GitHub (apktool) applies it.
-                Text("Change the code (advanced)", style = MaterialTheme.typography.titleSmall)
-                Text(
-                    "Edit app logic (e.g. disable a check, change behaviour). The model only finds the code " +
-                        "and writes the patch; " +
-                        (if (hasGithubToken) "GitHub Actions reassembles, rebuilds and signs it."
-                         else "without a GitHub token it reassembles on-device instead — slower and experimental.") +
-                        " Only on apps you're authorized to modify.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                OutlinedTextField(
-                    value = codeInstruction, onValueChange = { codeInstruction = it },
-                    modifier = Modifier.fillMaxWidth(),
-                    placeholder = { Text("e.g. make isPremium() always return true") },
-                    minLines = 2,
-                )
-                Button(
-                    onClick = { vm.applyCodeChange(codeInstruction.trim(), chat.provider, chat.model, chat.effort, chat.githubToken()) },
-                    enabled = !vm.busy && !vm.answering && codeInstruction.isNotBlank(),
-                ) { Text(if (hasGithubToken) "Patch code (via GitHub)" else "Patch code & rebuild on-device") }
-
-                vm.ciResult?.let { res ->
-                    Card(Modifier.fillMaxWidth()) {
-                        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                            Text("Built on GitHub Actions", style = MaterialTheme.typography.titleSmall)
-                            Text("Repo: ${res.repoUrl}", style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                            Button(onClick = { vm.installCi() }, enabled = !vm.installingCi) {
-                                Text(if (vm.installingCi) "Downloading…" else "Download & Install")
+        bottomBar = {
+            if (vm.report != null) {
+                Surface(tonalElevation = 2.dp) {
+                    Column(Modifier.fillMaxWidth().navigationBarsPadding().imePadding().padding(horizontal = 12.dp, vertical = 8.dp)) {
+                        vm.status?.let {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                CircularProgressIndicator(Modifier.size(14.dp), strokeWidth = 2.dp)
+                                Text("  $it", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
                             }
                         }
-                    }
-                }
-
-                // Manual rebuild + re-sign (rename / version only).
-                Text("Rebuild & re-sign", style = MaterialTheme.typography.titleSmall)
-                OutlinedTextField(newLabel, { newLabel = it }, Modifier.fillMaxWidth(), label = { Text("New app name (optional)") }, singleLine = true)
-                OutlinedTextField(newVersion, { newVersion = it }, Modifier.fillMaxWidth(), label = { Text("New version name (optional)") }, singleLine = true)
-                Button(
-                    onClick = { vm.rebuild(newLabel.ifBlank { null }, newVersion.ifBlank { null }, null, null) },
-                    enabled = !vm.busy && (newLabel.isNotBlank() || newVersion.isNotBlank()),
-                ) { Text("Rebuild signed APK") }
-
-                vm.rebuilt?.let { res ->
-                    Card(Modifier.fillMaxWidth()) {
-                        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                            Text("Rebuilt & signed", style = MaterialTheme.typography.titleSmall)
-                            res.appliedNotes.forEach { Text("• $it", style = MaterialTheme.typography.bodySmall) }
-                            Text("Signed with ${res.signedWith}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            Button(onClick = { vm.install() }) { Text("Install") }
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            OutlinedTextField(
+                                value = input,
+                                onValueChange = { input = it },
+                                placeholder = { Text(if (vm.answering) "Say something to redirect…" else "Ask a question, or describe a change") },
+                                maxLines = 5,
+                                modifier = Modifier.weight(1f),
+                            )
+                            androidx.compose.foundation.layout.Spacer(Modifier.width(8.dp))
+                            Button(
+                                onClick = { vm.send(input, chat.provider, chat.model, chat.effort); input = "" },
+                                enabled = input.isNotBlank(),
+                            ) { Text(if (vm.answering) "Steer" else "Send") }
                         }
                     }
                 }
             }
-
-            // Remote rea backend (deep desktop-grade analysis).
-            Text("Remote rea backend (optional)", style = MaterialTheme.typography.titleSmall)
-            Text(
-                "Run `npx -y rea-agents@latest mcp --http --host 0.0.0.0 --port 8765` on your PC for " +
-                    "native-binary, IL2CPP/Unity, Flutter and full-decompiler analysis a phone can't do.",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            OutlinedTextField(vm.reaUrl, { vm.reaUrl = it }, Modifier.fillMaxWidth(), label = { Text("rea URL (http://<pc-ip>:8765/mcp)") }, singleLine = true)
-            Button(onClick = { vm.connectRea() }, enabled = !vm.busy && vm.reaUrl.isNotBlank()) {
-                Text(if (vm.reaConnected) "Reconnect rea" else "Connect rea")
-            }
-            if (vm.reaConnected) {
-                Text("Connected: ${vm.reaInfo}  ·  ${vm.reaTools.size} tools", style = MaterialTheme.typography.bodySmall)
-                vm.reaTools.take(12).forEach {
-                    Text("• ${it.name}", style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        },
+    ) { pad ->
+        Column(Modifier.padding(pad).fillMaxSize()) {
+            if (vm.report == null) {
+                LoadTargetPanel(vm, url, { url = it }, onPickApk = { apkPicker.launch("application/vnd.android.package-archive") }, onPickZip = { zipPicker.launch("application/zip") })
+            } else {
+                // Model picker — exactly the Chat dropdowns, right on this screen.
+                Row(
+                    Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 12.dp, vertical = 6.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Dropdown(label = chat.provider.label, options = ProviderId.entries.toList(), display = { it.label }, onSelect = chat::selectProvider)
+                    val modelLabel = when {
+                        chat.loadingModels -> "Loading models…"
+                        chat.model.isBlank() -> "Pick model"
+                        else -> chat.models.firstOrNull { it.id == chat.model }?.name ?: chat.model
+                    }
+                    Dropdown(
+                        label = modelLabel, options = chat.models, display = { it.name },
+                        onSelect = { chat.selectModel(it.id) }, onOpen = { if (chat.models.isEmpty()) chat.refreshModels() },
+                    )
+                    Dropdown(label = "Effort: ${chat.effort.label}", options = Effort.entries.toList(), display = { it.label }, onSelect = chat::selectEffort)
                 }
+
+                vm.error?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(horizontal = 12.dp)) }
+
+                LazyColumn(
+                    state = listState,
+                    modifier = Modifier.weight(1f).fillMaxWidth(),
+                    contentPadding = PaddingValues(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    items(vm.transcript) { m -> MessageBubble(m) }
+                    if (vm.answering && vm.liveAnswer.isNotBlank()) {
+                        item { MessageBubble(ChatMessage(Role.ASSISTANT, vm.liveAnswer)) }
+                    }
+                    if (vm.localInstallReady != null) {
+                        item { Button(onClick = { vm.installLocal() }) { Text("Install") } }
+                    }
+                }
+
+                if (showAdvanced) AdvancedPanel(vm)
             }
         }
     }
 }
 
 @Composable
-private fun Field(label: String, value: String) {
-    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-        Text(label, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        Text(value, style = MaterialTheme.typography.bodySmall, fontFamily = FontFamily.Monospace, maxLines = 1, overflow = TextOverflow.Ellipsis)
+private fun LoadTargetPanel(
+    vm: ReverseViewModel,
+    url: String,
+    onUrlChange: (String) -> Unit,
+    onPickApk: () -> Unit,
+    onPickZip: () -> Unit,
+) {
+    Column(Modifier.padding(16.dp).fillMaxSize(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        Text(
+            "Load an app to reverse-engineer — for apps you're authorized to work on: your own, " +
+                "open-source, security research, or modding. Decoding runs on your phone.",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Button(onClick = onPickApk, enabled = !vm.loading) { Text("Upload APK") }
+            OutlinedButton(onClick = onPickZip, enabled = !vm.loading) { Text("Upload .zip") }
+        }
+        Text("or paste a direct download link", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedTextField(
+                value = url, onValueChange = onUrlChange,
+                placeholder = { Text("https://…/app.apk") },
+                singleLine = true,
+                modifier = Modifier.weight(1f),
+                enabled = !vm.loading,
+            )
+            Button(onClick = { vm.loadUrl(url) }, enabled = !vm.loading && url.isNotBlank()) { Text("Fetch") }
+        }
+        vm.status?.let {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
+                Text("  $it", style = MaterialTheme.typography.bodySmall)
+            }
+        }
+        vm.error?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
+    }
+}
+
+@Composable
+private fun AdvancedPanel(vm: ReverseViewModel) {
+    Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text("Remote rea backend (optional)", style = MaterialTheme.typography.titleSmall)
+        Text(
+            "Run `npx -y rea-agents@latest mcp --http --host 0.0.0.0 --port 8765` on your PC for " +
+                "native-binary, IL2CPP/Unity, Flutter and full-decompiler analysis a phone can't do.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedTextField(vm.reaUrl, { vm.reaUrl = it }, Modifier.weight(1f), label = { Text("rea URL") }, singleLine = true)
+            Button(onClick = { vm.connectRea() }, enabled = vm.reaUrl.isNotBlank()) { Text(if (vm.reaConnected) "Reconnect" else "Connect") }
+        }
+        if (vm.reaConnected) {
+            Text("Connected: ${vm.reaInfo}  ·  ${vm.reaTools.size} tools", style = MaterialTheme.typography.bodySmall)
+        }
     }
 }

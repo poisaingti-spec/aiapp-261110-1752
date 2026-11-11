@@ -9,6 +9,8 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.setValue
 import com.aiapp.data.ApiKeys
+import com.aiapp.data.ApkInstaller
+import com.aiapp.data.Log
 import com.aiapp.llm.ChatMessage
 import com.aiapp.llm.Effort
 import com.aiapp.llm.ProviderId
@@ -18,20 +20,28 @@ import com.aiapp.llm.THOUGHT
 import com.aiapp.reverse.ApkEdit
 import com.aiapp.reverse.ApkReport
 import com.aiapp.reverse.ReaClient
-import com.aiapp.reverse.ReverseAgent
-import com.aiapp.reverse.SmaliEngine
 import com.aiapp.reverse.ReaConfig
 import com.aiapp.reverse.ReaTool
-import com.aiapp.reverse.RebuildResult
+import com.aiapp.reverse.ReverseAgent
 import com.aiapp.reverse.ReverseCiRunner
 import com.aiapp.reverse.ReverseEngine
+import com.aiapp.reverse.SmaliEngine
 import kotlinx.coroutines.launch
 import java.io.File
+import java.util.zip.ZipFile
 
 /**
- * Drives the Reverse Engineering tab: load an APK, decode it on the phone, ask the model about it,
- * optionally connect to a remote `rea` backend for deep analysis, and rebuild a re-signed APK with
- * authorized edits.
+ * Drives the Reverse Engineering tab as one steerable conversation, like Chat:
+ *
+ * Load the target (APK, a .zip containing one, or a direct download URL), pick a model, then just
+ * say what you want — a question gets a plain answer; a change is planned, and if it needs code the
+ * agent automatically escalates to a smali patch; either way GitHub Actions builds and signs the
+ * result when you have a GitHub token (on-device otherwise). You can send another message *while it's
+ * working* and it is folded in at the next checkpoint — before escalating to a code patch, and again
+ * right before the GitHub build is kicked off (that external job itself can't be redirected once
+ * started, the same way any tool call can't once dispatched — but the next one always can be).
+ *
+ * For apps you are authorized to work on: your own apps, open-source apps, security research, modding.
  */
 class ReverseViewModel(app: Application) : AndroidViewModel(app) {
 
@@ -39,20 +49,20 @@ class ReverseViewModel(app: Application) : AndroidViewModel(app) {
     private val prefs = app.getSharedPreferences("reverse", android.content.Context.MODE_PRIVATE)
 
     var busy by mutableStateOf(false); private set
+    var loading by mutableStateOf(false); private set
     var status by mutableStateOf<String?>(null); private set
     var error by mutableStateOf<String?>(null); private set
     var report by mutableStateOf<ApkReport?>(null); private set
-    var rebuilt by mutableStateOf<RebuildResult?>(null); private set
-    /** Set when the rebuild ran on GitHub Actions instead of on-device (apktool decode/patch/sign). */
-    var ciResult by mutableStateOf<ReverseCiRunner.CiResult?>(null); private set
-    var installingCi by mutableStateOf(false); private set
 
     private var apkFile: File? = null
 
-    /** The model Q&A transcript for the loaded APK. */
+    /** The whole conversation about this app: your messages, live progress, and final results. */
     val transcript = mutableStateListOf<ChatMessage>()
     var answering by mutableStateOf(false); private set
     var liveAnswer by mutableStateOf(""); private set
+
+    /** Captured when you send a message while the agent is already working; folded in at the next checkpoint. */
+    private var pendingSteer: String? = null
 
     // remote rea
     var reaUrl by mutableStateOf(prefs.getString("rea_url", "").orEmpty())
@@ -63,9 +73,11 @@ class ReverseViewModel(app: Application) : AndroidViewModel(app) {
 
     fun clearError() { error = null }
 
+    // ---------- Loading the target ----------
+
     fun loadApk(uri: Uri) {
         viewModelScope.launch {
-            busy = true; error = null; status = "Copying APK…"; report = null; rebuilt = null; transcript.clear()
+            loading = true; error = null; status = "Copying APK…"; report = null; transcript.clear()
             try {
                 val ctx = getApplication<Application>()
                 val dir = File(ctx.cacheDir, "reverse").apply { mkdirs() }
@@ -75,18 +87,82 @@ class ReverseViewModel(app: Application) : AndroidViewModel(app) {
                     requireNotNull(input) { "Can't open that file." }
                     dst.outputStream().use { input.copyTo(it) }
                 }
-                apkFile = dst
-                status = "Decoding on device…"
-                report = ReverseEngine.inspect(dst)
-                status = null
+                finishLoad(dst)
             } catch (e: Exception) {
-                com.aiapp.data.Log.e("Reverse", "operation failed", e)
+                Log.e("Reverse", "load failed", e)
                 error = e.message ?: "Couldn't read that APK."
                 status = null
             } finally {
-                busy = false
+                loading = false
             }
         }
+    }
+
+    /** A .zip that contains an APK (e.g. a zipped app) — the first `.apk` entry inside it is used. */
+    fun loadZip(uri: Uri) {
+        viewModelScope.launch {
+            loading = true; error = null; status = "Looking for an APK inside the zip…"; report = null; transcript.clear()
+            try {
+                val ctx = getApplication<Application>()
+                val dir = File(ctx.cacheDir, "reverse").apply { mkdirs() }
+                val tmpZip = File(dir, "upload.zip")
+                ctx.contentResolver.openInputStream(uri).use { input ->
+                    requireNotNull(input) { "Can't open that file." }
+                    tmpZip.outputStream().use { input.copyTo(it) }
+                }
+                val dst = File(dir, "from-zip.apk")
+                ZipFile(tmpZip).use { zip ->
+                    val entry = zip.entries().asSequence().firstOrNull { it.name.endsWith(".apk", true) }
+                        ?: throw IllegalStateException("No .apk file found inside that zip.")
+                    zip.getInputStream(entry).use { input -> dst.outputStream().use { input.copyTo(it) } }
+                }
+                tmpZip.delete()
+                finishLoad(dst)
+            } catch (e: Exception) {
+                Log.e("Reverse", "load zip failed", e)
+                error = e.message ?: "Couldn't read that zip."
+                status = null
+            } finally {
+                loading = false
+            }
+        }
+    }
+
+    /** A direct download link to an APK (your own hosting, a GitHub release, F-Droid, etc.). */
+    fun loadUrl(url: String) {
+        val trimmed = url.trim()
+        if (trimmed.isBlank()) { error = "Paste a direct APK download link first."; return }
+        viewModelScope.launch {
+            loading = true; error = null; status = "Downloading…"; report = null; transcript.clear()
+            try {
+                val ctx = getApplication<Application>()
+                val file = ApkInstaller.download(ctx, trimmed) { p -> status = "Downloading… ${(p * 100).toInt()}%" }
+                finishLoad(file)
+            } catch (e: Exception) {
+                Log.e("Reverse", "load url failed", e)
+                error = e.message ?: "Couldn't download that URL."
+                status = null
+            } finally {
+                loading = false
+            }
+        }
+    }
+
+    private suspend fun finishLoad(dst: File) {
+        apkFile = dst
+        status = "Decoding on device…"
+        report = ReverseEngine.inspect(dst)
+        status = null
+        val r = report!!
+        transcript.add(
+            ChatMessage(
+                Role.ASSISTANT,
+                "Loaded **${r.appLabel.ifBlank { r.packageName }}**. ${r.classCount} classes, ${r.methodCount} methods, " +
+                    "${r.permissions.size} permissions, signed with ${r.signature.summary}.\n\n" +
+                    "Tell me what you want — ask a question, or describe a change. You can send another message " +
+                    "while I'm working and I'll fold it in.",
+            ),
+        )
     }
 
     private fun queryName(uri: Uri): String? = runCatching {
@@ -96,84 +172,138 @@ class ReverseViewModel(app: Application) : AndroidViewModel(app) {
         }
     }.getOrNull()
 
-    /** Ask the selected chat model a question about the decoded APK. */
-    fun ask(question: String, provider: ProviderId, model: String, effort: Effort) {
-        val r = report ?: return
-        if (answering) return
-        transcript.add(ChatMessage(Role.USER, question))
+    // ---------- The conversation ----------
+
+    private val questionLike = Regex("^(how|what|why|where|when|does|is|are|can|could|who|which)\\b", RegexOption.IGNORE_CASE)
+
+    /** One box, like Chat: ask or instruct. Sending again while busy steers the current run instead of starting a new one. */
+    fun send(text: String, provider: ProviderId, model: String, effort: Effort) {
+        val instruction = text.trim()
+        if (instruction.isBlank()) return
+        val r = report
+        if (r == null) { error = "Load an APK first."; return }
+        transcript.add(ChatMessage(Role.USER, instruction))
+        if (answering) {
+            pendingSteer = ((pendingSteer ?: "") + "\n" + instruction).trim()
+            transcript.add(ChatMessage(Role.ASSISTANT, "Got it — I'll factor that in at the next step."))
+            return
+        }
         viewModelScope.launch {
-            answering = true; liveAnswer = ""; error = null
+            answering = true; error = null
             try {
-                val key = keys.get(provider)
-                val system = SYSTEM_PROMPT
-                val context = "DECODED APK (on-device):\n" + r.toBriefing() +
-                    (if (reaConnected) "\n\nA remote rea backend is connected with ${reaTools.size} tools for deeper analysis." else "")
-                val messages = listOf(ChatMessage(Role.USER, "$context\n\nQuestion: $question"))
-                Providers.get(provider).stream(key, model, messages, effort, system).collect { chunk ->
-                    if (chunk.startsWith(THOUGHT)) return@collect
-                    liveAnswer += chunk
+                val isQuestion = instruction.contains('?') || questionLike.containsMatchIn(instruction)
+                if (isQuestion) {
+                    answerQuestion(r, instruction, provider, model, effort)
+                } else {
+                    runChange(r, instruction, provider, model, effort)
                 }
-                transcript.add(ChatMessage(Role.ASSISTANT, liveAnswer))
             } catch (e: Exception) {
-                com.aiapp.data.Log.e("Reverse", "operation failed", e)
-                error = e.message ?: "The model request failed."
+                Log.e("Reverse", "agent turn failed", e)
+                transcript.add(ChatMessage(Role.ASSISTANT, "That failed: ${e.message}"))
             } finally {
-                answering = false; liveAnswer = ""
+                answering = false; liveAnswer = ""; status = null
             }
         }
     }
 
-    var planSummary by mutableStateOf<String?>(null); private set
+    /** Takes and clears any message sent while the agent was working, to fold into the next step. */
+    private fun takeSteer(): String? = pendingSteer.also { pendingSteer = null }
 
-    /**
-     * One-tap: ask the model to turn [instruction] into concrete edits, then build the result.
-     *
-     * With a GitHub token, the model's job stops at deciding the edits — GitHub Actions does the
-     * rest (apktool decode/patch/rebuild, zipalign, apksigner), the same split the Build tab uses
-     * for whole apps. Without a token, this falls back to the on-device rebuild.
-     */
-    fun applyInstruction(instruction: String, provider: ProviderId, model: String, effort: Effort, githubToken: String) {
-        val r = report ?: return
+    private suspend fun answerQuestion(r: ApkReport, question: String, provider: ProviderId, model: String, effort: Effort) {
+        status = "Thinking…"
+        liveAnswer = ""
+        val context = "DECODED APK (on-device):\n" + r.toBriefing() +
+            (if (reaConnected) "\n\nA remote rea backend is connected with ${reaTools.size} tools for deeper analysis." else "")
+        Providers.get(provider).stream(keys.get(provider), model, listOf(ChatMessage(Role.USER, "$context\n\nQuestion: $question")), effort, SYSTEM_PROMPT)
+            .collect { chunk -> if (!chunk.startsWith(THOUGHT)) liveAnswer += chunk }
+        transcript.add(ChatMessage(Role.ASSISTANT, liveAnswer))
+    }
+
+    private suspend fun runChange(r: ApkReport, instructionIn: String, provider: ProviderId, model: String, effort: Effort) {
+        var instruction = instructionIn
         val apk = apkFile ?: return
-        if (busy || answering) return
-        viewModelScope.launch {
-            busy = true; error = null; rebuilt = null; ciResult = null; planSummary = null
-            try {
-                status = "Reading the app's text…"
-                val strings = ReverseEngine.readStrings(apk)
-                status = "Planning the change with ${provider.label}…"
-                val prompt = ReverseAgent.buildPrompt(r, strings, instruction)
-                val reply = StringBuilder()
-                Providers.get(provider).stream(keys.get(provider), model, listOf(ChatMessage(Role.USER, prompt)), effort, ReverseAgent.SYSTEM)
-                    .collect { chunk -> if (!chunk.startsWith(THOUGHT)) reply.append(chunk) }
-                val plan = ReverseAgent.parsePlan(reply.toString())
-                planSummary = plan.summary.ifBlank { null }
-                val edits = plan.toApkEdits()
-                if (edits.isEmpty()) {
-                    error = plan.summary.ifBlank {
-                        "The model couldn't express that as an edit. It may need code changes — try \"Change the code\", or connect the rea backend."
-                    }
-                    status = null
-                    return@launch
-                }
-                if (githubToken.isNotBlank()) {
-                    val runner = ReverseCiRunner(githubToken) { status = it }
-                    ciResult = runner.run(apk, r.appLabel.ifBlank { r.packageName }, edits, emptyMap())
-                } else {
-                    status = "Applying ${edits.size} edit(s), rebuilding & signing on-device…"
-                    val outDir = File(getApplication<Application>().cacheDir, "reverse/out")
-                    outDir.deleteRecursively()
-                    rebuilt = ReverseEngine.rebuild(getApplication(), apk, edits, outDir)
-                }
-                status = null
-            } catch (e: Exception) {
-                com.aiapp.data.Log.e("Reverse", "operation failed", e)
-                error = e.message ?: "Couldn't apply that change."
-                status = null
-            } finally {
-                busy = false
+
+        status = "Reading the app's text…"
+        val strings = ReverseEngine.readStrings(apk)
+        status = "Planning the change…"
+        val planReply = collectReply(provider, model, ReverseAgent.buildPrompt(r, strings, instruction), ReverseAgent.SYSTEM, effort)
+        val plan = ReverseAgent.parsePlan(planReply)
+        var edits = plan.toApkEdits()
+        var smaliEdits: Map<String, String> = emptyMap()
+
+        if (edits.isEmpty()) {
+            // Fold in anything you sent while that first round was thinking, before going deeper.
+            takeSteer()?.let { steer ->
+                instruction = "$instruction\n\nAdditional direction from the user: $steer"
+                transcript.add(ChatMessage(Role.ASSISTANT, "Incorporating what you just added…"))
             }
+            transcript.add(ChatMessage(Role.ASSISTANT, "That needs a code change — looking at the app's logic…"))
+            val api = r.minSdk.toIntOrNull() ?: 21
+            val work = File(getApplication<Application>().cacheDir, "reverse/smali").apply { deleteRecursively(); mkdirs() }
+            val engine = SmaliEngine(work, api)
+
+            status = "Finding the relevant code…"
+            val termsReply = collectReply(provider, model, ReverseAgent.termsPrompt(r, instruction), ReverseAgent.TERMS_SYSTEM, effort)
+            val terms = ReverseAgent.parseTerms(termsReply, instruction)
+
+            status = "Reading candidate classes (on-device, read-only)…"
+            val candidates = engine.search(apk, terms)
+            if (candidates.isEmpty()) {
+                transcript.add(ChatMessage(Role.ASSISTANT, "Couldn't find code matching that. Try naming the class, SDK, or exact text involved. (searched: ${terms.joinToString()})"))
+                return
+            }
+            status = "Writing the patch with ${provider.label}…"
+            val editReply = collectReply(provider, model, ReverseAgent.smaliEditPrompt(instruction, candidates), ReverseAgent.SMALI_SYSTEM, effort)
+            smaliEdits = ReverseAgent.parseSmaliEdits(editReply)
+            if (smaliEdits.isEmpty()) {
+                transcript.add(ChatMessage(Role.ASSISTANT, "Couldn't produce a safe code patch for that. Try a stronger model or a more specific instruction."))
+                return
+            }
+            transcript.add(ChatMessage(Role.ASSISTANT, "Plan: patching ${smaliEdits.size} class(es): ${smaliEdits.keys.joinToString().take(200)}"))
+        } else {
+            transcript.add(ChatMessage(Role.ASSISTANT, "Plan: ${plan.summary.ifBlank { "${edits.size} edit(s)" }}"))
         }
+
+        // Last checkpoint: anything sent right up to now is folded into the build about to start.
+        takeSteer()?.let { steer ->
+            transcript.add(ChatMessage(Role.ASSISTANT, "One more thing before building — \"$steer\". Re-planning with that included…"))
+            val reReply = collectReply(
+                provider, model,
+                ReverseAgent.buildPrompt(r, strings, "$instruction\n\nAlso: $steer"),
+                ReverseAgent.SYSTEM, effort,
+            )
+            val rePlan = ReverseAgent.parsePlan(reReply)
+            if (rePlan.toApkEdits().isNotEmpty()) { edits = rePlan.toApkEdits(); smaliEdits = emptyMap() }
+            transcript.add(ChatMessage(Role.ASSISTANT, "Updated plan: ${rePlan.summary.ifBlank { "${edits.size} edit(s)" }}"))
+        }
+
+        val token = githubTokenOf()
+        status = "Building…"
+        if (token.isNotBlank()) {
+            transcript.add(ChatMessage(Role.ASSISTANT, "Building on GitHub Actions…"))
+            val runner = ReverseCiRunner(token) { s -> status = s }
+            val result = runner.run(apk, r.appLabel.ifBlank { r.packageName }, edits, smaliEdits)
+            transcript.add(ChatMessage(Role.ASSISTANT, "Built and signed. Tap below to download and install.", apkInstallUrl = result.apkUrl))
+        } else {
+            transcript.add(ChatMessage(Role.ASSISTANT, "No GitHub token set, so rebuilding on-device (slower)…"))
+            val outDir = File(getApplication<Application>().cacheDir, "reverse/out")
+            outDir.deleteRecursively()
+            val dexEdits = if (smaliEdits.isNotEmpty()) {
+                val api = r.minSdk.toIntOrNull() ?: 21
+                SmaliEngine(File(getApplication<Application>().cacheDir, "reverse/smali"), api).buildEdits(apk, smaliEdits)
+            } else emptyList()
+            val allEdits = edits + dexEdits
+            val res = ReverseEngine.rebuild(getApplication(), apk, allEdits, outDir)
+            localInstallReady = res.outApk
+            transcript.add(ChatMessage(Role.ASSISTANT, "Built and signed on-device (${res.signedWith}). Install it below."))
+        }
+    }
+
+    /** Set after an on-device build; the screen renders a plain Install button for it (no download needed). */
+    var localInstallReady by mutableStateOf<File?>(null); private set
+
+    fun installLocal() {
+        localInstallReady?.let { ApkInstaller.install(getApplication(), it) }
     }
 
     private suspend fun collectReply(provider: ProviderId, model: String, prompt: String, system: String, effort: Effort): String {
@@ -183,118 +313,7 @@ class ReverseViewModel(app: Application) : AndroidViewModel(app) {
         return sb.toString()
     }
 
-    /**
-     * A code/logic change via smali. The model only picks search terms and writes the patch; finding
-     * candidate classes is a quick on-device read. Applying the patch — reassembling the DEX,
-     * rebuilding, zipaligning and signing — runs on GitHub Actions (apktool + the Android SDK build
-     * tools already on its runners), not on the phone, when a GitHub token is set. Without a token,
-     * it falls back to the slower, experimental on-device reassembly. For apps you are authorized to
-     * modify; use a strong model.
-     */
-    fun applyCodeChange(instruction: String, provider: ProviderId, model: String, effort: Effort, githubToken: String) {
-        val r = report ?: return
-        val apk = apkFile ?: return
-        if (busy || answering) return
-        viewModelScope.launch {
-            busy = true; error = null; rebuilt = null; ciResult = null; planSummary = null
-            try {
-                val api = r.minSdk.toIntOrNull() ?: 21
-                val work = File(getApplication<Application>().cacheDir, "reverse/smali").apply { deleteRecursively(); mkdirs() }
-                val engine = SmaliEngine(work, api)
-
-                status = "Finding the relevant code…"
-                val termsReply = collectReply(provider, model, ReverseAgent.termsPrompt(r, instruction), ReverseAgent.TERMS_SYSTEM, effort)
-                val terms = ReverseAgent.parseTerms(termsReply, instruction)
-
-                status = "Reading candidate classes (on-device, read-only)…"
-                val candidates = engine.search(apk, terms)
-                if (candidates.isEmpty()) {
-                    error = "Couldn't find code matching that. Try naming the class, SDK, or exact text involved. (searched: ${terms.joinToString()})"
-                    status = null; return@launch
-                }
-
-                status = "Writing the patch with ${provider.label}…"
-                val editReply = collectReply(provider, model, ReverseAgent.smaliEditPrompt(instruction, candidates), ReverseAgent.SMALI_SYSTEM, effort)
-                val smaliEdits = ReverseAgent.parseSmaliEdits(editReply)
-                if (smaliEdits.isEmpty()) {
-                    error = "The model didn't produce a safe code patch for that. Try a stronger model or a more specific instruction."
-                    status = null; return@launch
-                }
-                planSummary = "Patching ${smaliEdits.size} class(es): ${smaliEdits.keys.joinToString().take(200)}"
-
-                if (githubToken.isNotBlank()) {
-                    val runner = ReverseCiRunner(githubToken) { status = it }
-                    ciResult = runner.run(apk, r.appLabel.ifBlank { r.packageName }, emptyList(), smaliEdits)
-                } else {
-                    status = "Reassembling on-device, rebuilding & signing (slow)…"
-                    val dexEdits = engine.buildEdits(apk, smaliEdits)
-                    if (dexEdits.isEmpty()) {
-                        error = "The edited classes weren't found in the app's DEX files."
-                        status = null; return@launch
-                    }
-                    val outDir = File(getApplication<Application>().cacheDir, "reverse/out")
-                    outDir.deleteRecursively()
-                    rebuilt = ReverseEngine.rebuild(getApplication(), apk, dexEdits, outDir)
-                }
-                status = null
-            } catch (e: Exception) {
-                com.aiapp.data.Log.e("Reverse", "operation failed", e)
-                error = e.message ?: "Couldn't apply that code change."
-                status = null
-            } finally {
-                busy = false
-            }
-        }
-    }
-
-    /** Rebuild the loaded APK with authorized manifest/version/rename edits, then re-sign. */
-    fun rebuild(newLabel: String?, newVersionName: String?, newVersionCode: Int?, newPackage: String?) {
-        val apk = apkFile ?: return
-        viewModelScope.launch {
-            busy = true; error = null; status = "Rebuilding & re-signing…"; rebuilt = null
-            try {
-                val edits = buildList {
-                    newLabel?.takeIf { it.isNotBlank() }?.let { add(ApkEdit.Rename(it)) }
-                    newPackage?.takeIf { it.isNotBlank() }?.let { add(ApkEdit.Repackage(it)) }
-                    if (newVersionName != null || newVersionCode != null) add(ApkEdit.SetVersion(newVersionName, newVersionCode))
-                }
-                if (edits.isEmpty()) { error = "No changes specified."; return@launch }
-                val outDir = File(getApplication<Application>().cacheDir, "reverse/out")
-                outDir.deleteRecursively()
-                rebuilt = ReverseEngine.rebuild(getApplication(), apk, edits, outDir)
-                status = null
-            } catch (e: Exception) {
-                com.aiapp.data.Log.e("Reverse", "operation failed", e)
-                error = e.message ?: "Rebuild failed."
-                status = null
-            } finally {
-                busy = false
-            }
-        }
-    }
-
-    fun install() {
-        val out = rebuilt?.outApk ?: return
-        com.aiapp.data.ApkInstaller.install(getApplication(), out)
-    }
-
-    /** Downloads the GitHub-built APK, then opens Android's installer. */
-    fun installCi() {
-        val url = ciResult?.apkUrl ?: return
-        viewModelScope.launch {
-            installingCi = true; error = null
-            try {
-                val app = getApplication<Application>()
-                val file = com.aiapp.data.ApkInstaller.download(app, url) { }
-                com.aiapp.data.ApkInstaller.install(app, file)
-            } catch (e: Exception) {
-                com.aiapp.data.Log.e("Reverse", "CI APK install failed", e)
-                error = e.message ?: "Couldn't download the built APK."
-            } finally {
-                installingCi = false
-            }
-        }
-    }
+    private fun githubTokenOf(): String = keys.getExtra("GITHUB")
 
     // ---------- remote rea ----------
 
@@ -313,7 +332,7 @@ class ReverseViewModel(app: Application) : AndroidViewModel(app) {
                 reaConnected = true
                 status = null
             } catch (e: Exception) {
-                com.aiapp.data.Log.e("Reverse", "rea connect failed", e)
+                Log.e("Reverse", "rea connect failed", e)
                 reaConnected = false
                 error = "Couldn't reach rea: ${e.message}"
                 status = null
