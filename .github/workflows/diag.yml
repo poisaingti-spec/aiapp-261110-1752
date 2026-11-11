@@ -1,0 +1,10 @@
+name: Diag
+on: workflow_dispatch
+jobs:
+  diag:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "ANDROID_HOME=$ANDROID_HOME"; ls "$ANDROID_HOME/build-tools" 2>&1 | tail -5
+      - run: BT=$(ls -d "$ANDROID_HOME"/build-tools/*/ | sort -V | tail -1); echo "BT=$BT"; ls "$BT" | grep -E 'zipalign|apksigner|aapt2'
+      - run: java -version
+      - run: curl -sSL -o apktool.jar https://github.com/iBotPeaches/Apktool/releases/download/v2.11.1/apktool_2.11.1.jar && java -jar apktool.jar --version
