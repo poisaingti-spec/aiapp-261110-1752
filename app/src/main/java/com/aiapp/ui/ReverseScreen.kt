@@ -206,6 +206,30 @@ fun ReverseScreen(chat: ChatViewModel, vm: ReverseViewModel, onBack: () -> Unit,
                                 label = { Text("⚡ Compact Context") },
                             )
                         }
+                        // Always visible, however much is typed below.
+                        Row(
+                            Modifier.fillMaxWidth().padding(bottom = 6.dp),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            Button(
+                                onClick = {
+                                    vm.startCraftAnythingWorkflow(input, chat.provider, chat.model, chat.effort)
+                                    input = ""
+                                },
+                                enabled = !vm.answering,
+                                modifier = Modifier.weight(1f),
+                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 10.dp),
+                            ) { Text("🛠️ Start Craft Anything", maxLines = 1, style = MaterialTheme.typography.labelLarge, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis) }
+                            OutlinedButton(
+                                onClick = {
+                                    vm.reconstructAsProject(input, chat.provider, chat.model, chat.effort)
+                                    input = ""
+                                },
+                                enabled = !vm.answering,
+                                modifier = Modifier.weight(1f),
+                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 10.dp),
+                            ) { Text("🔍 JADX Reconstruct", maxLines = 1, style = MaterialTheme.typography.labelLarge, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis) }
+                        }
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             IconButton(onClick = { attachPicker.launch(arrayOf("*/*")) }) {
                                 Icon(Icons.Filled.AttachFile, contentDescription = "Attach a file or load another app")
@@ -222,7 +246,7 @@ fun ReverseScreen(chat: ChatViewModel, vm: ReverseViewModel, onBack: () -> Unit,
                                         },
                                     )
                                 },
-                                maxLines = 5,
+                                maxLines = 3,
                                 modifier = Modifier.weight(1f),
                             )
                             Spacer(Modifier.width(8.dp))
@@ -305,17 +329,7 @@ fun ReverseScreen(chat: ChatViewModel, vm: ReverseViewModel, onBack: () -> Unit,
 
                 // Collapsible Craft Anything Architect & Branding Config Card
                 if (showCraftConfig) {
-                    CraftArchitectConfigCard(
-                        vm = vm,
-                        onStartCraft = {
-                            vm.startCraftAnythingWorkflow(input, chat.provider, chat.model, chat.effort)
-                            input = ""
-                        },
-                        onStartJadx = {
-                            vm.reconstructAsProject(input, chat.provider, chat.model, chat.effort)
-                            input = ""
-                        },
-                    )
+                    CraftArchitectConfigCard(vm = vm)
                 }
 
                 // Generated Android Studio Clone Project (.zip) Download & APK Build Card
@@ -491,16 +505,15 @@ private fun CraftLikenessCheckCard(check: CraftAnythingEngine.CraftCheckReport) 
 }
 
 @Composable
-private fun CraftArchitectConfigCard(
-    vm: ReverseViewModel,
-    onStartCraft: () -> Unit,
-    onStartJadx: () -> Unit,
-) {
+private fun CraftArchitectConfigCard(vm: ReverseViewModel) {
     Card(
         modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp),
         shape = RoundedCornerShape(12.dp),
     ) {
-        Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Column(
+            Modifier.heightIn(max = 300.dp).verticalScroll(rememberScrollState()).padding(10.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
             // Mode selector: Clean room vs Deep mode + Auto Mode (Ask First) safety toggle
             Row(
                 Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
@@ -571,26 +584,6 @@ private fun CraftArchitectConfigCard(
                     valueRange = 75f..99f,
                     modifier = Modifier.weight(1f),
                 )
-            }
-
-            Row(
-                Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                Button(
-                    onClick = onStartCraft,
-                    enabled = !vm.answering,
-                    modifier = Modifier.weight(1f),
-                ) {
-                    Text("🛠️ Start Craft Anything")
-                }
-                OutlinedButton(
-                    onClick = onStartJadx,
-                    enabled = !vm.answering,
-                    modifier = Modifier.weight(1f),
-                ) {
-                    Text("🔍 JADX Reconstruct")
-                }
             }
         }
     }
