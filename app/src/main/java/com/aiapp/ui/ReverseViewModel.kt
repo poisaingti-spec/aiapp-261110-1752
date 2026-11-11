@@ -539,7 +539,6 @@ class ReverseViewModel(app: Application) : AndroidViewModel(app) {
         val finalInstruction = instruction.trim().ifBlank { defaultPrompt }
         pendingBuildInstruction = finalInstruction
         requestHistoryLog += finalInstruction
-        com.aiapp.builder.BuildPlan.add(finalInstruction)
 
         viewModelScope.launch {
             answering = true; error = null; canResumeInterrupted = false
@@ -735,7 +734,6 @@ class ReverseViewModel(app: Application) : AndroidViewModel(app) {
         val r = report
         if (r == null) { error = "Load a website URL or APK first."; return }
         requestHistoryLog += instruction
-        com.aiapp.builder.BuildPlan.add(instruction) // listed at the top of the next build
         transcript.add(ChatMessage(Role.USER, instruction))
         if (answering) {
             pendingSteer = ((pendingSteer ?: "") + "\n" + instruction).trim()

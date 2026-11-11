@@ -682,8 +682,6 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         val trimmed = text.trim()
         if (streaming) stop()
         if (trimmed.isEmpty() && pendingAttachments.isEmpty()) return
-        // Every typed request is listed at the top of the next build (voice chat is left out).
-        if (!voice) com.aiapp.builder.BuildPlan.add(trimmed)
         val k = keys.get(provider)
         if (provider.needsKey && k.isBlank()) {
             error = "Add your ${provider.label} API key in Settings."
