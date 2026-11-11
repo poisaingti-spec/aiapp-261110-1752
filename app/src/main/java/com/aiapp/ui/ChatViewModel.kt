@@ -735,6 +735,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         val base = if (voice) SYSTEM_PROMPT + VOICE_PROMPT else SYSTEM_PROMPT
         val system = if (web) base + WebTools.instructions(today()) else base
         job = viewModelScope.launch {
+            runCancelled = false
             try {
                 val working = history.toMutableList()
                 foundMedia.clear()
@@ -817,6 +818,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                     streamingText = ""
                 }
             } catch (ce: CancellationException) {
+                runCancelled = true
                 throw ce
             } catch (t: Throwable) {
                 error = friendly(t)
@@ -825,6 +827,9 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             }
         }
     }
+
+    /** True while the last reply was stopped (by the user or a new message), so "no reply" isn't shown then. */
+    @Volatile private var runCancelled = false
 
     /** Stops the reply; whatever was already written stays in the chat. */
     fun stop() {
@@ -850,6 +855,14 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             val secs = if (thoughtSeconds > 0) thoughtSeconds
                 else if (thinkingStart > 0L) ((System.currentTimeMillis() - thinkingStart) / 1000).toInt().coerceAtLeast(1) else 0
             messages += ChatMessage(Role.ASSISTANT, stripped, media = foundMedia.toList(), thinking = thinkingText.trim(), thoughtSeconds = secs)
+        } else if (!runCancelled && error == null && messages.lastOrNull()?.role == Role.USER) {
+            // The model returned nothing (a flaky free model, or it only asked to search and ran out
+            // of steps). Never leave the chat silent — say so and let the user tap send again.
+            messages += ChatMessage(
+                Role.ASSISTANT,
+                "⚠️ No reply came back this time. Tap send again" +
+                    (if (provider == ProviderId.FREE) ", or pick a different Free-cloud model — some get overloaded." else "."),
+            )
         }
         foundMedia.clear()
         persist()
