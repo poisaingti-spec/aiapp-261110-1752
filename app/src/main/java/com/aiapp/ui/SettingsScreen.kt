@@ -255,7 +255,8 @@ private fun AddOfflineModel(vm: ChatViewModel) {
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Text("Add a model", style = MaterialTheme.typography.titleSmall)
         Text(
-            "Paste a Hugging Face link to any LiteRT-LM model (.litertlm), for example from huggingface.co/litert-community.",
+            "Paste a Hugging Face link to any LiteRT-LM model (.litertlm), for example from huggingface.co/litert-community. " +
+                "Some conversions use a chat template this app can't run (you'll get a clear error if so) — try a different one.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
