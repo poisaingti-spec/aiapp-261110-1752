@@ -204,7 +204,7 @@ object Mcp {
         name = "rea",
         url = "http://127.0.0.1:8765/mcp",
         startCommand = "command -v rea >/dev/null 2>&1 || { echo $NOT_INSTALLED; exit 0; }; " +
-            "mkdir -p ~/.arin && (nohup env REA_MCP_OUTPUT_SCHEMA_PROFILE=compact " +
+            "mkdir -p ~/.arin && (nohup env UV_USE_IO_URING=0 GLIBC_TUNABLES=glibc.pthread.rseq=0 REA_MCP_OUTPUT_SCHEMA_PROFILE=compact " +
             "node $BRIDGE_PATH --port 8765 -- rea mcp > ~/.arin/rea.log 2>&1 &) ; sleep 6; " +
             "curl -s http://127.0.0.1:8765/health || (echo 'REA did not start; last log lines:'; tail -20 ~/.arin/rea.log)",
     )
@@ -318,6 +318,8 @@ object Mcp {
             append("If you don't know a tool's parameters, first call <tool name=\"find_tools\">a few keywords</tool>, which returns ")
             append("matching tools with their descriptions and parameters. One tool call at a time; read each result before the next. ")
             append("Tools run in the same Linux as your terminal commands; attached files are at the paths given in the messages. ")
+            append("Arin itself is the MCP client and already connected these servers: never run `rea setup` or other agent setup ")
+            append("wizards, and don't create or edit Claude Code, Cursor or other agents' MCP configs (.claude.json, mcp.json). ")
             append("Base claims on what the tools return.\n")
             list.forEach { c ->
                 append("\nServer \"").append(c.server.name).append("\" (").append(c.tools.size).append(" tools)")

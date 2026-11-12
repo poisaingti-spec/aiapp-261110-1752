@@ -128,6 +128,18 @@ fun ArinMessage(message: Message, showThinking: Boolean, isLast: Boolean, onRetr
 /** A terminal command and its output, folded to one line until tapped. */
 @Composable
 fun CommandCard(run: com.arin.data.CommandRun) {
+    if (run.kind == "steer") {
+        // A message the person sent while Arin was working, shown where Arin picked it up.
+        Row(Modifier.fillMaxWidth().padding(bottom = 6.dp), verticalAlignment = Alignment.Top) {
+            Text("↪ ", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.secondary)
+            Text(
+                "You: " + run.command,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.secondary,
+            )
+        }
+        return
+    }
     var open by remember { mutableStateOf(false) }
     val failed = run.ran && run.exitCode != 0
     Column(

@@ -207,7 +207,33 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /** Stops the old REA bridge, reinstalls REA with the PRoot fixes, and reconnects. */
+    fun repairRea() {
+        if (linuxBusy) return
+        val app = getApplication<Application>()
+        linuxBusy = true
+        linuxLog.clear()
+        ReplyService.start(app)
+        ArinApp.scope.launch {
+            try {
+                installReaInLinux(app)
+                notice = "REA repaired"
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                logLine("Failed: ${e.message}")
+                notice = "REA repair failed: ${e.message}"
+            } finally {
+                linuxBusy = false
+                ReplyService.stop(app)
+            }
+        }
+    }
+
     private suspend fun installReaInLinux(app: Application) {
+        logLine("Stopping any old REA bridge…")
+        com.arin.mcp.Mcp.forget(com.arin.mcp.Mcp.REA.name)
+        com.arin.terminal.Linux.run(app, "pkill -f mcp-bridge.mjs; sleep 1; echo stopped", timeoutMs = 30_000)
         val r = com.arin.terminal.Linux.installRea(app) { logLine(it) }
         if (r.exitCode != 0 || r.error != null) throw IllegalStateException("REA didn't install: " + (r.error ?: r.combined().takeLast(400)))
         logLine("Installing Arin's MCP bridge…")
@@ -332,8 +358,41 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
     // ---------------- Sending ----------------
 
+    // ---- Steering: messages sent while a reply is running ----
+
+    /** Messages waiting to be given to the model at its next step. */
+    val steering = mutableStateListOf<String>()
+
+    @Volatile private var steerPending = false
+
+    /** Adds a message for the running reply; the model sees it at its next step (or right away, if it's writing). */
+    fun steer(text: String) {
+        val t = text.trim()
+        if (t.isEmpty()) return
+        steering += t
+        steerPending = true
+    }
+
+    fun removeSteer(index: Int) {
+        if (index in steering.indices) steering.removeAt(index)
+        steerPending = steering.isNotEmpty()
+    }
+
+    private suspend fun takeSteering(): List<String> = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+        val list = steering.toList()
+        steering.clear()
+        steerPending = false
+        list
+    }
+
+    /** Thrown inside a stream to stop it when the person steers. */
+    private class SteerInterrupt : Exception()
+
     fun send(text: String) {
-        if (streaming) return
+        if (streaming) {
+            steer(text)
+            return
+        }
         val edit = editing?.takeIf { it in messages.indices && messages[it].fromUser }
         val kept = edit?.let { messages[it].attachments }.orEmpty()
         val files = kept + pending.toList()
@@ -417,8 +476,24 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 )
                 var searches = 0
                 while (true) {
+                    // Messages the person sent while Arin was working go in before the next step.
+                    val notes = takeSteering()
+                    if (notes.isNotEmpty()) {
+                        val joined = "[While you were working, the person sent this. Follow it; it overrides earlier plans where they conflict.]\n" +
+                            notes.joinToString("\n")
+                        val last = turns.lastIndex
+                        if (last >= 0 && turns[last].fromUser) turns[last] = turns[last].copy(text = turns[last].text + "\n\n" + joined)
+                        else turns += Turn(true, joined)
+                        notes.forEach { n ->
+                            val s = com.arin.data.CommandRun(n, "", null, kind = "steer")
+                            ran += s
+                            liveCommands += s
+                        }
+                    }
                     val text = StringBuilder()
-                    Llm.stream(p, key, m, system, turns).collect { d ->
+                    val interrupted = try {
+                        Llm.stream(p, key, m, system, turns).collect { d ->
+                        if (steerPending) throw SteerInterrupt()
                         when (d) {
                             is Delta.Text -> {
                                 text.append(d.text)
@@ -433,8 +508,19 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                             }
                         }
                     }
+                        false
+                    } catch (e: SteerInterrupt) {
+                        true
+                    }
+                    if (interrupted) {
+                        // Keep what was written so far, then continue with the person's new message.
+                        val partial = text.toString()
+                        if (partial.isNotBlank()) turns += Turn(false, partial + "\n[Stopped here because the person sent a message.]")
+                        liveText = ""
+                        continue
+                    }
                     val full = text.toString()
-                    val cmd = if (useTerminal && ran.size < Prompt.MAX_COMMANDS) Prompt.command(full) else null
+                    val cmd = if (useTerminal && ran.count { it.kind != "steer" } < Prompt.MAX_COMMANDS) Prompt.command(full) else null
                     if (cmd != null) {
                         liveText = ""
                         val allowed = askToRun(cmd, tool = false)
@@ -457,7 +543,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                         )
                         continue
                     }
-                    val call = if (ran.size < Prompt.MAX_COMMANDS && com.arin.mcp.Mcp.connected().isNotEmpty()) Prompt.toolCall(full) else null
+                    val call = if (ran.count { it.kind != "steer" } < Prompt.MAX_COMMANDS && com.arin.mcp.Mcp.connected().isNotEmpty()) Prompt.toolCall(full) else null
                     if (call != null) {
                         liveText = ""
                         val (name, body) = call
@@ -536,6 +622,15 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 persist()
                 lastFinished = msg
                 ReplyService.stop(app)
+                // Messages sent after the model's last step become the next message.
+                ArinApp.scope.launch(kotlinx.coroutines.Dispatchers.Main) {
+                    if (steering.isNotEmpty() && !streaming) {
+                        val rest = steering.joinToString("\n")
+                        steering.clear()
+                        steerPending = false
+                        send(rest)
+                    }
+                }
                 val id = chatId
                 if (!ArinApp.inForeground && notifyOnReply && id != null && !msg.failed) {
                     ReplyService.notifyReply(app, id, title, msg.text)
@@ -859,14 +954,15 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             1. Run rea --version in the terminal.
             2. Use find_tools to look up analyze_javascript_application, then create a tiny test app (mkdir -p /root/rea-test && echo 'export function add(a,b){return a+b}' > /root/rea-test/app.js) and call that tool on /root/rea-test.
             3. Tell me what worked, what REA can do on this phone (static JavaScript/web bundles, APKs, Flutter, archives…), and what needs a desktop (Ghidra, IDA, Hopper, live Chrome). Only claim what the outputs show.
+            Arin is the MCP client and REA is already connected: don't run rea setup and don't create or edit .claude.json or any other agent's config.
         """.trimIndent()
 
         /** What "Set up REA" asks the model to do, step by step in the terminal. */
         val REA_SETUP_PROMPT = """
             Set up REA (Reverse Engineer Anything, npm package rea-agents from github.com/morluto/rea) on this phone in Termux and connect it to Arin, then verify it works. Steps:
             1. Check what's installed: node -v, npm -v. REA needs Node.js ^22.23.4, ^24.22.1 or >=26.12.1. If Node is missing or too old, run pkg update -y, then pkg install -y nodejs (or nodejs-lts if that version fits better) and check again.
-            2. Install REA's Linux prerequisite and REA itself: pkg install -y procps (REA needs a procps-compatible ps on PATH), then npm install --global rea-agents, and confirm with rea --version.
-            3. Install only what REA needs for app and website work; skip the heavy native engines (Ghidra, IDA, Hopper, Frida). Don't run the interactive "rea-agents setup" wizard: Arin connects to REA itself.
+            2. Install REA's Linux prerequisite and REA itself: pkg install -y procps (REA needs a procps-compatible ps on PATH), then npm install --global rea-agents --omit=optional, and confirm with rea --version.
+            3. Install only what REA needs for app and website work; skip the heavy native engines (Ghidra, IDA, Hopper, Frida): use npm install --global rea-agents --omit=optional. Don't run "rea setup" or edit .claude.json or other agents' configs: Arin connects to REA itself.
             4. Run termux-setup-storage only if ~/storage doesn't exist yet (I'll approve the prompt), so REA can read files I attach (they are saved in Download/Arin).
             5. Start REA through Arin's bridge (already saved at ~/.arin/mcp-bridge.mjs) and check it answers:
                (nohup env REA_MCP_OUTPUT_SCHEMA_PROFILE=compact node ~/.arin/mcp-bridge.mjs --port 8765 -- rea mcp > ~/.arin/rea.log 2>&1 &); sleep 6; curl -s http://127.0.0.1:8765/health

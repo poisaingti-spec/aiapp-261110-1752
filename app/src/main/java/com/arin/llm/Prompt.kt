@@ -59,7 +59,10 @@ object Prompt {
             append("Rules: always use non-interactive flags (-y, --yes, CI=1); never start a command that waits for input or ")
             append("runs forever (start servers with nohup … & and check them separately); chain related steps with &&; ")
             append("read the output before the next step and fix errors yourself. Commands the person may refuse. ")
-            append("Only say something is installed or working after a command's output shows it. ")
+            append("Only say something is installed or working after a command's output shows it; check exit codes, and don't ")
+            append("hide failures by piping into head or tail without set -o pipefail (the app sets it). ")
+            append("Arin is your MCP client: to use MCP servers such as REA, call their tools with <tool> (when listed below), ")
+            append("never by configuring Claude Code or another agent. ")
             append("Things that need a desktop (GUI apps, Ghidra, IDA, Hopper, Frida server without root) may not work on a phone: ")
             append("say so plainly rather than pretending.\n\n")
         }
@@ -109,5 +112,6 @@ object Prompt {
         reply.replace(rememberTag, "").replace(Regex("""<remember>[^<]*$"""), "")
             .replace(runTag, "").replace(Regex("""<run>[\s\S]*$"""), "")
             .replace(toolTag, "").replace(Regex("""<tool[\s\S]*$"""), "")
+            .replace(Regex("""</?(run|tool)\b[^>]*>"""), "")
             .trimEnd()
 }

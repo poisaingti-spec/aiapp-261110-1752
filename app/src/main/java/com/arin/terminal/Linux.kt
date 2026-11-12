@@ -125,7 +125,8 @@ object Linux {
         log("Installing REA (npm install -g rea-agents)…")
         return run(
             context,
-            "npm install --global rea-agents 2>&1 | tail -15 && rea --version",
+            // --omit=optional skips frida's native add-on (needs a desktop, and its install crashes under PRoot).
+            "npm install --global rea-agents --omit=optional --no-fund --no-audit 2>&1 | tail -15 && rea --version",
             timeoutMs = 30 * 60_000L,
             onOutput = log,
         )
@@ -209,6 +210,12 @@ object Linux {
         File(root, "etc/apt/apt.conf.d/01-arin").writeText(
             "APT::Sandbox::User \"root\";\nAcquire::Retries \"3\";\nDPkg::Use-Pty \"false\";\n",
         )
+        File(root, "etc/profile.d").mkdirs()
+        File(root, "etc/profile.d/arin.sh").writeText(
+            "# Set by Arin: PRoot can't translate io_uring or handle glibc's rseq; both can crash Node/npm.\n" +
+                "export UV_USE_IO_URING=0\nexport GLIBC_TUNABLES=glibc.pthread.rseq=0\n",
+        )
+        File(root, "root/.npmrc").takeIf { !it.exists() }?.writeText("fund=false\naudit=false\nupdate-notifier=false\n")
         File(root, "root/files").mkdirs()
         File(root, "root/.arin").mkdirs()
         File(root, "tmp").mkdirs()
@@ -237,14 +244,17 @@ object Linux {
         timeoutMs: Long = 15 * 60_000L,
         onOutput: ((String) -> Unit)? = null,
     ): Termux.Result = withContext(Dispatchers.IO) {
-        if (!installed(context)) return@withContext Termux.Result("", "", null, "Linux isn't installed. Open Settings → Terminal and tap Install Linux.")
+        if (!installed(context)) return@withContext Termux.Result("", "", null, "Linux isn't installed. Open Settings → Linux and tap Install Linux.")
         val root = rootfs(context)
+        // Installs from older Arin versions get the newer fixes too.
+        if (File(root, "etc/profile.d/arin.sh").let { !it.exists() || !it.readText().contains("rseq") }) runCatching { configure(context) }
         val id = UUID.randomUUID().toString().replace("-", "").take(12)
         val done = "__ARIN_DONE_${id}__"
         // The command goes in a script file, so no quoting is needed. Its exit code is printed on a
         // marker line, so background jobs it leaves running don't keep us waiting.
         val script = File(root, "tmp/arin-$id.sh")
-        script.writeText("cd $HOME 2>/dev/null\n(\n$command\n)\nrc=$?\nprintf '\\n$done%s\\n' \"\$rc\" >&2\n")
+        // pipefail: a crash before "| head" must not look like success.
+        script.writeText("cd $HOME 2>/dev/null\n(\nset -o pipefail\n$command\n)\nrc=$?\nprintf '\\n$done%s\\n' \"\$rc\" >&2\n")
         val cmd = mutableListOf(
             proot(context).absolutePath,
             "-0", "-r", root.absolutePath,
@@ -261,6 +271,12 @@ object Linux {
             "HOME=$HOME", "USER=root", "LANG=C.UTF-8", "TERM=xterm-256color",
             "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
             "TMPDIR=/tmp", "CI=1", "DEBIAN_FRONTEND=noninteractive", "NPM_CONFIG_UPDATE_NOTIFIER=false",
+            // Node's libuv uses io_uring for files; PRoot can't translate io_uring paths, which corrupts
+            // memory (malloc(): invalid size, double free) in npm and REA. Use plain syscalls instead.
+            "UV_USE_IO_URING=0",
+            // glibc 2.35+ registers rseq, which PRoot doesn't handle; it can corrupt the heap.
+            "GLIBC_TUNABLES=glibc.pthread.rseq=0",
+            "NPM_CONFIG_FUND=false", "NPM_CONFIG_AUDIT=false",
             "/bin/bash", "-l", "/tmp/arin-$id.sh",
         )
         val pb = ProcessBuilder(cmd).directory(root)

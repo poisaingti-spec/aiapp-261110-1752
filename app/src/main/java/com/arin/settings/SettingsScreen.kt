@@ -173,7 +173,7 @@ fun SettingsScreen(vm: ChatViewModel, onBack: () -> Unit) {
             }
 
             Text(
-                "Arin 0.6.0",
+                "Arin 0.6.1",
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(vertical = 12.dp),
@@ -244,6 +244,9 @@ private fun LinuxSettings(vm: ChatViewModel) {
             if (!vm.linuxReady) androidx.compose.material3.Button(onClick = { vm.installLinux() }) { Text("Install Linux") }
             if (vm.mcpServers.none { it.name == com.arin.mcp.Mcp.REA.name && com.arin.mcp.Mcp.status(it.name) != null }) {
                 OutlinedButton(onClick = { vm.setUpRea() }) { Text(if (vm.linuxReady) "Install REA" else "Install Linux + REA") }
+            }
+            if (vm.linuxReady && vm.mcpServers.any { it.name == com.arin.mcp.Mcp.REA.name }) {
+                OutlinedButton(onClick = { vm.repairRea() }) { Text("Repair REA") }
             }
             if (vm.linuxInstalled) TextButton(onClick = { confirmRemove = true }) { Text("Remove Linux") }
         }

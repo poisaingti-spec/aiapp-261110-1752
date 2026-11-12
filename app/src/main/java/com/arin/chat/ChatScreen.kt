@@ -361,6 +361,23 @@ private fun Composer(
             }
         }
         vm.pending.forEach { f -> FileChip(f, onRemove = { vm.removePending(f) }) }
+        vm.steering.forEachIndexed { i, note ->
+            Surface(
+                color = MaterialTheme.colorScheme.secondaryContainer,
+                shape = MaterialTheme.shapes.small,
+                modifier = Modifier.padding(bottom = 6.dp),
+            ) {
+                Row(Modifier.padding(start = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        "↪ Arin will read this at its next step: $note",
+                        style = MaterialTheme.typography.labelMedium,
+                        maxLines = 3,
+                        modifier = Modifier.weight(1f, fill = false),
+                    )
+                    androidx.compose.material3.TextButton(onClick = { vm.removeSteer(i) }) { Text("✕") }
+                }
+            }
+        }
         vm.readingFile?.let { name ->
             Row(Modifier.padding(bottom = 6.dp), verticalAlignment = Alignment.CenterVertically) {
                 androidx.compose.material3.CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
@@ -392,7 +409,7 @@ private fun Composer(
                 TextField(
                     value = text,
                     onValueChange = onText,
-                    placeholder = { Text("Message Arin") },
+                    placeholder = { Text(if (vm.streaming) "Steer Arin while it works…" else "Message Arin") },
                     maxLines = 6,
                     keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences),
                     colors = TextFieldDefaults.colors(
@@ -403,7 +420,12 @@ private fun Composer(
                     ),
                     modifier = Modifier.weight(1f),
                 )
-                if (vm.streaming) {
+                if (vm.streaming && text.isNotBlank()) {
+                    // Sending now steers the running reply.
+                    FilledIconButton(onClick = onSend, shape = CircleShape) {
+                        Icon(Icons.Filled.Send, contentDescription = "Steer", modifier = Modifier.size(20.dp))
+                    }
+                } else if (vm.streaming) {
                     FilledIconButton(
                         onClick = vm::stop,
                         shape = CircleShape,
