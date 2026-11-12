@@ -18,7 +18,7 @@ object LocalBuild {
 
     sealed class Outcome {
         /** Compiled. [apkPath] is a copy in the phone's Download/Arin folder (or app storage). */
-        data class Ok(val apkPath: String, val size: Long) : Outcome()
+        data class Ok(val apkPath: String, val size: Long, val installFile: File? = null) : Outcome()
         /** The code didn't compile; [log] holds the errors. */
         data class Errors(val log: String) : Outcome()
         /** The phone couldn't run the build (memory, download, tools); GitHub builds it instead. */
@@ -80,9 +80,52 @@ object LocalBuild {
         }
     }
 
+    /** Zips the project's source (without build output) into Download/Arin. Returns where it went. */
+    suspend fun saveSourceZip(context: Context, slug: String, appName: String): String? = withContext(Dispatchers.IO) {
+        runCatching {
+            val root = dir(context, slug)
+            val tmp = File(context.cacheDir, "$slug-source.zip")
+            val skip = Regex("""(^|/)(build|\.gradle|\.kotlin|\.idea|\.cxx)(/|$)""")
+            java.util.zip.ZipOutputStream(tmp.outputStream().buffered()).use { zip ->
+                root.walkTopDown().filter { it.isFile }.forEach { f ->
+                    val rel = f.relativeTo(root).path.replace('\\', '/')
+                    if (skip.containsMatchIn(rel) || rel == "local.properties" || rel == "build.log") return@forEach
+                    zip.putNextEntry(java.util.zip.ZipEntry("$slug/$rel"))
+                    f.inputStream().use { it.copyTo(zip) }
+                    zip.closeEntry()
+                }
+            }
+            val out = saveToDownloads(context, tmp, safeName(appName) + "-source.zip", "application/zip")
+            tmp.delete()
+            out
+        }.getOrNull()
+    }
+
+    private fun safeName(appName: String) = appName.replace(Regex("[^A-Za-z0-9._-]+"), "-").trim('-').ifEmpty { "app" }
+
+    private fun saveToDownloads(context: Context, src: File, name: String, mime: String): String {
+        if (Build.VERSION.SDK_INT >= 29) {
+            val values = ContentValues().apply {
+                put(MediaStore.Downloads.DISPLAY_NAME, name)
+                put(MediaStore.Downloads.MIME_TYPE, mime)
+                put(MediaStore.Downloads.RELATIVE_PATH, "Download/Arin")
+            }
+            val uri = runCatching { context.contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values) }.getOrNull()
+            if (uri != null) {
+                context.contentResolver.openOutputStream(uri)?.use { out -> src.inputStream().use { it.copyTo(out) } }
+                return "/storage/emulated/0/Download/Arin/$name"
+            }
+        }
+        val f = File(context.getExternalFilesDir(null), name)
+        src.copyTo(f, overwrite = true)
+        return f.absolutePath
+    }
+
     /** Copies the APK to Download/Arin so it can be installed and shared. */
     private fun save(context: Context, apk: File, appName: String): Outcome {
-        val name = appName.replace(Regex("[^A-Za-z0-9._-]+"), "-").trim('-').ifEmpty { "app" } + "-phone-build.apk"
+        val name = safeName(appName) + "-phone-build.apk"
+        // A private copy Android's installer can open (shared through Arin's file provider).
+        val installFile = runCatching { File(File(context.cacheDir, "apks").apply { mkdirs() }, name).also { apk.copyTo(it, overwrite = true) } }.getOrNull()
         if (Build.VERSION.SDK_INT >= 29) {
             val values = ContentValues().apply {
                 put(MediaStore.Downloads.DISPLAY_NAME, name)
@@ -92,11 +135,11 @@ object LocalBuild {
             val uri = runCatching { context.contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values) }.getOrNull()
             if (uri != null) {
                 context.contentResolver.openOutputStream(uri)?.use { out -> apk.inputStream().use { it.copyTo(out) } }
-                return Outcome.Ok("/storage/emulated/0/Download/Arin/$name", apk.length())
+                return Outcome.Ok("/storage/emulated/0/Download/Arin/$name", apk.length(), installFile)
             }
         }
         val f = File(context.getExternalFilesDir(null), name)
         apk.copyTo(f, overwrite = true)
-        return Outcome.Ok(f.absolutePath, apk.length())
+        return Outcome.Ok(f.absolutePath, apk.length(), installFile)
     }
 }

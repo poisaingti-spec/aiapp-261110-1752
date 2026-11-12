@@ -47,6 +47,10 @@ data class BuildResult(
     val runUrl: String? = null,
     /** Where the APK compiled on the phone (built-in Linux) was saved, if it was. */
     val phoneApk: String? = null,
+    /** The source code as a zip on the phone (for builds made only on the phone). */
+    val phoneSourceZip: String? = null,
+    /** The phone-built APK in Arin's storage, ready for Android's installer. */
+    val phoneInstallPath: String? = null,
 )
 
 /**
@@ -113,9 +117,43 @@ class BuildAgent(
         if (lastReply.isBlank()) "(The model sent back an empty answer: it may have spent its whole answer thinking, or the service cut it off.)"
         else "Last answer from the model (end):\n" + lastReply.takeLast(1_500)
 
+    /** The phone can compile apps itself (Linux with the Android build tools). */
+    private val phoneCan = !self && context != null && LocalBuild.available(context)
+
+    /** No GitHub for this build: compile, fix and hand over the APK on the phone. */
+    private var localOnly = req.project?.owner == LOCAL_OWNER
+
+    private fun localRepo(name: String) = GitHubClient.Repo(LOCAL_OWNER, name, "main", "")
+
+    /** Creates the repo on GitHub, or switches to a phone-only build if GitHub refuses and the phone can build. */
+    private suspend fun createRepoOrLocal(name: String, description: String): GitHubClient.Repo {
+        if (localOnly) return localRepo(name)
+        step(BuildEvent.Kind.STEP, "Creating GitHub repo $name")
+        return try {
+            gh.createRepo(name, description)
+        } catch (e: ProviderException) {
+            if (!phoneCan) throw e
+            step(BuildEvent.Kind.ERROR, e.message ?: "GitHub refused to create the repository")
+            step(BuildEvent.Kind.STEP, "Building on this phone instead (no GitHub needed)")
+            localOnly = true
+            localRepo(name)
+        }
+    }
+
     suspend fun run(): BuildResult {
-        step(BuildEvent.Kind.STEP, "Checking your GitHub token")
-        gh.login()
+        if (!localOnly) {
+            step(BuildEvent.Kind.STEP, "Checking your GitHub token")
+            try {
+                if (req.githubToken.isBlank()) throw ProviderException(401, "Not signed in to GitHub")
+                gh.login()
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                if (!phoneCan || req.project != null && req.project.owner != LOCAL_OWNER) throw e
+                step(BuildEvent.Kind.STEP, "GitHub isn't available (${e.message}); building on this phone only")
+                localOnly = true
+            }
+        }
 
         val existing = req.project
         val repo: GitHubClient.Repo
@@ -168,8 +206,7 @@ class BuildAgent(
             repo = if (existing != null) {
                 GitHubClient.Repo(existing.owner, existing.repo, existing.branch, existing.repoUrl)
             } else {
-                step(BuildEvent.Kind.STEP, "Creating GitHub repo $repoName")
-                gh.createRepo(repoName, "Uploaded to Arin: ${zip.name}")
+                createRepoOrLocal(repoName, "Uploaded to Arin: ${zip.name}")
             }
             notes = emptyList()
         } else if (self) {
@@ -212,8 +249,7 @@ class BuildAgent(
                 )
             }
             val repoName = "$slug-" + SimpleDateFormat("yyMMdd-HHmm", Locale.US).format(Date())
-            step(BuildEvent.Kind.STEP, "Creating GitHub repo $repoName")
-            repo = gh.createRepo(repoName, "Built by Arin: ${req.description}")
+            repo = createRepoOrLocal(repoName, "Built by Arin: ${req.description}")
             ProjectTemplate.files(appName, packageName, deps.toList()).forEach { (p, c) -> pendingFiles[p] = c.toByteArray() }
             if ("app/src/main/AndroidManifest.xml" !in files) {
                 pendingFiles["app/src/main/AndroidManifest.xml"] = ProjectTemplate.defaultManifest(appName).toByteArray()
@@ -232,8 +268,7 @@ class BuildAgent(
         // Build on the phone first when Linux has the Android build tools: errors are found and fixed here,
         // and GitHub then only builds code that already compiles (and gives the download links).
         val localSlug = repo.name
-        var useLocal = !self && context != null && LocalBuild.available(context) &&
-            (existing == null || LocalBuild.hasCopy(context, localSlug))
+        var useLocal = localOnly || phoneCan && (existing == null || LocalBuild.hasCopy(context!!, localSlug))
         if (useLocal && existing == null) {
             LocalBuild.write(context!!, localSlug, files.mapValues { it.value.toByteArray() })
         }
@@ -273,6 +308,19 @@ class BuildAgent(
                 when (val out = LocalBuild.build(ctx, localSlug, appName) { }) {
                     is LocalBuild.Outcome.Ok -> {
                         phoneApk = out.apkPath
+                        if (localOnly) {
+                            val zip = LocalBuild.saveSourceZip(ctx, localSlug, appName)
+                            step(BuildEvent.Kind.DONE, "APK ready (${mb(out.size)}): ${out.apkPath}")
+                            saveProject(repo, null)
+                            step(BuildEvent.Kind.DONE, "Done")
+                            return BuildResult(
+                                true,
+                                if (existing != null) "Your changes are built on this phone." else "Your app is ready (built on this phone).",
+                                phoneApk = out.apkPath,
+                                phoneSourceZip = zip,
+                                phoneInstallPath = out.installFile?.absolutePath,
+                            )
+                        }
                         step(BuildEvent.Kind.DONE, "Compiled on this phone (${mb(out.size)}), saved to ${out.apkPath}. Now building on GitHub for the download links")
                     }
                     is LocalBuild.Outcome.Errors -> {
@@ -288,10 +336,22 @@ class BuildAgent(
                             notes = apply(ask(fixPrompt(out.log, notes, web)))
                             continue
                         }
+                        if (localOnly) {
+                            saveProject(repo, null)
+                            return BuildResult(
+                                false,
+                                "The build still fails on the phone after $localRounds fix rounds. The errors are below; say \"try again\" to keep fixing.",
+                                log = out.log,
+                            )
+                        }
                         step(BuildEvent.Kind.ERROR, "Still failing on the phone after $localRounds fixes; trying GitHub's build")
                         useLocal = false
                     }
                     is LocalBuild.Outcome.Skipped -> {
+                        if (localOnly) {
+                            saveProject(repo, null)
+                            return BuildResult(false, "The phone couldn't run the build: ${out.reason.take(200)}", log = out.reason)
+                        }
                         step(BuildEvent.Kind.STEP, "Couldn't build on this phone (${out.reason.take(120)}); GitHub will build it")
                         useLocal = false
                     }
@@ -786,6 +846,8 @@ class BuildAgent(
         /** Arin's own workflow and the tag prefix of the releases it publishes. */
         const val SELF_WORKFLOW = "build-apk.yml"
         const val SELF_TAG_PREFIX = "arin-"
+        /** Owner name used for projects that live only on the phone (no GitHub). */
+        const val LOCAL_OWNER = "phone"
         private const val MAX_WEB_STEPS = 3
         private val fileStart = Regex("^=+\\s*FILE:\\s*(.+?)\\s*=*\\s*$")
         private val fileEnd = Regex("^=+\\s*END FILE\\s*=*\\s*$")

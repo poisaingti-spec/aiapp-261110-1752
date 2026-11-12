@@ -47,8 +47,13 @@ object Prompt {
     private val buildTagOpen = Regex("""<build(?:\s+name\s*=\s*["']([^"']{1,60})["'])?\s*>([\s\S]{40,})$""")
 
     /** An app the reply asks Arin to build: name (may be blank) and description. */
-    fun buildRequest(reply: String): Pair<String, String>? =
-        (buildTag.find(reply) ?: buildTagOpen.find(reply.trimEnd()))
+    fun buildRequest(reply: String): Pair<String, String>? = withCodeMasked(reply, { buildRequestRaw(it) }) { r, _ -> r }
+
+    private fun buildRequestRaw(reply: String): Pair<String, String>? =
+        (buildTag.find(reply) ?: buildTagOpen.find(reply.trimEnd())?.takeIf { m ->
+            // An unclosed tag counts only when it's really a tag: with a name, or starting its own line.
+            m.groupValues[1].isNotBlank() || reply.substring(0, m.range.first).substringAfterLast('\n').isBlank()
+        })
             ?.let { it.groupValues[1].trim() to it.groupValues[2].trim().removeSuffix("```").trim() }
             ?.takeIf { it.second.isNotBlank() }
 
@@ -250,13 +255,31 @@ object Prompt {
     fun command(reply: String): String? = runTag.find(reply)?.groupValues?.get(1)?.trim()?.takeIf { it.isNotEmpty() }
 
     /** The reply with tool tags taken out, for showing and saving. */
-    fun clean(reply: String): String =
+    private val inlineCode = Regex("""`[^`\n]*<[^`\n]*`""")
+
+    /**
+     * Tags the model only mentions, like "I never sent the `<build>` tag", are text, not requests: hide such
+     * inline-code spans while tags are handled, then put them back.
+     */
+    private fun <T> withCodeMasked(text: String, block: (String) -> T, restore: (T, (String) -> String) -> T): T {
+        val saved = mutableListOf<String>()
+        val masked = inlineCode.replace(text) { m -> saved += m.value; "\u0000${saved.size - 1}\u0000" }
+        val unmask: (String) -> String = { t -> Regex("\u0000(\\d+)\u0000").replace(t) { saved[it.groupValues[1].toInt()] } }
+        return restore(block(masked), unmask)
+    }
+
+    /** An unfinished tag at the end of a reply: on its own line, or with attributes, so prose mentions stay. */
+    private fun openTail(tag: String) = Regex("""(?:(?m:^)[ \t]*<$tag\b|<$tag\s+\w+=)[\s\S]*$""")
+
+    fun clean(reply: String): String = withCodeMasked(reply, { cleanTags(it) }) { r, unmask -> unmask(r) }
+
+    private fun cleanTags(reply: String): String =
         reply.replace(rememberTag, "").replace(Regex("""<remember>[^<]*$"""), "")
-            .replace(runTag, "").replace(Regex("""<run>[\s\S]*$"""), "")
-            .replace(toolTag, "").replace(Regex("""<tool[\s\S]*$"""), "")
+            .replace(runTag, "").replace(openTail("run"), "")
+            .replace(toolTag, "").replace(openTail("tool"), "")
             .replace(searchTagAnywhere, "").replace(Regex("""<search>[^<]*$"""), "")
-            .replace(buildTag, "").replace(Regex("""<build[\s\S]*$"""), "")
-            .replace(updateTag, "").replace(Regex("""<update_arin>[\s\S]*$"""), "")
+            .replace(buildTag, "").replace(openTail("build"), "")
+            .replace(updateTag, "").replace(openTail("update_arin"), "")
             .replace(recallTag, "").replace(Regex("""<recall>[^<]*$"""), "")
             .replace(imagesTag, "").replace(videosTag, "").replace(fetchTag, "").replace(downloadTag, "")
             .replace(Regex("""<(images|videos|fetch|download)\b[\s\S]*$"""), "")

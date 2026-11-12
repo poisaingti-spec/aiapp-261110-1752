@@ -54,8 +54,16 @@ class GitHubClient(private val token: String) {
             Http.client.newCall(req).execute().use { resp ->
                 val text = resp.body?.string().orEmpty()
                 if (!resp.isSuccessful) {
+                    // GitHub puts the real reason in errors[] (e.g. "name already exists on this account").
                     val msg = runCatching {
-                        (Http.json.parseToJsonElement(text).jsonObject["message"] as? JsonPrimitive)?.contentOrNull
+                        val o = Http.json.parseToJsonElement(text).jsonObject
+                        val main = (o["message"] as? JsonPrimitive)?.contentOrNull
+                        val details = (o["errors"] as? JsonArray).orEmpty().mapNotNull { e ->
+                            (e as? JsonObject)?.let { (it["message"] as? JsonPrimitive)?.contentOrNull ?: listOfNotNull(
+                                (it["field"] as? JsonPrimitive)?.contentOrNull, (it["code"] as? JsonPrimitive)?.contentOrNull,
+                            ).joinToString(" ").ifBlank { null } } ?: (e as? JsonPrimitive)?.contentOrNull
+                        }
+                        listOfNotNull(main).plus(details).joinToString(": ").ifBlank { null }
                     }.getOrNull() ?: "HTTP ${resp.code}"
                     throw ProviderException(resp.code, "GitHub: $msg")
                 }
@@ -71,9 +79,35 @@ class GitHubClient(private val token: String) {
     data class Repo(val owner: String, val name: String, val branch: String, val url: String)
 
     suspend fun createRepo(name: String, description: String): Repo {
+        // A name that's taken (e.g. a retry in the same minute) gets -2, -3…; other errors say what GitHub said.
+        var lastError: Throwable? = null
+        for (attempt in 1..4) {
+            val tryName = if (attempt == 1) name else "$name-$attempt"
+            try {
+                return createRepoNamed(tryName, description)
+            } catch (e: ProviderException) {
+                lastError = e
+                val msg = e.message.orEmpty()
+                when {
+                    e.code == 422 && (msg.contains("already exists", true) || msg.contains("name", true)) -> continue
+                    e.code == 403 || e.code == 404 -> throw ProviderException(
+                        e.code,
+                        "GitHub didn't let Arin create a repository ($msg). Sign out of GitHub in Settings and sign in again " +
+                            "with \"Sign in with GitHub\" (it asks for the right permissions). A fine-grained token can't create repos; " +
+                            "a classic token needs the repo and workflow scopes.",
+                    )
+                    e.code in 500..599 || e.code == 429 -> { kotlinx.coroutines.delay(3_000L * attempt); continue }
+                    else -> throw e
+                }
+            }
+        }
+        throw lastError ?: IllegalStateException("Couldn't create the GitHub repository.")
+    }
+
+    private suspend fun createRepoNamed(name: String, description: String): Repo {
         val body = buildJsonObject {
             put("name", name)
-            put("description", description.take(300))
+            put("description", description.replace(Regex("\\p{Cntrl}+"), " ").trim().take(300))
             put("private", false) // public repos get free Actions minutes and public download links
             put("auto_init", true)
         }

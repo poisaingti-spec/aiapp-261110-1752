@@ -522,7 +522,13 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         if (chatBuildChat == chatId) replaceBuildMessage(steps, save = false)
         chatBuildMsg = null
         val name = project?.appName ?: "The app"
-        val text = if (result.success && project != null) buildString {
+        val phoneOnly = project?.owner == com.arin.builder.BuildAgent.LOCAL_OWNER
+        val text = if (result.success && phoneOnly) buildString {
+            append("✅ **$name is built on this phone.**\n\n")
+            result.phoneApk?.let { append("- **APK:** `$it`\n") }
+            result.phoneSourceZip?.let { append("- **Source code (zip):** `$it`\n") }
+            append("\nAndroid's install screen opens now. Both files are in your Download/Arin folder.")
+        } else if (result.success && project != null) buildString {
             append(if (project.selfUpdate) "✅ **The new version of Arin is built.**\n\n" else "✅ **$name is built.**\n\n")
             result.apkUrl?.let { append("- **APK:** [Download $name APK]($it)\n  $it\n") }
             val zip = com.arin.builder.BuildRunner.sourceZipUrl(project)
@@ -552,6 +558,9 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 (result.runUrl?.let { " Full log: $it ." } ?: "") +
                 " When the person asks why it failed, explain from this log in plain words; to fix it, emit a <build> tag that says what to change.\n\n"
         postToBuildChat(Message(fromUser = false, text = text), progressId, steps)
+        if (result.success) result.phoneInstallPath?.let { path ->
+            runCatching { com.arin.builder.ApkInstaller.install(getApplication(), java.io.File(path)) }
+        }
     }
 
     /** Details of the last failed build, for the model to explain or fix. */
@@ -596,7 +605,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         val token = githubToken()
         val app = getApplication<Application>()
         return when {
-            token.isBlank() -> "To build apps, sign in with GitHub in Settings → GitHub, then ask again."
+            token.isBlank() && !com.arin.terminal.Linux.androidBuildReady(app) ->
+                "To build apps, sign in with GitHub in Settings → GitHub, or install the Android build tools in Settings → Linux to build on this phone. Then ask again."
             com.arin.builder.BuildRunner.running -> "A build is already running. Open Build mode to see it."
             provider.needsKey && settings.key(provider).isBlank() -> "Add your ${provider.label} key in Settings."
             else -> {
