@@ -1,5 +1,7 @@
 package com.arin.settings
 
+import androidx.compose.animation.animateContentSize
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -82,8 +84,6 @@ fun SettingsScreen(vm: ChatViewModel, onBack: () -> Unit) {
                 Provider.entries.filter { it.needsKey && it != Provider.Custom }.forEach { p -> KeyRow(vm, p) }
             }
 
-            Section("Custom API") { CustomApiSettings(vm) }
-
             Section("Appearance") {
                 androidx.compose.foundation.layout.FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     ThemeMode.entries.forEach { t ->
@@ -102,14 +102,6 @@ fun SettingsScreen(vm: ChatViewModel, onBack: () -> Unit) {
                     Switch(checked = vm.showThinking, onCheckedChange = vm::toggleThinking)
                 }
             }
-
-            Section("GitHub (for building apps)") { GithubSettings(vm) }
-
-            Section("Linux (built in)") { LinuxSettings(vm) }
-
-            Section("Terminal") { TerminalSettings(vm) }
-
-            Section("Tools (MCP)") { ToolsSettings(vm) }
 
             Section("Web search") {
                 Toggle(
@@ -170,12 +162,37 @@ fun SettingsScreen(vm: ChatViewModel, onBack: () -> Unit) {
                 )
             }
 
+            // Extra features, folded away so the screen stays simple. Tap a row to open it.
+            FoldSection("Custom API", if (vm.provider == Provider.Custom) "In use · ${vm.customBaseUrl}" else "Use any service with your own base URL and key") {
+                CustomApiSettings(vm)
+            }
+            FoldSection(
+                "Build apps and update Arin",
+                if (vm.githubToken().isNotBlank()) "GitHub: ${vm.githubUser.ifBlank { "signed in" }}" else "Sign in with GitHub to build APKs",
+            ) { GithubSettings(vm) }
+            FoldSection(
+                "Linux",
+                when {
+                    vm.linuxBusy -> "Working…"
+                    vm.linuxReady -> "Installed" + if (vm.devToolsReady) " · Java, Kotlin, Gradle" else ""
+                    else -> "Run tools like Node, Python and REA inside Arin"
+                },
+                startOpen = vm.linuxBusy,
+            ) { LinuxSettings(vm) }
+            FoldSection("Terminal", if (vm.terminalOn) ("On" + (if (vm.terminalAsk) " · asks before each command" else "")) else "Off") {
+                TerminalSettings(vm)
+            }
+            FoldSection(
+                "Tools (MCP)",
+                vm.mcpServers.takeIf { it.isNotEmpty() }?.joinToString { it.name } ?: "Connect REA or other MCP servers",
+            ) { ToolsSettings(vm) }
+
             Section("Your data") {
                 OutlinedButton(onClick = { confirmClear = true }) { Text("Delete all chats and projects") }
             }
 
             Text(
-                "Arin 0.8.0",
+                "Arin 0.8.1",
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(vertical = 12.dp),
@@ -191,6 +208,39 @@ fun SettingsScreen(vm: ChatViewModel, onBack: () -> Unit) {
             confirmButton = { TextButton(onClick = { vm.deleteAll(); confirmClear = false }) { Text("Delete all") } },
             dismissButton = { TextButton(onClick = { confirmClear = false }) { Text("Cancel") } },
         )
+    }
+}
+
+@Composable
+private fun FoldSection(title: String, summary: String, startOpen: Boolean = false, content: @Composable () -> Unit) {
+    var open by remember { mutableStateOf(startOpen) }
+    Surface(color = MaterialTheme.colorScheme.surfaceContainer, shape = MaterialTheme.shapes.large) {
+        Column(Modifier.fillMaxWidth().animateContentSize()) {
+            Row(
+                Modifier.fillMaxWidth().clickable { open = !open }.padding(16.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text(title, style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
+                    if (!open) {
+                        Text(
+                            summary,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                        )
+                    }
+                }
+                Text(if (open) "▴" else "▾", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            if (open) {
+                Column(
+                    Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, bottom = 16.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                ) { content() }
+            }
+        }
     }
 }
 
