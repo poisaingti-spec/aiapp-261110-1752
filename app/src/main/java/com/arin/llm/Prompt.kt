@@ -36,11 +36,29 @@ object Prompt {
     /** A change to Arin itself the reply asks for. */
     fun selfUpdate(reply: String): String? = updateTag.find(reply)?.groupValues?.get(1)?.trim()?.takeIf { it.isNotBlank() }
 
-    private val buildTag = Regex("""<build(?:\s+name\s*=\s*"([^"]{1,60})")?\s*>(.+?)</build>""", RegexOption.DOT_MATCHES_ALL)
+    private val buildTag = Regex("""<build(?:\s+name\s*=\s*["']([^"']{1,60})["'])?\s*>(.+?)</build>""", RegexOption.DOT_MATCHES_ALL)
+
+    /** A <build> left open at the end of a reply (the model ran out or forgot to close it). */
+    private val buildTagOpen = Regex("""<build(?:\s+name\s*=\s*["']([^"']{1,60})["'])?\s*>([\s\S]{40,})$""")
 
     /** An app the reply asks Arin to build: name (may be blank) and description. */
     fun buildRequest(reply: String): Pair<String, String>? =
-        buildTag.find(reply)?.let { it.groupValues[1].trim() to it.groupValues[2].trim() }?.takeIf { it.second.isNotBlank() }
+        (buildTag.find(reply) ?: buildTagOpen.find(reply.trimEnd()))
+            ?.let { it.groupValues[1].trim() to it.groupValues[2].trim().removeSuffix("```").trim() }
+            ?.takeIf { it.second.isNotBlank() }
+
+    private val promisedAction = Regex(
+        """(?i)\b(build|apk|compile|update arin|updating arin|spec|kicking off|starting|going out|launching|relaunching)\b""",
+    )
+
+    /** A reply that announces a build or update (e.g. "Build spec going out now:") without its tag. */
+    fun promisedBuildWithoutTag(reply: String): Boolean {
+        if (buildRequest(reply) != null || selfUpdate(reply) != null) return false
+        val t = clean(reply).trim()
+        if (t.isEmpty() || t.endsWith("?")) return false
+        val tail = t.takeLast(250)
+        return (t.endsWith(":") || t.endsWith("…") || t.endsWith("...") || tail.contains("now", true)) && promisedAction.containsMatchIn(tail)
+    }
 
     private val toolTag = Regex("""<tool\s+name\s*=\s*"([^"]+)"\s*>(.*?)</tool>""", RegexOption.DOT_MATCHES_ALL)
 
@@ -148,6 +166,9 @@ object Prompt {
         append("on what it should do (ask briefly only if it's really unclear), then end your reply with ")
         append("<build name=\"App name\">a complete, detailed description: screens, features, data, look</build>. ")
         append("Arin then opens Build mode and starts. For an uploaded Android Studio project (.zip), use Build mode's Upload. ")
+        append("The build setup is already done and tested (Android Gradle plugin, Kotlin, Compose, Gradle, signing, GitHub ")
+        append("workflow): don't plan or discuss versions, Gradle files or CI, just describe the app. Put the <build> tag in the ")
+        append("same reply right away; never say a build is starting without including the tag. ")
         append("Don't paste whole app sources in chat when they asked for an APK.\n\n")
 
         if (tools.isNotBlank()) append(tools)

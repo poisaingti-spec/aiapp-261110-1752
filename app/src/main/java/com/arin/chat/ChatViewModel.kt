@@ -936,6 +936,19 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                         else -> null
                     }
                     if (q == null) {
+                        // Announced a build or update ("Build spec going out now:") but left out the tag? Ask for it.
+                        if (nudges < 3 && Prompt.promisedBuildWithoutTag(full)) {
+                            nudges++
+                            turns += Turn(false, full)
+                            turns += Turn(
+                                true,
+                                "You said the build is starting, but your reply had no <build> tag, so nothing started. Send it now: " +
+                                    "<build name=\"App name\">the full description of the app</build> (or <update_arin>…</update_arin> " +
+                                    "for a change to Arin). Only the tag and at most one short sentence.",
+                            )
+                            liveText = ""
+                            continue
+                        }
                         // Stopped mid-task ("fixing it by…:" with no command)? Ask the model to carry on.
                         if (working && nudges < 3 && (useTerminal || com.arin.mcp.Mcp.connected().isNotEmpty()) && Prompt.looksUnfinished(full)) {
                             nudges++
