@@ -35,7 +35,7 @@ object Termux {
     const val SETUP_COMMAND =
         "mkdir -p ~/.termux && grep -qs '^allow-external-apps' ~/.termux/termux.properties || " +
             "echo 'allow-external-apps=true' >> ~/.termux/termux.properties; termux-reload-settings; " +
-            "pkg update -y && pkg install -y nodejs-lts python git; echo 'Arin setup done'"
+            "pkg update -y && pkg install -y nodejs-lts python git procps; echo 'Arin setup done'"
 
     const val DOWNLOAD_URL = "https://f-droid.org/packages/com.termux/"
 
