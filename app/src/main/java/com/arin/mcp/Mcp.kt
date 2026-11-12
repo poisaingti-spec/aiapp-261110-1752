@@ -205,7 +205,7 @@ object Mcp {
         url = "http://127.0.0.1:8765/mcp",
         startCommand = "command -v rea >/dev/null 2>&1 || { echo $NOT_INSTALLED; exit 0; }; " +
             // rea.env holds the Android tool paths (REA_JADX_MCP_JAR, JAVA_HOME, REA_APKTOOL_COMMAND).
-            "mkdir -p ~/.arin && (set -a; [ -f ~/.arin/rea.env ] && . ~/.arin/rea.env; set +a; nohup env UV_USE_IO_URING=0 GLIBC_TUNABLES=glibc.pthread.rseq=0 REA_MCP_OUTPUT_SCHEMA_PROFILE=compact " +
+            "mkdir -p ~/.arin && (set -a; [ -f ~/.arin/rea.env ] && . ~/.arin/rea.env; set +a; nohup env UV_USE_IO_URING=0 GLIBC_TUNABLES=glibc.pthread.rseq=0 COLUMNS=120 LINES=40 REA_MCP_OUTPUT_SCHEMA_PROFILE=compact " +
             "node $BRIDGE_PATH --port 8765 -- rea mcp > ~/.arin/rea.log 2>&1 &) ; sleep 6; " +
             "curl -s http://127.0.0.1:8765/health || (echo 'REA did not start; last log lines:'; tail -20 ~/.arin/rea.log)",
     )
