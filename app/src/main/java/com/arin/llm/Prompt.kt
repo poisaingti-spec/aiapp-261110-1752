@@ -13,6 +13,29 @@ object Prompt {
     /** Commands one reply may run in the terminal before it has to answer. */
     const val MAX_COMMANDS = 25
 
+    private val imagesTag = Regex("""<images>\s*(.{1,200}?)\s*</images>""", RegexOption.DOT_MATCHES_ALL)
+    private val videosTag = Regex("""<videos>\s*(.{1,200}?)\s*</videos>""", RegexOption.DOT_MATCHES_ALL)
+    private val fetchTag = Regex("""<fetch>\s*(https?://\S{1,800}?)\s*</fetch>""", RegexOption.DOT_MATCHES_ALL)
+    private val downloadTag = Regex("""<download(?:\s+as\s*=\s*"([^"]{1,120})")?\s*>\s*(https?://\S{1,1500}?)\s*</download>""", RegexOption.DOT_MATCHES_ALL)
+    private val updateTag = Regex("""<update_arin>(.+?)</update_arin>""", RegexOption.DOT_MATCHES_ALL)
+
+    /** Web steps (media searches, page reads, downloads) one reply may take. */
+    const val MAX_WEB_STEPS = 12
+
+    /** A media search the reply asks for: (true for videos, query). */
+    fun mediaRequest(reply: String): Pair<Boolean, String>? =
+        videosTag.find(reply)?.let { true to it.groupValues[1].trim() }
+            ?: imagesTag.find(reply)?.let { false to it.groupValues[1].trim() }
+
+    fun fetchUrl(reply: String): String? = fetchTag.find(reply)?.groupValues?.get(1)?.trim()
+
+    /** A file to download: (file name or blank, URL). */
+    fun download(reply: String): Pair<String, String>? =
+        downloadTag.find(reply)?.let { it.groupValues[1].trim() to it.groupValues[2].trim() }
+
+    /** A change to Arin itself the reply asks for. */
+    fun selfUpdate(reply: String): String? = updateTag.find(reply)?.groupValues?.get(1)?.trim()?.takeIf { it.isNotBlank() }
+
     private val buildTag = Regex("""<build(?:\s+name\s*=\s*"([^"]{1,60})")?\s*>(.+?)</build>""", RegexOption.DOT_MATCHES_ALL)
 
     /** An app the reply asks Arin to build: name (may be blank) and description. */
@@ -73,6 +96,21 @@ object Prompt {
             append("say so plainly rather than pretending.\n\n")
         }
 
+        append("Internet: you have full internet access. Write ONE of these as the LAST thing in your reply and stop; the app ")
+        append("runs it and sends you the result, then continue: <fetch>https://url</fetch> reads any web page, document, ")
+        append("README or API; <download as=\"name.ext\">https://url</download> downloads any file (it is saved for the person ")
+        append("and for terminal tools) — use it to get files a task or project needs; ")
+        append("<images>what to show</images> finds pictures and <videos>what to show</videos> finds videos, which are shown ")
+        append("right in the chat under your reply — use them whenever the person asks to see, show or display something. ")
+        append("You can also show a picture you know the address of with ![description](https://…/image.jpg), and a video by ")
+        append("putting its YouTube or .mp4 link in your reply; it plays in the chat. Up to $MAX_WEB_STEPS such steps per answer.\n\n")
+
+        append("Updating Arin itself: Arin's own source code (Kotlin, Android) is on the person's GitHub and you can change it. ")
+        append("When they ask for a feature Arin lacks, report a bug in Arin, or ask you to update or improve the app, end your ")
+        append("reply with <update_arin>exactly what to change in Arin and why, in detail</update_arin>. Arin then edits its code ")
+        append("(searching the web and downloading files or libraries as needed), builds a new version on GitHub, fixes build ")
+        append("errors, and offers to install the update. Agree on the change first if it's unclear.\n\n")
+
         append("Building Android apps: Arin can turn a description into a complete Android app (Kotlin, Jetpack Compose, ")
         append("Material 3), put the source on the person's GitHub and compile it into an APK with GitHub Actions, fixing ")
         append("build errors automatically. When the person asks you to make, build or compile an app or APK, first agree ")
@@ -127,6 +165,9 @@ object Prompt {
             .replace(runTag, "").replace(Regex("""<run>[\s\S]*$"""), "")
             .replace(toolTag, "").replace(Regex("""<tool[\s\S]*$"""), "")
             .replace(buildTag, "").replace(Regex("""<build[\s\S]*$"""), "")
-            .replace(Regex("""</?(run|tool|build)\b[^>]*>"""), "")
+            .replace(updateTag, "").replace(Regex("""<update_arin>[\s\S]*$"""), "")
+            .replace(imagesTag, "").replace(videosTag, "").replace(fetchTag, "").replace(downloadTag, "")
+            .replace(Regex("""<(images|videos|fetch|download)\b[\s\S]*$"""), "")
+            .replace(Regex("""</?(run|tool|build|update_arin|images|videos|fetch|download)\b[^>]*>"""), "")
             .trimEnd()
 }

@@ -428,7 +428,93 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                         apiKey = settings.key(provider),
                         effort = effort,
                         githubToken = token,
-                        allowOtherSites = false,
+                        allowOtherSites = true,
+                    ),
+                )
+                openBuild = true
+                null
+            }
+        }
+    }
+
+    /**
+     * Downloads [url] for the person and for terminal tools: into the built-in Linux (/root/files) when it's
+     * installed, otherwise into Download/Arin. Returns a line for the model.
+     */
+    private suspend fun downloadFile(app: Application, url: String, name: String): String =
+        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            val fileName = name.ifBlank { url.substringAfterLast('/').substringBefore('?').ifBlank { "download" } }
+                .replace(Regex("[^A-Za-z0-9._ ()-]"), "_").take(120)
+            try {
+                val req = okhttp3.Request.Builder().url(url).header("User-Agent", "Mozilla/5.0 (Android) Arin").build()
+                com.arin.builder.Http.client.newCall(req).execute().use { r ->
+                    if (!r.isSuccessful) return@withContext "Download failed: HTTP ${r.code} for $url"
+                    val body = r.body ?: return@withContext "Download failed: empty response from $url"
+                    val linuxPath = if (com.arin.terminal.Linux.installed(app)) {
+                        body.byteStream().use { com.arin.terminal.Linux.importFile(app, it, fileName) }
+                    } else null
+                    if (linuxPath != null) {
+                        "Downloaded $fileName (${r.header("Content-Length")?.toLongOrNull()?.let { com.arin.data.Attachments.readableSize(it) } ?: "size unknown"}) to $linuxPath in Linux. Terminal tools can use it there."
+                    } else {
+                        val values = android.content.ContentValues().apply {
+                            put(android.provider.MediaStore.Downloads.DISPLAY_NAME, fileName)
+                            put(android.provider.MediaStore.Downloads.RELATIVE_PATH, "Download/Arin")
+                        }
+                        val dest = if (android.os.Build.VERSION.SDK_INT >= 29) {
+                            app.contentResolver.insert(android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
+                        } else null
+                        if (dest != null) {
+                            app.contentResolver.openOutputStream(dest)?.use { out -> body.byteStream().use { it.copyTo(out, 64 * 1024) } }
+                            "Downloaded $fileName to the phone's Download/Arin folder (/storage/emulated/0/Download/Arin/$fileName)."
+                        } else {
+                            val f = java.io.File(app.getExternalFilesDir(null), fileName)
+                            f.outputStream().use { out -> body.byteStream().use { it.copyTo(out, 64 * 1024) } }
+                            "Downloaded $fileName to ${f.absolutePath}."
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                "Download failed: ${e.message ?: e.javaClass.simpleName}"
+            }
+        }
+
+    // ---- Arin updating itself ----
+
+    /** Where Arin's own source lives on GitHub (owner/repo and branch). */
+    fun selfRepo(): String = settings.secret("SELF_REPO").ifBlank { DEFAULT_SELF_REPO }
+
+    fun selfBranch(): String = settings.secret("SELF_BRANCH").ifBlank { DEFAULT_SELF_BRANCH }
+
+    fun saveSelfRepo(repo: String, branch: String) {
+        settings.setSecret("SELF_REPO", repo.trim().removePrefix("https://github.com/").trimEnd('/'))
+        settings.setSecret("SELF_BRANCH", branch.trim())
+    }
+
+    /** Changes Arin's own code on GitHub, builds a new version and offers to install it. Returns a problem, or null. */
+    fun startSelfUpdate(change: String): String? {
+        val token = githubToken()
+        val app = getApplication<Application>()
+        return when {
+            change.isBlank() -> "Describe what to change in Arin."
+            token.isBlank() -> "To update Arin, sign in with GitHub in Settings → GitHub, then ask again."
+            com.arin.builder.BuildRunner.running -> "A build is already running. Open Build mode to see it."
+            provider.needsKey && settings.key(provider).isBlank() -> "Add your ${provider.label} key in Settings."
+            else -> {
+                com.arin.builder.BuildRunner.newProject(app)
+                com.arin.builder.BuildService.start(
+                    app,
+                    com.arin.builder.BuildRequest(
+                        description = change.trim(),
+                        appName = "Arin",
+                        provider = provider,
+                        model = model,
+                        apiKey = settings.key(provider),
+                        effort = effort,
+                        githubToken = token,
+                        allowOtherSites = true,
+                        selfUpdate = true,
+                        selfRepo = selfRepo(),
+                        selfBranch = selfBranch(),
                     ),
                 )
                 openBuild = true
@@ -604,6 +690,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             var answer = ""
             val sources = mutableListOf<Source>()
             val ran = mutableListOf<com.arin.data.CommandRun>()
+            val foundMedia = mutableListOf<com.arin.data.MediaItem>()
+            var webSteps = 0
             liveCommands.clear()
             var failure: String? = null
             try {
@@ -720,6 +808,51 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                         )
                         continue
                     }
+                    // Internet steps: show pictures or videos, read a page, download a file.
+                    if (webSteps < Prompt.MAX_WEB_STEPS) {
+                        val media = Prompt.mediaRequest(full)
+                        val page = if (media == null) Prompt.fetchUrl(full) else null
+                        val file = if (media == null && page == null) Prompt.download(full) else null
+                        if (media != null || page != null || file != null) {
+                            webSteps++
+                            liveText = ""
+                            val result: String = when {
+                                media != null -> {
+                                    val (video, q) = media
+                                    status = if (video) "Finding videos of “$q”" else "Finding pictures of “$q”"
+                                    val found = runCatching {
+                                        if (video) com.arin.media.MediaSearch.videos(q) else com.arin.media.MediaSearch.images(q)
+                                    }.getOrDefault(emptyList())
+                                    foundMedia += found.filter { f -> foundMedia.none { it.url == f.url } }
+                                    if (found.isEmpty()) "No ${if (video) "videos" else "pictures"} were found for \"$q\". Try other words, or tell the person."
+                                    else "Found ${found.size} ${if (video) "videos" else "pictures"} for \"$q\" (" +
+                                        found.take(6).joinToString("; ") { it.title.take(60) } +
+                                        "). They are shown to the person right under your reply. Now finish your answer; don't list their links."
+                                }
+                                page != null -> {
+                                    status = "Reading " + page.removePrefix("https://").removePrefix("http://").take(60)
+                                    "Content of $page:\n\n" + runCatching { com.arin.builder.WebTools.fetch(page) }.getOrElse { "Couldn't open it: ${it.message}" }.take(24_000)
+                                }
+                                else -> {
+                                    val (name, url) = file!!
+                                    status = "Downloading " + url.substringAfterLast('/').substringBefore('?').take(60)
+                                    downloadFile(app, url, name)
+                                }
+                            }
+                            status = null
+                            val label = when {
+                                media != null -> (if (media.first) "videos: " else "pictures: ") + media.second
+                                page != null -> "fetch $page"
+                                else -> "download ${file!!.second}"
+                            }
+                            val step = com.arin.data.CommandRun(label, result.take(2_000), 0, kind = "tool")
+                            ran += step
+                            liveCommands += step
+                            turns += Turn(false, full)
+                            turns += Turn(true, result)
+                            continue
+                        }
+                    }
                     val q = if (useSearch && searches < Prompt.MAX_SEARCHES) Prompt.searchQuery(full) else null
                     if (q == null) {
                         answer = full
@@ -742,6 +875,12 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             } finally {
                 val seconds = if (thinkStart > 0) ((System.currentTimeMillis() - thinkStart) / 1000).toInt() else 0
                 if (memoryOn) Prompt.memories(answer).forEach { remember(it) }
+                // The model asked to change Arin itself: start a self-update build.
+                if (failure == null) Prompt.selfUpdate(answer)?.let { change ->
+                    ArinApp.scope.launch(kotlinx.coroutines.Dispatchers.Main) {
+                        startSelfUpdate(change)?.let { notice = it }
+                    }
+                }
                 // The model asked to build an app: start Build mode.
                 // (Launched separately: this block also runs after Stop, when this coroutine is cancelled.)
                 if (failure == null) Prompt.buildRequest(answer)?.let { (name, description) ->
@@ -749,7 +888,9 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                         startBuild(name, description)?.let { notice = it }
                     }
                 }
-                val shown = Prompt.clean(answer)
+                // Pictures and videos: found by searches, plus any the model linked in its text.
+                foundMedia += com.arin.media.MediaSearch.linked(answer).filter { l -> foundMedia.none { it.url == l.url } }
+                val shown = com.arin.media.MediaSearch.withoutImages(Prompt.clean(answer))
                 val msg = if (failure != null && shown.isBlank()) {
                     Message(fromUser = false, text = failure!!, failed = true)
                 } else {
@@ -761,6 +902,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                         thoughtSeconds = seconds,
                         sources = sources,
                         commands = ran.toList(),
+                        media = foundMedia.toList(),
                     )
                 }
                 messages += msg
@@ -1099,6 +1241,10 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     companion object {
+        /** Arin's source repository, set when this build of Arin was made; changeable in Settings → GitHub. */
+        const val DEFAULT_SELF_REPO = "poisaingti-spec/aiapp-261110-1752"
+        const val DEFAULT_SELF_BRANCH = "arin"
+
         /** After REA is installed in the built-in Linux: have the model prove it works. */
         val REA_CHECK_PROMPT = """
             REA (Reverse Engineer Anything) was just installed in Arin's built-in Linux and connected as MCP tools. Check that it really works:

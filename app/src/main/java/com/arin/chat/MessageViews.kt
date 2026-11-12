@@ -113,6 +113,10 @@ fun ArinMessage(message: Message, showThinking: Boolean, isLast: Boolean, onRetr
                 var open by remember { mutableStateOf<Artifact?>(null) }
                 artifacts.forEach { art -> ArtifactCard(art) { open = art } }
                 open?.let { ArtifactViewer(it) { open = null } }
+                if (message.media.isNotEmpty()) {
+                    Spacer(Modifier.size(8.dp))
+                    com.arin.media.MediaRow(message.media)
+                }
                 if (message.sources.isNotEmpty()) Sources(message.sources)
             }
             Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {

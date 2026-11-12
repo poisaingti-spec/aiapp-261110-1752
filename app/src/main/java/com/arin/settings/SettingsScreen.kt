@@ -175,7 +175,7 @@ fun SettingsScreen(vm: ChatViewModel, onBack: () -> Unit) {
             }
 
             Text(
-                "Arin 0.7.0",
+                "Arin 0.8.0",
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(vertical = 12.dp),
@@ -247,6 +247,48 @@ private fun GithubSettings(vm: ChatViewModel) {
         else -> androidx.compose.material3.Button(onClick = { vm.signInGithub { link -> uri.openUri(link) } }) { Text("Sign in with GitHub") }
     }
     vm.githubLoginError?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
+
+    // Arin updating itself.
+    var selfRepo by remember { mutableStateOf(vm.selfRepo()) }
+    var selfBranch by remember { mutableStateOf(vm.selfBranch()) }
+    var change by remember { mutableStateOf("") }
+    var updateNote by remember { mutableStateOf<String?>(null) }
+    Text("Update Arin itself", style = MaterialTheme.typography.bodyLarge)
+    Text(
+        "Describe a change and Arin edits its own code on GitHub (downloading anything it needs), builds a new version " +
+            "and offers to install it. You can also just ask for a new feature in chat.",
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+    OutlinedTextField(
+        value = change,
+        onValueChange = { change = it; updateNote = null },
+        label = { Text("What should Arin change or add?") },
+        modifier = Modifier.fillMaxWidth(),
+    )
+    androidx.compose.material3.Button(
+        enabled = change.isNotBlank() && vm.githubToken().isNotBlank(),
+        onClick = { updateNote = vm.startSelfUpdate(change) ?: "Started. Follow it in Build mode." },
+    ) { Text("Update Arin") }
+    updateNote?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        OutlinedTextField(
+            value = selfRepo,
+            onValueChange = { selfRepo = it },
+            label = { Text("Arin's source (owner/repo)") },
+            singleLine = true,
+            modifier = Modifier.weight(2f),
+        )
+        OutlinedTextField(
+            value = selfBranch,
+            onValueChange = { selfBranch = it },
+            label = { Text("Branch") },
+            singleLine = true,
+            modifier = Modifier.weight(1f),
+        )
+    }
+    TextButton(onClick = { vm.saveSelfRepo(selfRepo, selfBranch); vm.notice = "Saved" }) { Text("Save source location") }
+
     TextButton(onClick = { showAdvanced = !showAdvanced }) { Text(if (showAdvanced) "Hide advanced" else "Advanced") }
     if (showAdvanced) {
         OutlinedTextField(

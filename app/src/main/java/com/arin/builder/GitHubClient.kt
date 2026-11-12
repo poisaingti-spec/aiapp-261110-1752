@@ -1,6 +1,7 @@
 package com.arin.builder
 
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
@@ -196,7 +197,7 @@ class GitHubClient(private val token: String) {
         }
     }
 
-    data class Run(val id: Long, val status: String, val conclusion: String?, val url: String)
+    data class Run(val id: Long, val status: String, val conclusion: String?, val url: String, val number: Long = 0)
 
     /** The Actions run started by the push of [sha], or null if it hasn't appeared yet. */
     /** The run of [workflowFile] (e.g. "build.yml") for [sha]; other workflows in the repo are ignored. */
@@ -211,6 +212,7 @@ class GitHubClient(private val token: String) {
             status = (r["status"] as? JsonPrimitive)?.contentOrNull ?: "queued",
             conclusion = (r["conclusion"] as? JsonPrimitive)?.contentOrNull,
             url = (r["html_url"] as? JsonPrimitive)?.contentOrNull ?: repo.url,
+            number = (r["run_number"] as? JsonPrimitive)?.longOrNull ?: 0,
         )
     }
 
@@ -249,6 +251,45 @@ class GitHubClient(private val token: String) {
             }.filter { !it.contains("Node.js") && !it.contains("deprecated") && !it.contains("ubuntu-latest") }
         }.getOrNull().orEmpty()
         return notes.joinToString("\n").ifBlank { "The build failed, but its error details couldn't be read." }.take(6000)
+    }
+
+    /** The APK attached to the release tagged [tag] (e.g. "arin-12"), or null. */
+    suspend fun apkForTag(repo: Repo, tag: String): String? {
+        val rel = runCatching { call("GET", "/repos/${repo.owner}/${repo.name}/releases/tags/$tag") }.getOrNull() ?: return null
+        val assets = (rel as? JsonObject)?.get("assets") as? JsonArray ?: return null
+        return assets.mapNotNull { (it as? JsonObject)?.get("browser_download_url") as? JsonPrimitive }
+            .map { it.content }.firstOrNull { it.endsWith(".apk") }
+    }
+
+    /**
+     * Text files of [repo] at its branch (sources, Gradle files, resources), for editing an existing project
+     * such as Arin itself. Skips build output, binaries and files over [maxBytes].
+     */
+    suspend fun readTextFiles(repo: Repo, maxBytes: Long = 200_000): Map<String, String> {
+        val tree = call("GET", "/repos/${repo.owner}/${repo.name}/git/trees/${repo.branch}?recursive=1")
+        val entries = ((tree as? JsonObject)?.get("tree") as? JsonArray).orEmpty().mapNotNull { it as? JsonObject }
+            .filter { (it["type"] as? JsonPrimitive)?.contentOrNull == "blob" }
+            .mapNotNull { e ->
+                val path = (e["path"] as? JsonPrimitive)?.contentOrNull ?: return@mapNotNull null
+                val size = (e["size"] as? JsonPrimitive)?.longOrNull ?: 0
+                path.takeIf { ZipImport.isText(it) && size <= maxBytes && !it.contains("/build/") && !it.startsWith(".gradle/") }
+            }
+        val out = java.util.concurrent.ConcurrentHashMap<String, String>()
+        kotlinx.coroutines.coroutineScope {
+            entries.chunked(8).forEach { batch ->
+                batch.map { path ->
+                    async(Dispatchers.IO) {
+                        val req = request("$api/repos/${repo.owner}/${repo.name}/contents/${path.split('/').joinToString("/") { java.net.URLEncoder.encode(it, "UTF-8").replace("+", "%20") }}?ref=${repo.branch}")
+                            .header("Accept", "application/vnd.github.raw")
+                            .get().build()
+                        runCatching {
+                            retrying { Http.client.newCall(req).execute() }.use { r -> if (r.isSuccessful) r.body?.string()?.let { out[path] = it } }
+                        }
+                    }
+                }.forEach { it.await() }
+            }
+        }
+        return out.toSortedMap()
     }
 
     suspend fun latestApkUrl(repo: Repo): String? {

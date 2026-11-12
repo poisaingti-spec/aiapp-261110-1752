@@ -55,10 +55,22 @@ data class Message(
     val sources: List<Source> = emptyList(),
     /** Terminal commands the reply ran, in order. */
     val commands: List<CommandRun> = emptyList(),
+    /** Pictures and videos shown with the reply. */
+    val media: List<MediaItem> = emptyList(),
 )
 
 @Serializable
 data class Source(val title: String, val url: String)
+
+/** A picture or video shown in a reply (found on the web, or linked by the model). */
+@Serializable
+data class MediaItem(
+    val video: Boolean,
+    val url: String,
+    val thumb: String,
+    val title: String = "",
+    val source: String = "",
+)
 
 /** A command Arin ran in the terminal while writing a reply, with what it printed. */
 @Serializable

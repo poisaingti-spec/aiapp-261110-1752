@@ -85,7 +85,7 @@ private fun resumeBuild(chat: ChatViewModel, vm: BuildViewModel, text: String = 
             apiKey = chat.key(chat.provider),
             effort = chat.effort,
             githubToken = chat.githubToken(),
-            allowOtherSites = false,
+            allowOtherSites = true,
             project = project,
             resume = true,
         ),
@@ -297,7 +297,7 @@ private fun BuildComposer(chat: ChatViewModel, vm: BuildViewModel, onOpenSetting
     val project = vm.project
     var name by rememberSaveable { mutableStateOf("") }
     var text by rememberSaveable { mutableStateOf("") }
-    var allowOther by rememberSaveable { mutableStateOf(false) }
+    var allowOther by rememberSaveable { mutableStateOf(true) }
     var problem by rememberSaveable { mutableStateOf<String?>(null) }
     val notifyPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { }
     val context = androidx.compose.ui.platform.LocalContext.current

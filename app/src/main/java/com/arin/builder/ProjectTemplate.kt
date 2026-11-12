@@ -125,12 +125,12 @@ object ProjectTemplate {
                 runs-on: ubuntu-latest
                 timeout-minutes: 30
                 steps:
-                  - uses: actions/checkout@v4
-                  - uses: actions/setup-java@v4
+                  - uses: actions/checkout@v5
+                  - uses: actions/setup-java@v5
                     with:
                       distribution: temurin
                       java-version: "$JDK"
-                  - uses: gradle/actions/setup-gradle@v4
+                  - uses: gradle/actions/setup-gradle@v5
                     with:
                       gradle-version: "$GRADLE"
                   - name: Signing key (created once, then reused)
@@ -199,12 +199,12 @@ object ProjectTemplate {
             runs-on: ubuntu-latest
             timeout-minutes: 45
             steps:
-              - uses: actions/checkout@v4
-              - uses: actions/setup-java@v4
+              - uses: actions/checkout@v5
+              - uses: actions/setup-java@v5
                 with:
                   distribution: temurin
                   java-version: "17"
-              - uses: gradle/actions/setup-gradle@v4
+              - uses: gradle/actions/setup-gradle@v5
                 with:
                   gradle-version: "8.14.3"
               - name: Build debug APK
@@ -250,6 +250,7 @@ object ProjectTemplate {
         - Write every file you send in full. No placeholders, no "..." and no TODOs.
         - To add a library, edit the module's build.gradle(.kts) dependencies (and gradle/libs.versions.toml if the project uses it).
         - To delete a file, send it with the single line: DELETE
+        - To get a file from the internet (image, font, sound, data, a library jar), add a line: === DOWNLOAD: https://url -> path/in/project === .
         - Don't touch .github/ or the Gradle wrapper jar.
     """.trimIndent()
 

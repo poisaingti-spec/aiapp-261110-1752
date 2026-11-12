@@ -29,6 +29,11 @@ data class BuildRequest(
     val attachments: List<com.arin.data.Attachment> = emptyList(),
     /** Pick up where the last build of [project] stopped instead of starting over. */
     val resume: Boolean = false,
+    /** Change Arin itself: edit [selfRepo] on GitHub and build it with Arin's own workflow. */
+    val selfUpdate: Boolean = false,
+    /** Arin's source: owner/repo and branch. */
+    val selfRepo: String = "",
+    val selfBranch: String = "",
 )
 
 data class BuildResult(
@@ -55,8 +60,14 @@ class BuildAgent(
     private val packageName = req.project?.packageName ?: ("com.aibuilt." + (if (slug.first().isLetter()) slug else "a$slug"))
     private val appName get() = req.project?.appName ?: importedName ?: req.appName
 
-    private val imported = req.project?.imported == true || req.zipPath != null
-    private val workflowFile = if (imported) ProjectTemplate.IMPORT_WORKFLOW_FILE else "build.yml"
+    /** Updating Arin itself (its own repo, workflow and signing key). */
+    private val self = req.selfUpdate || req.project?.selfUpdate == true
+    private val imported = req.project?.imported == true || req.zipPath != null || self
+    private val workflowFile = when {
+        self -> SELF_WORKFLOW
+        imported -> ProjectTemplate.IMPORT_WORKFLOW_FILE
+        else -> "build.yml"
+    }
     private var importedName: String? = null
     private var uploadedOnce = false
     private var currentSha: String? = req.project?.lastSha
@@ -139,6 +150,26 @@ class BuildAgent(
                 gh.createRepo(repoName, "Uploaded to Arin: ${zip.name}")
             }
             notes = emptyList()
+        } else if (self) {
+            // Arin updating itself: read its source from GitHub, change it, build it with its own workflow.
+            val (owner, name) = req.selfRepo.split('/').let { (it.getOrNull(0) ?: "") to (it.getOrNull(1) ?: "") }
+            if (owner.isBlank() || name.isBlank()) return BuildResult(false, "Set Arin's source repository in Settings → GitHub first.")
+            repo = GitHubClient.Repo(owner, name, req.selfBranch.ifBlank { "main" }, "https://github.com/$owner/$name/tree/${req.selfBranch}")
+            importedName = "Arin"
+            step(BuildEvent.Kind.STEP, "Reading Arin's source from ${req.selfRepo} (${repo.branch})")
+            onProgress(-1f, "Downloading source files…")
+            files.clear()
+            files.putAll(gh.readTextFiles(repo))
+            onProgress(null, "")
+            if (files.isEmpty()) return BuildResult(false, "Couldn't read Arin's source from ${req.selfRepo}@${repo.branch}. Check the repository in Settings → GitHub.")
+            step(BuildEvent.Kind.DONE, "Read ${files.size} source files")
+            step(BuildEvent.Kind.THINKING, "Working out the changes to Arin with ${req.provider.label}")
+            val assets = addAttachedAssets()
+            notes = apply(ask(changePrompt() + assets, req.attachments))
+            if (pendingFiles.isEmpty() && !depsChanged) {
+                return BuildResult(false, "The model didn't change any of Arin's files. Try describing the change differently.", repo.url)
+            }
+            uploadedOnce = true
         } else if (existing == null) {
             step(BuildEvent.Kind.THINKING, "Planning and writing the app with ${req.provider.label}")
             val assets = addAttachedAssets()
@@ -180,7 +211,9 @@ class BuildAgent(
                 depsChanged = false
             }
             // Make sure GitHub always has the build instructions (harmless if unchanged).
-            if (imported) {
+            if (self) {
+                // Arin's repo already has its workflow and signing key: leave them alone.
+            } else if (imported) {
                 pendingFiles[".github/workflows/${ProjectTemplate.IMPORT_WORKFLOW_FILE}"] = ProjectTemplate.importWorkflow.toByteArray()
             } else {
                 ProjectTemplate.files(appName, packageName, deps.toList())[".github/workflows/build.yml"]?.let {
@@ -191,6 +224,7 @@ class BuildAgent(
             step(BuildEvent.Kind.STEP, "Uploading $toUpload changed file${if (toUpload == 1) "" else "s"} to GitHub")
             val message = when {
                 round > 0 -> "Fix build errors (round $round)"
+                self -> "Arin: ${req.description.take(60)}"
                 existing != null -> "Change: ${req.description.take(60)}"
                 req.zipPath != null -> "Uploaded project from Arin"
                 else -> "Initial app from Arin"
@@ -233,7 +267,7 @@ class BuildAgent(
                 var apk: String? = null
                 var size: Long? = null
                 for (i in 0 until 20) {
-                    apk = gh.latestApkUrl(repo)
+                    apk = if (self) gh.apkForTag(repo, "$SELF_TAG_PREFIX${run.number}") else gh.latestApkUrl(repo)
                     size = apk?.let { ApkInstaller.check(it) }
                     if (apk != null && size != null) break
                     delay(3000)
@@ -247,6 +281,7 @@ class BuildAgent(
                 return BuildResult(
                     true,
                     when {
+                        self -> "The new version of Arin is ready. Tap Install to update."
                         existing != null -> "Your changes are built."
                         req.zipPath != null -> "Your project compiled to an APK."
                         else -> "Your app is ready."
@@ -286,6 +321,7 @@ class BuildAgent(
                 deps = deps.toList(),
                 lastApkUrl = apk ?: req.project?.lastApkUrl,
                 imported = imported,
+                selfUpdate = self,
                 zipPath = req.zipPath ?: req.project?.zipPath,
                 zipName = req.zipName ?: req.project?.zipName,
                 uploaded = uploadedOnce || req.project?.uploaded == true,
@@ -413,7 +449,7 @@ class BuildAgent(
 
     private fun StringBuilder.appendFiles(hint: String = "") {
         // Offline models have a much smaller memory for text.
-        var budget = if (false) 24_000 else 60_000
+        var budget = if (self) 160_000 else 60_000
         prioritized(hint).forEach { (path, content) ->
             if (budget <= 0) return@forEach
             val c = content.take(budget)
@@ -426,7 +462,14 @@ class BuildAgent(
     }
 
     private fun changePrompt() = buildString {
-        appendLine("Here is an existing Android app, \"$appName\" (${if (imported) "uploaded by the user" else "originally: ${req.project?.description}"}).")
+        if (self) {
+            appendLine("Here is the source of Arin itself: the Android AI assistant app you are running in (package com.arin, Kotlin + Jetpack Compose).")
+            appendLine("Its build setup, GitHub workflow and signing key already work: don't change .github/, the keystore, applicationId or targetSdk.")
+            appendLine("Increase versionCode by 1 and the last number of versionName in app/build.gradle.kts, and update the version shown in Settings to match.")
+            appendLine("Keep everything that works; change only what the request needs. Add new files where they fit the existing package layout.")
+        } else {
+            appendLine("Here is an existing Android app, \"$appName\" (${if (imported) "uploaded by the user" else "originally: ${req.project?.description}"}).")
+        }
         appendLine()
         appendLine("Current files:")
         appendFiles(req.description)
@@ -586,6 +629,10 @@ class BuildAgent(
 
     companion object {
         private const val MAX_DOWNLOAD = 15L * 1024 * 1024
+
+        /** Arin's own workflow and the tag prefix of the releases it publishes. */
+        const val SELF_WORKFLOW = "build-apk.yml"
+        const val SELF_TAG_PREFIX = "arin-"
         private const val MAX_WEB_STEPS = 3
         private val fileStart = Regex("^=+\\s*FILE:\\s*(.+?)\\s*=*\\s*$")
         private val fileEnd = Regex("^=+\\s*END FILE\\s*=*\\s*$")
