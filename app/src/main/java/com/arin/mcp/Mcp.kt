@@ -204,7 +204,8 @@ object Mcp {
         name = "rea",
         url = "http://127.0.0.1:8765/mcp",
         startCommand = "command -v rea >/dev/null 2>&1 || { echo $NOT_INSTALLED; exit 0; }; " +
-            "mkdir -p ~/.arin && (nohup env UV_USE_IO_URING=0 GLIBC_TUNABLES=glibc.pthread.rseq=0 REA_MCP_OUTPUT_SCHEMA_PROFILE=compact " +
+            // rea.env holds the Android tool paths (REA_JADX_MCP_JAR, JAVA_HOME, REA_APKTOOL_COMMAND).
+            "mkdir -p ~/.arin && (set -a; [ -f ~/.arin/rea.env ] && . ~/.arin/rea.env; set +a; nohup env UV_USE_IO_URING=0 GLIBC_TUNABLES=glibc.pthread.rseq=0 REA_MCP_OUTPUT_SCHEMA_PROFILE=compact " +
             "node $BRIDGE_PATH --port 8765 -- rea mcp > ~/.arin/rea.log 2>&1 &) ; sleep 6; " +
             "curl -s http://127.0.0.1:8765/health || (echo 'REA did not start; last log lines:'; tail -20 ~/.arin/rea.log)",
     )
@@ -296,12 +297,25 @@ object Mcp {
             (if (schema.length > 4_000) schema.take(4_000) + "…" else schema.ifBlank { "{}" })
     }
 
-    suspend fun call(name: String, args: JsonObject): McpResult {
+    suspend fun call(context: Context, name: String, args: JsonObject): McpResult {
         val t = tool(name) ?: return McpResult("There is no tool called \"$name\". Use find_tools to look it up.", true)
         val client = clients[t.server] ?: return McpResult("${t.server} isn't connected.", true)
         return try {
             client.call(t.name, args)
         } catch (e: Exception) {
+            // The server may have stopped (e.g. restarted for new settings): start it again and retry once.
+            val s = client.server
+            if (s.startCommand.isNotBlank() && Shell.problem(context) == null) {
+                runCatching {
+                    Shell.run(context, s.startCommand, timeoutMs = 120_000)
+                    var ok = false
+                    for (i in 0 until 5) {
+                        if (runCatching { client.connect() }.isSuccess) { ok = true; break }
+                        delay(2_000)
+                    }
+                    if (ok) return client.call(t.name, args)
+                }
+            }
             McpResult("The call failed: ${e.message ?: e.javaClass.simpleName}", true)
         }
     }

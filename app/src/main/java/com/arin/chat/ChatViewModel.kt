@@ -236,6 +236,9 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         com.arin.terminal.Linux.run(app, "pkill -f mcp-bridge.mjs; sleep 1; echo stopped", timeoutMs = 30_000)
         val r = com.arin.terminal.Linux.installRea(app) { logLine(it) }
         if (r.exitCode != 0 || r.error != null) throw IllegalStateException("REA didn't install: " + (r.error ?: r.combined().takeLast(400)))
+        // For APKs: JDK, JADX and apktool (REA's Android tools). Keep going if this part fails.
+        val tools = com.arin.terminal.Linux.installAndroidTools(app) { logLine(it) }
+        if (tools.exitCode != 0 || tools.error != null) logLine("Android tools didn't install fully; APK analysis may not work: " + (tools.error ?: tools.combined().takeLast(200)))
         logLine("Installing Arin's MCP bridge…")
         com.arin.mcp.Mcp.installBridge(app)
         kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
@@ -692,6 +695,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             val ran = mutableListOf<com.arin.data.CommandRun>()
             val foundMedia = mutableListOf<com.arin.data.MediaItem>()
             var webSteps = 0
+            var nudges = 0
             liveCommands.clear()
             var failure: String? = null
             try {
@@ -791,7 +795,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                                 !askToRun(label, tool = true) -> com.arin.data.CommandRun(label, "The person chose not to allow this tool call.", null, ran = false, kind = "tool")
                                 else -> {
                                     status = "Using $name"
-                                    val r = com.arin.mcp.Mcp.call(name, args)
+                                    val r = com.arin.mcp.Mcp.call(app, name, args)
                                     status = null
                                     com.arin.data.CommandRun(label, shorten(r.text), if (r.isError) 1 else 0, kind = "tool")
                                 }
@@ -855,6 +859,19 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                     }
                     val q = if (useSearch && searches < Prompt.MAX_SEARCHES) Prompt.searchQuery(full) else null
                     if (q == null) {
+                        // Stopped mid-task ("fixing it by…:" with no command)? Ask the model to carry on.
+                        val working = ran.any { it.kind != "steer" }
+                        if (working && nudges < 3 && (useTerminal || com.arin.mcp.Mcp.connected().isNotEmpty()) && Prompt.looksUnfinished(full)) {
+                            nudges++
+                            turns += Turn(false, full)
+                            turns += Turn(
+                                true,
+                                "You described your next step but didn't send it. Do it now: put the <run> command or <tool> call " +
+                                    "as the last thing in your reply. If the task is actually finished, give the final answer instead.",
+                            )
+                            liveText = ""
+                            continue
+                        }
                         answer = full
                         break
                     }

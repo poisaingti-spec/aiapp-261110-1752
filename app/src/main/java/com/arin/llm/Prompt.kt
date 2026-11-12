@@ -156,6 +156,25 @@ object Prompt {
     /** Facts to remember, found in the reply. */
     fun memories(reply: String): List<String> = rememberTag.findAll(reply).map { it.groupValues[1].trim() }.toList()
 
+    private val promiseWords = Regex(
+        """\b(let me|let's|i'll|i will|i'm going to|now i|next,? i|going to|fixing (it |this )?by|retrying|trying again|re-?running|running it|calling)\b""",
+        RegexOption.IGNORE_CASE,
+    )
+
+    /**
+     * True when a reply says what it will do next but stops without doing it, e.g. ends with
+     * "fixing by dumping the XML directly:" and no <run> or <tool>. Used to nudge the model on.
+     */
+    fun looksUnfinished(reply: String): Boolean {
+        val t = clean(reply).trim()
+        if (t.isEmpty()) return true
+        if (t.endsWith("?")) return false
+        if (t.count { it == '`' } >= 3 && t.split("```").size % 2 == 0) return true // code block left open
+        val tail = t.takeLast(300)
+        return t.endsWith(":") || t.endsWith("…") || t.endsWith("...") ||
+            (promiseWords.containsMatchIn(tail.substringAfterLast("\n\n")) && tail.length < 300 && !tail.contains("Summary", true))
+    }
+
     /** The command the reply asks to run, if any. */
     fun command(reply: String): String? = runTag.find(reply)?.groupValues?.get(1)?.trim()?.takeIf { it.isNotEmpty() }
 

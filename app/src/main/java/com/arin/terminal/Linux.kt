@@ -159,6 +159,56 @@ object Linux {
         return r
     }
 
+    /** Script (inside Linux) that installs what REA needs to analyse APKs. */
+    const val ANDROID_TOOLS_SCRIPT = "/root/.arin/setup-android-tools.sh"
+
+    /**
+     * REA analyses APKs through jadx-headless-mcp (a Java program, so it runs on ARM too) and decodes resources
+     * with apktool; both need a full JDK. REA finds them through REA_JADX_MCP_JAR, JAVA_HOME and
+     * REA_APKTOOL_COMMAND, written to ~/.arin/rea.env, which REA's start command loads.
+     * JADX version and checksum are REA's pinned ones (docs/guides/android/android-analysis.md).
+     */
+    private val androidToolsScript = listOf(
+        "#!/bin/bash",
+        "# Installs JDK 21, JADX (headless MCP 0.7.1, REA's pinned version) and apktool for REA's Android tools.",
+        "set -e",
+        "export DEBIAN_FRONTEND=noninteractive",
+        "if ! command -v javac >/dev/null 2>&1; then",
+        "  apt-get update",
+        "  apt-get install -y --no-install-recommends openjdk-21-jdk-headless",
+        "fi",
+        "mkdir -p /opt/rea-android",
+        "cd /opt/rea-android",
+        "JADX=jadx-headless-mcp-0.7.1-all.jar",
+        "SUM=6e5eacf500b64292bfb73c49797c1958f6ee44646e43e868039ae7feb573ff75",
+        "if ! echo \"\$SUM  \$JADX\" | sha256sum -c - >/dev/null 2>&1; then",
+        "  curl -fL -o \"\$JADX\" https://github.com/1013503897/jadx-headless-mcp/releases/download/v0.7.1/\$JADX",
+        "  echo \"\$SUM  \$JADX\" | sha256sum -c -",
+        "fi",
+        "if [ ! -f apktool.jar ]; then",
+        "  URL=\$(curl -fsSL https://api.github.com/repos/iBotPeaches/Apktool/releases/latest | grep -o 'https://[^\"]*\\.jar' | head -1)",
+        "  [ -n \"\$URL\" ] || { echo \"Couldn't find the apktool download\"; exit 1; }",
+        "  curl -fL -o apktool.jar \"\$URL\"",
+        "fi",
+        "printf '#!/bin/sh\\nexec java -jar /opt/rea-android/apktool.jar \"\$@\"\\n' > /usr/local/bin/apktool",
+        "chmod +x /usr/local/bin/apktool",
+        "JH=\$(dirname \"\$(dirname \"\$(readlink -f \"\$(command -v javac)\")\")\")",
+        "mkdir -p /root/.arin",
+        "{ echo \"REA_JADX_MCP_JAR=/opt/rea-android/\$JADX\"; echo \"JAVA_HOME=\$JH\"; echo \"REA_APKTOOL_COMMAND=/usr/local/bin/apktool\"; } > /root/.arin/rea.env",
+        "java -version 2>&1 | head -1",
+        "apktool --version 2>/dev/null | head -1",
+        "echo \"Android tools ready: \$JADX, apktool, JAVA_HOME=\$JH\"",
+        "# REA must restart to pick up the new settings; Arin starts it again on the next tool call.",
+        "pkill -f mcp-bridge.mjs || true",
+    ).joinToString("\n", postfix = "\n")
+
+    /** Installs JDK, JADX and apktool so REA's APK tools work. */
+    suspend fun installAndroidTools(context: Context, log: (String) -> Unit): Termux.Result {
+        log("Installing REA's Android tools (JDK 21, JADX, apktool)…")
+        configure(context)
+        return run(context, "bash $ANDROID_TOOLS_SCRIPT", timeoutMs = 30 * 60_000L, onOutput = log)
+    }
+
     /** Installs REA (npm package rea-agents) in Linux. */
     suspend fun installRea(context: Context, log: (String) -> Unit): Termux.Result {
         log("Installing REA (npm install -g rea-agents)…")
@@ -255,6 +305,8 @@ object Linux {
                 "export UV_USE_IO_URING=0\nexport GLIBC_TUNABLES=glibc.pthread.rseq=0\n",
         )
         File(root, "root/.npmrc").takeIf { !it.exists() }?.writeText("fund=false\naudit=false\nupdate-notifier=false\n")
+        File(root, "root/.arin").mkdirs()
+        File(root, ANDROID_TOOLS_SCRIPT.removePrefix("/")).writeText(androidToolsScript)
         File(root, "root/files").mkdirs()
         File(root, "root/.arin").mkdirs()
         File(root, "tmp").mkdirs()
@@ -286,7 +338,9 @@ object Linux {
         if (!installed(context)) return@withContext Termux.Result("", "", null, "Linux isn't installed. Open Settings → Linux and tap Install Linux.")
         val root = rootfs(context)
         // Installs from older Arin versions get the newer fixes too.
-        if (File(root, "etc/profile.d/arin.sh").let { !it.exists() || !it.readText().contains("rseq") }) runCatching { configure(context) }
+        if (File(root, "etc/profile.d/arin.sh").let { !it.exists() || !it.readText().contains("rseq") } ||
+            !File(root, ANDROID_TOOLS_SCRIPT.removePrefix("/")).exists()
+        ) runCatching { configure(context) }
         val id = UUID.randomUUID().toString().replace("-", "").take(12)
         val done = "__ARIN_DONE_${id}__"
         // The command goes in a script file, so no quoting is needed. Its exit code is printed on a
@@ -407,7 +461,10 @@ object Shell {
                 "Install packages with apt-get install -y; Node.js 24, npm, git and Python 3 are installed. " +
                 "Files the person attaches are copied to ${Linux.FILES}. " +
                 (if (Linux.devToolsReady(context)) "Developer tools are installed: Java 21 (javac, java), Kotlin (kotlinc), Gradle. " else "") +
-                "Android APKs can't be compiled on the phone (Google ships no ARM build tools); use Build mode (<build>) for APKs."
+                "Android APKs can't be compiled on the phone (Google ships no ARM build tools); use Build mode (<build>) for APKs. " +
+                "If an REA Android/APK tool says JADX, a JDK or apktool is missing, run: bash ${Linux.ANDROID_TOOLS_SCRIPT} " +
+                "(then call the tool again; REA restarts automatically). Other APK tools you can install yourself: " +
+                "pip install androguard, or use unzip/apktool on files in /root/files."
         } else {
             "Termux on Android (${System.getProperty("os.arch")}, no root), home ~ = ${Termux.HOME}. Install packages with pkg install -y."
         }
