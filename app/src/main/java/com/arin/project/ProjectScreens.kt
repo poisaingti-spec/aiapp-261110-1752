@@ -164,7 +164,7 @@ fun ProjectScreen(vm: ChatViewModel, projectId: String, onBack: () -> Unit, onOp
             item {
                 Card("Files") {
                     Text(
-                        "Every chat in this project can read these. Photos and PDFs need a Claude, Gemini or ChatGPT key.",
+                        "Every chat in this project can read these: any file type and size. Photos need a Claude, Gemini, ChatGPT or Custom API key.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )

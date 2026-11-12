@@ -13,8 +13,8 @@ android {
         applicationId = "com.arin.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 5
-        versionName = "0.3.2"
+        versionCode = 6
+        versionName = "0.4.0"
     }
 
     signingConfigs {
@@ -62,4 +62,6 @@ dependencies {
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.3")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
+    // Reads the text of PDFs, so big PDFs and models without PDF support still work.
+    implementation("com.tom-roush:pdfbox-android:2.0.27.0")
 }

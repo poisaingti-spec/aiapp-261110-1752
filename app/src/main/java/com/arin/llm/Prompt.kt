@@ -1,7 +1,5 @@
 package com.arin.llm
 
-import com.arin.data.Attachment
-import com.arin.data.Attachments
 import com.arin.data.Memory
 import com.arin.data.Project
 import java.text.SimpleDateFormat
@@ -49,9 +47,8 @@ object Prompt {
             if (project.instructions.isNotBlank()) {
                 append("Project instructions (follow them):\n").append(project.instructions.trim()).append("\n\n")
             }
-            val textFiles = project.files.filter { it.kind == Attachment.TEXT }
-            if (textFiles.isNotEmpty()) {
-                append("Project files:\n").append(Attachments.promptWithFiles("", textFiles)).append('\n')
+            if (project.files.isNotEmpty()) {
+                append("The project's files are attached to the first message of this chat.\n")
             }
         }
     }

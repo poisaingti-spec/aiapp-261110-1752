@@ -222,6 +222,14 @@ fun FileChip(file: Attachment, onRemove: (() -> Unit)?) {
             when (file.kind) {
                 Attachment.IMAGE -> ImageThumb(file.path, 36.dp)
                 Attachment.PDF -> Text("📕", style = MaterialTheme.typography.titleMedium)
+                Attachment.FILE -> Text(
+                    when {
+                        file.mime.startsWith("audio/") -> "🎵"
+                        file.mime.startsWith("video/") -> "🎬"
+                        else -> "📦"
+                    },
+                    style = MaterialTheme.typography.titleMedium,
+                )
                 else -> Text("📄", style = MaterialTheme.typography.titleMedium)
             }
             Spacer(Modifier.width(8.dp))
@@ -230,8 +238,15 @@ fun FileChip(file: Attachment, onRemove: (() -> Unit)?) {
                 Text(
                     when (file.kind) {
                         Attachment.IMAGE -> "Photo"
-                        Attachment.PDF -> "PDF · ${file.pages} page${if (file.pages == 1) "" else "s"}"
-                        else -> "${file.text.length / 1000 + 1}k characters"
+                        Attachment.PDF -> "PDF · ${file.pages} page${if (file.pages == 1) "" else "s"}" +
+                            if (file.size > 0) " · ${com.arin.data.Attachments.readableSize(file.size)}" else ""
+                        Attachment.FILE -> listOf(file.mime.substringBefore('/').ifBlank { "File" }.replaceFirstChar { it.uppercase() },
+                            com.arin.data.Attachments.readableSize(file.size)).joinToString(" · ")
+                        else -> listOfNotNull(
+                            file.name.substringAfterLast('.', "").uppercase().takeIf { it.isNotBlank() && it.length <= 5 },
+                            if (file.size > 0) com.arin.data.Attachments.readableSize(file.size)
+                            else "${(maxOf(file.chars, file.text.length.toLong())) / 1000 + 1}k characters",
+                        ).joinToString(" · ")
                     },
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,

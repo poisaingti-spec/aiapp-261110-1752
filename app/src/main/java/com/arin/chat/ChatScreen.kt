@@ -256,7 +256,7 @@ private fun Welcome(project: String?, onPick: (String) -> Unit) {
         Spacer(Modifier.height(6.dp))
         Text(
             if (project != null) "New chat in this project. Its instructions and files are included."
-            else "Ask me anything, attach a photo or PDF, or tap the mic to talk.",
+            else "Ask me anything, attach any file, or tap the mic to talk.",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             textAlign = TextAlign.Center,
@@ -327,6 +327,16 @@ private fun Composer(
             }
         }
         vm.pending.forEach { f -> FileChip(f, onRemove = { vm.removePending(f) }) }
+        vm.readingFile?.let { name ->
+            Row(Modifier.padding(bottom = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                androidx.compose.material3.CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
+                Text(
+                    "  Reading $name…",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
         Surface(
             color = MaterialTheme.colorScheme.surfaceContainerHigh,
             shape = RoundedCornerShape(28.dp),
@@ -337,7 +347,7 @@ private fun Composer(
                     IconButton(onClick = { attachMenu = true }) { Icon(Icons.Filled.Add, contentDescription = "Attach") }
                     DropdownMenu(expanded = attachMenu, onDismissRequest = { attachMenu = false }) {
                         DropdownMenuItem(text = { Text("Photos") }, onClick = { attachMenu = false; onPhotos() })
-                        DropdownMenuItem(text = { Text("Files and PDFs") }, onClick = { attachMenu = false; onFiles() })
+                        DropdownMenuItem(text = { Text("Files (any type)") }, onClick = { attachMenu = false; onFiles() })
                         androidx.compose.material3.HorizontalDivider()
                         DropdownMenuItem(
                             text = { Text((if (vm.webSearch) "✓ " else "") + "Web search") },

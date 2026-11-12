@@ -20,13 +20,22 @@ data class Attachment(
     val mime: String = "",
     val size: Long = 0,
     val pages: Int = 0,
+    /** Full extracted text, kept in a file so any size fits. [text] then holds only a preview. */
+    val textPath: String = "",
+    /** Length of the full text, in characters. */
+    val chars: Long = 0,
 ) {
     val isMedia: Boolean get() = kind == IMAGE || kind == PDF
+
+    /** Whether there is text the model can read (from a text file, a document, or a PDF). */
+    val hasText: Boolean get() = textPath.isNotEmpty() || (kind == TEXT && text.isNotEmpty())
 
     companion object {
         const val TEXT = "text"
         const val IMAGE = "image"
         const val PDF = "pdf"
+        /** Any other file (audio, video, apps…): attached by name, type and size. */
+        const val FILE = "file"
     }
 }
 

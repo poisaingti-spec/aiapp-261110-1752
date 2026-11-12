@@ -253,7 +253,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    private fun projectMedia(project: Project?): List<Attachment> = project?.files?.filter { it.isMedia }.orEmpty()
+    /** Every project file goes with the first message: text, documents, photos and PDFs. */
+    private fun projectMedia(project: Project?): List<Attachment> = project?.files.orEmpty()
 
     private fun makeTitle(text: String, files: List<Attachment>): String {
         val base = text.lines().firstOrNull { it.isNotBlank() }?.trim() ?: files.firstOrNull()?.name ?: "New chat"
@@ -272,15 +273,22 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
     // ---------------- Attachments ----------------
 
+    /** Name of the file being read right now (big files take a moment), or null. */
+    var readingFile by mutableStateOf<String?>(null)
+        private set
+
     fun attach(uris: List<Uri>) {
         viewModelScope.launch {
             uris.forEach { uri ->
+                readingFile = uri.lastPathSegment?.substringAfterLast('/')?.substringAfterLast(':') ?: "file"
                 try {
                     pending += Attachments.read(getApplication(), uri)
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Throwable) {
                     notice = e.message ?: "Couldn't read that file."
+                } finally {
+                    readingFile = null
                 }
             }
         }

@@ -12,7 +12,7 @@ Every push to `main` builds an APK in GitHub Actions and publishes it as the lat
 - **Chat:** replies stream in, with Stop, Copy, Retry, editing a sent message, and the model's reasoning when it shares it
 - **Models:** free models by default with no key; optional Claude, Gemini and ChatGPT keys in Settings; model menu at the top
 - **Custom API:** your own base URL, key and model (Settings → Custom API). Presets for Token Harbor, OpenRouter, DeepSeek, Groq, Together, Mistral, xAI, Moonshot, Fireworks, Cerebras and NVIDIA, or paste any address. Speaks the OpenAI format or the Claude (Anthropic) format; each address keeps its own key and model
-- **Files:** photos, PDFs, and text, CSV, JSON or code files (photos and PDFs need a Claude, Gemini or ChatGPT key)
+- **Files of any type and size:** photos, PDFs, Word, Excel, PowerPoint, OpenDocument, EPUB, RTF, ZIP archives and any text or code file. Big files are kept on the phone and the parts that best match your question are sent when a file is larger than the model can take. Audio, video and other files are attached by name, type and size. Photos need a key (Claude, Gemini, ChatGPT or Custom API); free models get PDF text
 - **Projects:** chats grouped with shared instructions and files
 - **Artifacts:** web pages, SVG images, documents and long code open in a viewer with a live preview, Copy and Share
 - **Web search:** Arin searches when it needs current facts and lists its sources (switch in the + menu and Settings)
