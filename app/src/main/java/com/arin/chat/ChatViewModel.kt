@@ -591,6 +591,32 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    // ---- Fixing errors automatically ----
+
+    /**
+     * What the model is told after a failure. The first time: fix it yourself and retry. From the second failure in a
+     * row: Arin searches the web for the error itself and passes on what it found, so the model can apply a known fix.
+     */
+    private suspend fun fixAdvice(streak: Int, errorQuery: String, sources: MutableList<Source>): String {
+        val base = "Fix this yourself and keep going: find the cause in the output, apply a fix (install what's missing, change " +
+            "the command or flags, correct the code or config) and try again. Don't stop to ask unless it truly needs the person."
+        if (streak < 2 || errorQuery.isBlank()) {
+            return "$base If you're not sure of the fix, search the web for the error with <search>…</search>."
+        }
+        status = "Searching the web for the error: “${errorQuery.take(60)}”"
+        val found = runCatching { WebSearch.searchForModel(errorQuery) }.getOrNull()
+        status = null
+        found?.first?.take(4)?.forEach { h -> if (sources.none { it.url == h.url }) sources += Source(h.title, h.url) }
+        val web = found?.second?.take(7_000).orEmpty()
+        return if (web.isBlank()) {
+            "$base This failed $streak times in a row and a web search for the error found nothing: try a different approach."
+        } else {
+            "This failed $streak times in a row, so I searched the web for \"$errorQuery\". Results:\n$web\n\n" +
+                "Use these to fix it (read a page with <fetch> if you need details), apply the fix and try again. " +
+                "If this approach keeps failing, try a different one."
+        }
+    }
+
     // ---- Steering: messages sent while a reply is running ----
 
     /** Messages waiting to be given to the model at its next step. */
@@ -696,6 +722,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             val foundMedia = mutableListOf<com.arin.data.MediaItem>()
             var webSteps = 0
             var nudges = 0
+            var failStreak = 0
             liveCommands.clear()
             var failure: String? = null
             try {
@@ -771,11 +798,17 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                         ran += run
                         liveCommands += run
                         turns += Turn(false, full)
+                        val failed = run.ran && run.exitCode != 0
+                        failStreak = if (failed) failStreak + 1 else 0
                         turns += Turn(
                             true,
-                            if (!run.ran) "I chose not to run that command. Continue without it, or suggest another way."
-                            else "Command finished (exit code ${run.exitCode ?: "unknown"}). Output:\n```\n${run.output}\n```\n" +
-                                "Continue the task: run the next command if needed, or answer when you're done.",
+                            when {
+                                !run.ran -> "I chose not to run that command. Continue without it, or suggest another way."
+                                !failed -> "Command finished (exit code ${run.exitCode ?: "unknown"}). Output:\n```\n${run.output}\n```\n" +
+                                    "Continue the task: run the next command if needed, or answer when you're done."
+                                else -> "Command FAILED (exit code ${run.exitCode ?: "unknown"}). Output:\n```\n${run.output}\n```\n" +
+                                    fixAdvice(failStreak, Prompt.errorQuery(run.output, cmd), sources)
+                            },
                         )
                         continue
                     }
@@ -807,8 +840,14 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                         turns += Turn(
                             true,
                             if (!run.ran) "I didn't allow that tool call. Continue without it, or suggest another way."
-                            else "Result of $name" + (if (run.exitCode != 0) " (error)" else "") + ":\n```\n${run.output}\n```\n" +
-                                "Continue the task: call the next tool or command if needed, or answer when you're done.",
+                            else if (run.exitCode != 0) {
+                                failStreak++
+                                "Result of $name (FAILED):\n```\n${run.output}\n```\n" + fixAdvice(failStreak, Prompt.errorQuery(run.output, name), sources)
+                            } else {
+                                failStreak = 0
+                                "Result of $name:\n```\n${run.output}\n```\n" +
+                                    "Continue the task: call the next tool or command if needed, or answer when you're done."
+                            },
                         )
                         continue
                     }
@@ -857,10 +896,14 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                             continue
                         }
                     }
-                    val q = if (useSearch && searches < Prompt.MAX_SEARCHES) Prompt.searchQuery(full) else null
+                    val working = ran.any { it.kind != "steer" }
+                    val q = when {
+                        (useSearch || useTerminal) && working && searches < Prompt.MAX_TASK_SEARCHES -> Prompt.searchQueryAnywhere(full)
+                        useSearch && searches < Prompt.MAX_SEARCHES -> Prompt.searchQuery(full)
+                        else -> null
+                    }
                     if (q == null) {
                         // Stopped mid-task ("fixing it by…:" with no command)? Ask the model to carry on.
-                        val working = ran.any { it.kind != "steer" }
                         if (working && nudges < 3 && (useTerminal || com.arin.mcp.Mcp.connected().isNotEmpty()) && Prompt.looksUnfinished(full)) {
                             nudges++
                             turns += Turn(false, full)

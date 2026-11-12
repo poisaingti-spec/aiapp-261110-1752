@@ -51,6 +51,31 @@ object Prompt {
     private val runTag = Regex("""<run>\s*(.+?)\s*</run>""", RegexOption.DOT_MATCHES_ALL)
 
     private val searchTag = Regex("""^\s*<search>(.{1,200}?)</search>""", RegexOption.DOT_MATCHES_ALL)
+
+    /** While working on a task (terminal, tools), a search may come after some text, like the other tools. */
+    private val searchTagAnywhere = Regex("""<search>(.{1,200}?)</search>""", RegexOption.DOT_MATCHES_ALL)
+
+    /** Searches allowed per answer while working on a task (fixing errors needs more). */
+    const val MAX_TASK_SEARCHES = 8
+
+    fun searchQueryAnywhere(reply: String): String? = searchTagAnywhere.find(reply)?.groupValues?.get(1)?.trim()?.takeIf { it.isNotEmpty() }
+
+    /**
+     * The most telling line of a failure, as a web search query: the last line that mentions an error,
+     * with paths, addresses and long numbers removed.
+     */
+    fun errorQuery(output: String, command: String = ""): String {
+        val lines = output.lines().map { it.trim() }.filter { it.isNotEmpty() }
+        val line = lines.lastOrNull { Regex("""(?i)\b(error|exception|failed|fatal|not found|cannot|can't|unable|denied|invalid|missing|undefined|traceback)\b""").containsMatchIn(it) }
+            ?: lines.lastOrNull() ?: command
+        val cleaned = line
+            .replace(Regex("""(/[\w.@+-]+){2,}"""), " ")
+            .replace(Regex("""0x[0-9a-fA-F]+|\b\d{4,}\b"""), " ")
+            .replace(Regex("""\s+"""), " ")
+            .trim().take(160)
+        val tool = command.trim().split(Regex("""\s+""")).firstOrNull { it.isNotBlank() && it != "cd" && !it.contains('=') && !it.startsWith("sudo") }.orEmpty()
+        return (if (tool.isNotBlank() && !cleaned.contains(tool, true)) "$tool " else "") + cleaned
+    }
     private val rememberTag = Regex("""<remember>(.{1,300}?)</remember>""", RegexOption.DOT_MATCHES_ALL)
 
     fun system(
@@ -87,7 +112,13 @@ object Prompt {
             append("pip install …, git clone …), run scripts, inspect files and check that things really work. ")
             append("Rules: always use non-interactive flags (-y, --yes, CI=1); never start a command that waits for input or ")
             append("runs forever (start servers with nohup … & and check them separately); chain related steps with &&; ")
-            append("read the output before the next step and fix errors yourself. Commands the person may refuse. ")
+            append("read the output before the next step. Commands the person may refuse. ")
+            append("Fixing errors: when something fails, fix it yourself like a good engineer, without stopping to ask: read the ")
+            append("error, find the cause, apply a fix (install what's missing, change the command or flags, correct the code or ")
+            append("config) and run it again. If you don't know the fix or your fix didn't work, search the web for the exact error ")
+            append("with <search>the error message</search> or read docs and issues with <fetch>url</fetch>, then apply what you ")
+            append("find. Try different approaches before giving up; only ask the person when it really needs them (a password, ")
+            append("a choice, something only they can do). ")
             append("Only say something is installed or working after a command's output shows it; check exit codes, and don't ")
             append("hide failures by piping into head or tail without set -o pipefail (the app sets it). ")
             append("Arin is your MCP client: to use MCP servers such as REA, call their tools with <tool> (when listed below), ")
@@ -183,6 +214,7 @@ object Prompt {
         reply.replace(rememberTag, "").replace(Regex("""<remember>[^<]*$"""), "")
             .replace(runTag, "").replace(Regex("""<run>[\s\S]*$"""), "")
             .replace(toolTag, "").replace(Regex("""<tool[\s\S]*$"""), "")
+            .replace(searchTagAnywhere, "").replace(Regex("""<search>[^<]*$"""), "")
             .replace(buildTag, "").replace(Regex("""<build[\s\S]*$"""), "")
             .replace(updateTag, "").replace(Regex("""<update_arin>[\s\S]*$"""), "")
             .replace(imagesTag, "").replace(videosTag, "").replace(fetchTag, "").replace(downloadTag, "")

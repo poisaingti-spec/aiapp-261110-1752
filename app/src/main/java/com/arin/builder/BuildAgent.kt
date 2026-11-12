@@ -298,9 +298,17 @@ class BuildAgent(
             currentRound = round
             step(BuildEvent.Kind.STEP, "Reading the build errors")
             val errors = gh.failureSummary(repo, run.id)
+            // From the second failed build on, look the main error up online and give the model what others did.
+            val web = if (round >= 2) {
+                val query = mainError(errors)
+                if (query.isNotBlank()) {
+                    step(BuildEvent.Kind.WEB, "Searching the web for the error: $query")
+                    runCatching { WebTools.search(query) }.getOrNull()?.take(6_000).orEmpty()
+                } else ""
+            } else ""
             val count = errors.lines().count { it.startsWith("e: ") || it.contains("error:", true) }.coerceAtLeast(1)
             step(BuildEvent.Kind.ERROR, "Build failed with $count error${if (count == 1) "" else "s"}. Fixing (round $round of $maxFixRounds)")
-            notes = apply(ask(fixPrompt(errors, notes)))
+            notes = apply(ask(fixPrompt(errors, notes, web)))
             saveProject(repo, null)
         }
     }
@@ -480,7 +488,17 @@ class BuildAgent(
         appendLine("To delete a file, send it with the single line: DELETE")
     }
 
-    private fun fixPrompt(errors: String, notes: List<String>) = buildString {
+    /** The first compiler or Gradle error, cleaned up to search the web for it. */
+    private fun mainError(errors: String): String {
+        val line = errors.lines().map { it.trim() }.firstOrNull { it.startsWith("e: ") || it.contains("error:", true) || it.contains("What went wrong", true) || it.contains("Could not resolve", true) }
+            ?: errors.lines().firstOrNull { it.isNotBlank() } ?: return ""
+        return "android gradle " + line.removePrefix("e: ")
+            .replace(Regex("""file:///\S+?:\d+:\d+\s*"""), "")
+            .replace(Regex("""(/[\w.@+-]+){2,}"""), " ")
+            .replace(Regex("""\s+"""), " ").trim().take(150)
+    }
+
+    private fun fixPrompt(errors: String, notes: List<String>, web: String = "") = buildString {
         appendLine("The app below failed to build. Fix it.")
         appendLine("App request: ${req.project?.description ?: req.description}")
         if (req.project != null) appendLine("Latest change requested: ${req.description}")
@@ -491,6 +509,12 @@ class BuildAgent(
             appendLine()
             appendLine("Notes from the build tool:")
             notes.forEach { appendLine("- $it") }
+        }
+        if (web.isNotBlank()) {
+            appendLine()
+            appendLine("The build has failed more than once, so I searched the web for the main error. Results:")
+            appendLine(web)
+            appendLine("Use what fits (you may also <search> or <fetch> for more), and try a different approach than last time.")
         }
         appendLine()
         appendLine("Current files:")
