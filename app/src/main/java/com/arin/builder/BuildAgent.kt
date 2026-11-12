@@ -57,7 +57,11 @@ class BuildAgent(
 ) {
     private val gh = GitHubClient(req.githubToken)
     private val slug = (req.project?.appName ?: req.appName).lowercase().replace(Regex("[^a-z0-9]+"), "").ifEmpty { "app" }.take(30)
-    private val packageName = req.project?.packageName ?: ("com.aibuilt." + (if (slug.first().isLetter()) slug else "a$slug"))
+    /** The package the person asked for ("package com.example.calendar"), else one made from the app name. */
+    private val packageName = req.project?.packageName
+        ?: Regex("""(?i)\bpackage(?:\s+name)?\s*[:=]?\s*`?([a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*){1,5})`?""")
+            .find(req.description)?.groupValues?.get(1)?.lowercase()
+        ?: ("com.aibuilt." + (if (slug.first().isLetter()) slug else "a$slug"))
     private val appName get() = req.project?.appName ?: importedName ?: req.appName
 
     /** Updating Arin itself (its own repo, workflow and signing key). */
@@ -174,8 +178,15 @@ class BuildAgent(
             step(BuildEvent.Kind.THINKING, "Planning and writing the app with ${req.provider.label}")
             val assets = addAttachedAssets()
             notes = apply(ask(firstPrompt() + assets, req.attachments))
+            // Some models plan in prose and forget to write the files: ask again, strictly, up to twice.
+            var retries = 0
+            while (files.isEmpty() && retries < 2) {
+                retries++
+                step(BuildEvent.Kind.STEP, "No files came back. Asking ${req.provider.label} again for the code (try $retries of 2)")
+                notes = apply(ask(firstPrompt() + assets + formatReminder(), req.attachments))
+            }
             if (files.isEmpty()) {
-                return BuildResult(false, "The model didn't return any files. Try again or pick a stronger model.")
+                return BuildResult(false, "The model didn't return any files, even after asking again. Try again, or pick another model.")
             }
             val repoName = "$slug-" + SimpleDateFormat("yyMMdd-HHmm", Locale.US).format(Date())
             step(BuildEvent.Kind.STEP, "Creating GitHub repo $repoName")
@@ -436,6 +447,16 @@ class BuildAgent(
         }
     }
 
+    /** Sent again when a reply had no files: just the format, as plainly as possible. */
+    private fun formatReminder() = "\n\n" + """
+        IMPORTANT: your last reply contained no files, so nothing could be built. Don't explain or plan this time.
+        Reply with ONLY the complete files, starting right away with the first line below, every file in this exact format:
+        === FILE: app/src/main/java/${packageName.replace('.', '/')}/MainActivity.kt ===
+        (the whole file)
+        === END FILE ===
+        Keep it to a few files (one MainActivity.kt with all the screens is fine) so the whole answer fits.
+    """.trimIndent()
+
     private fun firstPrompt() = """
         Build this Android app: ${req.description}
         App name: $appName
@@ -529,7 +550,7 @@ class BuildAgent(
         val notes = mutableListOf<String>()
         val parsed = parse(output)
         if (parsed.truncated) notes += "Your last reply was cut off. Send fewer or shorter files."
-        parsed.files.forEach { (path, content) ->
+        parsed.files.map { (p, c) -> normalizePath(p) to c }.forEach { (path, content) ->
             val allowed = if (imported) !path.startsWith(".github/") && !path.endsWith(".jar") else path.startsWith("app/src/main/")
             if (!allowed || path.contains("..") || path.startsWith("/")) {
                 notes += if (imported) "Ignored $path: .github/ and the wrapper jar can't be changed." else "Ignored $path: only files under app/src/main/ are allowed."
@@ -642,6 +663,29 @@ class BuildAgent(
         return null
     }
 
+    /**
+     * Puts files the model named loosely where they belong in a new app: "MainActivity.kt" or
+     * "com/x/Foo.kt" go to the source folder, "src/main/…" gets "app/", "res/…" and the manifest go under app/src/main.
+     */
+    private fun normalizePath(raw: String): String {
+        val p = raw.trim().trim('`', '*', '"', '\'', ' ').removePrefix("./").removePrefix("/")
+        if (imported || p.startsWith("app/src/main/")) return p
+        val src = "app/src/main/java/${packageName.replace('.', '/')}"
+        return when {
+            p.startsWith("src/main/") -> "app/$p"
+            p.startsWith("main/") -> "app/src/$p"
+            p == "AndroidManifest.xml" || p.endsWith("/AndroidManifest.xml") -> "app/src/main/AndroidManifest.xml"
+            p.startsWith("res/") -> "app/src/main/$p"
+            p.startsWith("java/") || p.startsWith("kotlin/") -> "app/src/main/java/" + p.substringAfter('/')
+            p.endsWith(".kt") || p.endsWith(".java") -> {
+                // Keep sub-packages under the app's package, e.g. "ui/Theme.kt" or "com/x/app/ui/Theme.kt".
+                val inPkg = p.substringAfter(packageName.replace('.', '/') + "/", p)
+                if ('/' in inPkg && !inPkg.startsWith("app/")) "$src/$inPkg" else "$src/${p.substringAfterLast('/')}"
+            }
+            else -> p
+        }
+    }
+
     // ---- Output parsing ----
 
     data class Parsed(
@@ -691,7 +735,58 @@ class BuildAgent(
                     body.appendLine(raw)
                 }
             }
+            if (files.isEmpty()) {
+                // No "=== FILE:" blocks: many models write Markdown instead. Read those, so nothing is lost.
+                val md = parseMarkdown(text)
+                if (md.isNotEmpty()) return Parsed(md, deps, downloads, truncated = false)
+            }
             return Parsed(files, deps, downloads, truncated = path != null)
+        }
+
+        private val fence = Regex("^\\s*(`{3,}|~{3,})\\s*([A-Za-z0-9_+#.-]*)\\s*(.*)$")
+        private val pathLike = Regex("""([A-Za-z0-9_./-]+\.(?:kt|kts|java|xml|gradle|json|txt|properties|toml|pro|md|html|css|js))\b""")
+
+        /**
+         * Files written as Markdown code blocks, with the file's path in a heading, bold text, "File:" line or
+         * backticks just above the block, in the opening fence (```kotlin title="path" or ```kotlin:path), or as a
+         * comment on the block's first line (// path, <!-- path -->, # path).
+         */
+        fun parseMarkdown(text: String): List<Pair<String, String>> {
+            val lines = text.lines()
+            val out = linkedMapOf<String, String>()
+            var i = 0
+            while (i < lines.size) {
+                val open = fence.find(lines[i])
+                if (open == null) { i++; continue }
+                val marker = open.groupValues[1]
+                // Collect the block.
+                var j = i + 1
+                val body = mutableListOf<String>()
+                while (j < lines.size && !lines[j].trim().startsWith(marker.take(3))) { body += lines[j]; j++ }
+                // Where's the path? Opening fence, then the 3 lines above, then the first line of the block.
+                var path = pathLike.find(open.groupValues[3])?.groupValues?.get(1)
+                    ?: pathLike.find(open.groupValues[2].substringAfter(':', ""))?.groupValues?.get(1)
+                if (path == null) {
+                    for (k in (i - 1) downTo maxOf(0, i - 3)) {
+                        val above = lines[k].trim()
+                        if (above.isEmpty()) continue
+                        if (fence.matches(above)) break
+                        path = pathLike.findAll(above).map { it.groupValues[1] }.lastOrNull { '/' in it || '.' in it }
+                        if (path != null) break
+                    }
+                }
+                if (path == null && body.isNotEmpty()) {
+                    val first = body.first().trim()
+                    if (first.startsWith("//") || first.startsWith("<!--") || first.startsWith("#")) {
+                        path = pathLike.find(first)?.groupValues?.get(1)
+                        if (path != null) body.removeAt(0)
+                    }
+                }
+                val content = body.joinToString("\n").trimEnd()
+                if (path != null && content.isNotBlank() && !path.startsWith("http")) out[path] = content + "\n"
+                i = j + 1
+            }
+            return out.toList()
         }
 
         /** Small models often wrap code in ``` fences inside the file block. */

@@ -27,6 +27,9 @@ enum class Role { USER, ASSISTANT }
 /** One turn of the builder's own conversation with the model. */
 data class ChatMessage(val role: Role, val text: String, val attachments: List<Attachment> = emptyList())
 
+/** Output tokens asked for in Build mode, so a whole app fits in one answer. */
+const val BUILD_MAX_TOKENS = 32_000
+
 /** Stream chunks starting with this character are the model's reasoning, not its answer. */
 const val THOUGHT = "\u0001"
 
@@ -43,12 +46,23 @@ fun streamModel(
 ): Flow<String> = flow {
     val history = messages.map { m -> Message(fromUser = m.role == Role.USER, text = m.text, attachments = m.attachments) }
     val turns = Attachments.toTurns(provider, history)
-    Llm.stream(provider, apiKey, model, system, turns).map { d ->
-        when (d) {
-            is Delta.Text -> d.text
-            is Delta.Thinking -> THOUGHT + d.text
+    // Whole apps need long answers: ask for plenty of output, and fall back to the default if the service refuses.
+    var emitted = false
+    try {
+        Llm.stream(provider, apiKey, model, system, turns, maxTokens = BUILD_MAX_TOKENS).collect { d ->
+            emitted = true
+            emit(if (d is Delta.Thinking) THOUGHT + d.text else (d as Delta.Text).text)
         }
-    }.collect { emit(it) }
+    } catch (e: LlmException) {
+        val m = e.message.orEmpty().lowercase()
+        if (emitted || !(m.contains("400") || m.contains("token") || m.contains("invalid") || m.contains("422"))) throw e
+        Llm.stream(provider, apiKey, model, system, turns).map { d ->
+            when (d) {
+                is Delta.Text -> d.text
+                is Delta.Thinking -> THOUGHT + d.text
+            }
+        }.collect { emit(it) }
+    }
 }
 
 private fun LlmException.isTemporary(): Boolean {
