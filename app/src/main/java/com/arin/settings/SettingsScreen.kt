@@ -214,6 +214,7 @@ private fun Toggle(title: String, detail: String, checked: Boolean, onChange: (B
 }
 
 /** Install, check and remove Arin's own Ubuntu Linux. */
+@OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 @Composable
 private fun LinuxSettings(vm: ChatViewModel) {
     var confirmRemove by remember { mutableStateOf(false) }
