@@ -23,6 +23,9 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.gestures.animateScrollBy
+import androidx.compose.foundation.gestures.scrollBy
+import androidx.compose.foundation.interaction.collectIsDraggedAsState
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
@@ -307,25 +310,66 @@ private fun Welcome(project: String?, onPick: (String) -> Unit) {
 @Composable
 private fun Conversation(vm: ChatViewModel, onEdit: (Int) -> Unit) {
     val list = rememberLazyListState()
+    val scope = androidx.compose.runtime.rememberCoroutineScope()
     val count = vm.messages.size + if (vm.streaming) 1 else 0
-    // Follow the reply as it grows, but only if the person hasn't scrolled up to read.
-    LaunchedEffect(count, vm.liveText.length / 200) {
-        if (count > 0 && (vm.liveText.isEmpty() || !list.canScrollForward || list.isScrollInProgress.not())) {
-            list.animateScrollToItem(count - 1)
+    // Follow the newest text (to the very bottom) until the person scrolls up; the ↓ button turns it back on.
+    var follow by remember { mutableStateOf(true) }
+    val dragged by list.interactionSource.collectIsDraggedAsState()
+    LaunchedEffect(list) {
+        androidx.compose.runtime.snapshotFlow { list.canScrollForward }.collect { more -> if (!more) follow = true }
+    }
+    LaunchedEffect(dragged) {
+        if (dragged) {
+            androidx.compose.runtime.snapshotFlow { list.canScrollForward }.collect { more -> if (more) follow = false }
         }
     }
-    LazyColumn(
-        state = list,
-        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
-        verticalArrangement = Arrangement.spacedBy(18.dp),
-        modifier = Modifier.fillMaxSize(),
-    ) {
-        itemsIndexed(vm.messages, key = { _, m -> m.id }) { i, m ->
-            if (m.fromUser) UserMessage(m, onEdit = if (vm.streaming) null else ({ onEdit(i) }))
-            else ArinMessage(m, vm.showThinking, isLast = i == vm.messages.lastIndex && !vm.streaming, onRetry = vm::retry)
+    // Sending a message always jumps to it.
+    val lastFromUser = vm.messages.lastOrNull()?.fromUser == true
+    LaunchedEffect(vm.messages.size) { if (lastFromUser) follow = true }
+    val growth = listOf(
+        count, vm.liveText.length, vm.liveThinking.length, vm.liveCommands.size, vm.status,
+        vm.messages.lastOrNull()?.text?.length,
+    )
+    LaunchedEffect(growth, follow) {
+        if (follow && count > 0 && !dragged) {
+            list.scrollToItem(count - 1)
+            list.scrollBy(1_000_000f) // to the end of the last item, not its top
         }
-        if (vm.streaming) {
-            item(key = "live") { LiveReply(vm.liveText, vm.liveThinking, vm.showThinking, vm.status, vm.liveCommands.toList()) }
+    }
+    Box(Modifier.fillMaxSize()) {
+        LazyColumn(
+            state = list,
+            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(18.dp),
+            modifier = Modifier.fillMaxSize(),
+        ) {
+            itemsIndexed(vm.messages, key = { _, m -> m.id }) { i, m ->
+                if (m.fromUser) UserMessage(m, onEdit = if (vm.streaming) null else ({ onEdit(i) }))
+                else ArinMessage(m, vm.showThinking, isLast = i == vm.messages.lastIndex && !vm.streaming, onRetry = vm::retry)
+            }
+            if (vm.streaming) {
+                item(key = "live") { LiveReply(vm.liveText, vm.liveThinking, vm.showThinking, vm.status, vm.liveCommands.toList()) }
+            }
+        }
+        androidx.compose.animation.AnimatedVisibility(
+            visible = list.canScrollForward && !follow,
+            enter = androidx.compose.animation.fadeIn(),
+            exit = androidx.compose.animation.fadeOut(),
+            modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 12.dp),
+        ) {
+            androidx.compose.material3.SmallFloatingActionButton(
+                onClick = {
+                    follow = true
+                    scope.launch {
+                        list.animateScrollToItem((count - 1).coerceAtLeast(0))
+                        list.animateScrollBy(1_000_000f)
+                    }
+                },
+                containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+                contentColor = MaterialTheme.colorScheme.onSurface,
+            ) {
+                Icon(Icons.Filled.KeyboardArrowDown, contentDescription = "Go to the bottom")
+            }
         }
     }
 }
