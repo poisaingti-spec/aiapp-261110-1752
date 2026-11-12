@@ -401,7 +401,116 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         com.arin.builder.BuildRunner.onFinished = { result, project -> postBuildResult(result, project) }
     }
 
+    // ---------------- Builds started from chat stay in chat ----------------
+
+    /** The chat a build was started from (null: none, or it was started in the Build tab). */
+    private var chatBuildChat: String? = null
+    /** The Build-mode project that chat build works on. */
+    private var chatBuildProject: String? = null
+    /** The live progress message in that chat. */
+    private var chatBuildMsg: String? = null
+    private var chatBuildJob: Job? = null
+
+    private val retryWords = Regex("""\b(try again|retry|again|continue|resume|fix( it| the)?( build| error)?s?|keep going|carry on)\b""", RegexOption.IGNORE_CASE)
+
+    /** Shows the build's steps live in this chat, like Build mode does. */
+    private fun followBuildInChat(title: String) {
+        if (chatId == null) persist()
+        chatBuildChat = chatId
+        chatBuildProject = com.arin.builder.BuildRunner.projectId
+        val msg = Message(fromUser = false, text = "🛠️ **$title…**\n\nStarting.")
+        chatBuildMsg = msg.id
+        messages += msg
+        persist()
+        chatBuildJob?.cancel()
+        chatBuildJob = viewModelScope.launch {
+            var last = ""
+            while (true) {
+                val text = buildProgressText(title, done = false)
+                if (text != last) {
+                    last = text
+                    replaceBuildMessage(text, save = false)
+                }
+                if (!com.arin.builder.BuildRunner.running && com.arin.builder.BuildRunner.pending == null) {
+                    kotlinx.coroutines.delay(1_500)
+                    if (!com.arin.builder.BuildRunner.running) break
+                }
+                kotlinx.coroutines.delay(700)
+            }
+        }
+    }
+
+    private fun buildProgressText(title: String, done: Boolean): String = buildString {
+        append(if (done) "🛠️ **$title — steps**\n\n" else "🛠️ **$title…**\n\n")
+        val events = com.arin.builder.BuildRunner.timeline.toList()
+            .filterIsInstance<com.arin.builder.TimelineItem.Event>().map { it.event }
+            .filter { it.kind != com.arin.builder.BuildEvent.Kind.THINKING }
+        val shown = events.takeLast(if (done) 25 else 14)
+        if (events.size > shown.size) append("_…${events.size - shown.size} earlier steps_\n")
+        shown.forEach { e ->
+            val icon = when (e.kind) {
+                com.arin.builder.BuildEvent.Kind.ERROR -> "⚠️"
+                com.arin.builder.BuildEvent.Kind.DONE -> "✅"
+                com.arin.builder.BuildEvent.Kind.BUILD -> "⚙️"
+                com.arin.builder.BuildEvent.Kind.FILE -> "📄"
+                com.arin.builder.BuildEvent.Kind.WEB -> "🌐"
+                com.arin.builder.BuildEvent.Kind.DOWNLOAD, com.arin.builder.BuildEvent.Kind.LIBRARY -> "📦"
+                else -> "•"
+            }
+            val line = e.text.lines().first().take(160)
+            append("- $icon ").append(line).append('\n')
+        }
+        if (!done) {
+            val p = com.arin.builder.BuildRunner.progressText
+            if (p.isNotBlank()) append("\n_${p.take(120)}_\n")
+            append("\nYou can keep chatting; I'll post the APK and source links here when it's done.")
+        }
+    }
+
+    /** Puts [text] in the chat build's progress message, in whichever chat it lives. */
+    private fun replaceBuildMessage(text: String, save: Boolean) {
+        val id = chatBuildMsg ?: return
+        val target = chatBuildChat
+        if (target == chatId) {
+            val i = messages.indexOfFirst { it.id == id }
+            if (i >= 0) messages[i] = messages[i].copy(text = text)
+            if (save) persist()
+        } else if (save && target != null) {
+            ArinApp.scope.launch(Dispatchers.IO) {
+                store.load(target)?.let { c -> store.save(c.copy(messages = c.messages.map { if (it.id == id) it.copy(text = text) else it })) }
+            }
+        }
+    }
+
+    /** Adds [msg] to the chat the build came from, even if another chat is open now. */
+    private fun postToBuildChat(msg: Message, progressId: String?, steps: String) {
+        val target = chatBuildChat
+        if (target == null || target == chatId) {
+            messages += msg
+            persist()
+        } else {
+            ArinApp.scope.launch(Dispatchers.IO) {
+                store.load(target)?.let { c ->
+                    val updated = c.messages.map { if (it.id == progressId) it.copy(text = steps) else it } + msg
+                    store.save(c.copy(messages = updated, updated = System.currentTimeMillis()))
+                }
+                withContext(Dispatchers.Main) { refreshChats() }
+            }
+        }
+    }
+
     private fun postBuildResult(result: com.arin.builder.BuildResult, project: com.arin.builder.Project?) {
+        // Started in the Build tab: the result stays there.
+        if (chatBuildMsg == null || chatBuildProject != com.arin.builder.BuildRunner.projectId) return
+        chatBuildJob?.cancel()
+        val title = when {
+            project?.selfUpdate == true -> "Updating Arin"
+            else -> "Building ${project?.appName ?: "the app"}"
+        }
+        val steps = buildProgressText(title, done = true)
+        val progressId = chatBuildMsg
+        if (chatBuildChat == chatId) replaceBuildMessage(steps, save = false)
+        chatBuildMsg = null
         val name = project?.appName ?: "The app"
         val text = if (result.success && project != null) buildString {
             append(if (project.selfUpdate) "✅ **The new version of Arin is built.**\n\n" else "✅ **$name is built.**\n\n")
@@ -431,8 +540,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 (if (result.log.isNotBlank()) " Error log:\n${result.log.take(4_000)}\n" else "") +
                 (result.runUrl?.let { " Full log: $it ." } ?: "") +
                 " When the person asks why it failed, explain from this log in plain words; to fix it, emit a <build> tag that says what to change.\n\n"
-        messages += Message(fromUser = false, text = text)
-        persist()
+        postToBuildChat(Message(fromUser = false, text = text), progressId, steps)
     }
 
     /** Details of the last failed build, for the model to explain or fix. */
@@ -440,6 +548,14 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
     /** The latest build's links, for the model to give when asked. */
     private fun latestBuildInfo(): String {
+        if (com.arin.builder.BuildRunner.running) {
+            val step = com.arin.builder.BuildRunner.timeline.lastOrNull { it is com.arin.builder.TimelineItem.Event }
+                as? com.arin.builder.TimelineItem.Event
+            return "A build of ${com.arin.builder.BuildRunner.project?.appName ?: "an app"} is running now in this chat" +
+                (step?.let { " (current step: ${it.event.text.take(150)})" } ?: "") +
+                ". Its steps show in the chat and the links will be posted when it's done. Don't start another <build> " +
+                "until it finishes; answer other questions normally.\n\n"
+        }
         if (lastFailure.isNotEmpty()) return lastFailure
         val p = com.arin.builder.BuildRunner.project ?: return ""
         val apk = p.lastApkUrl ?: return ""
@@ -473,21 +589,33 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             com.arin.builder.BuildRunner.running -> "A build is already running. Open Build mode to see it."
             provider.needsKey && settings.key(provider).isBlank() -> "Add your ${provider.label} key in Settings."
             else -> {
-                com.arin.builder.BuildRunner.newProject(app)
+                // A follow-up in the same chat ("try again", "add dark mode") keeps working on the same app.
+                val current = com.arin.builder.BuildRunner.project
+                val same = current != null && !current.selfUpdate && chatBuildChat != null && chatBuildChat == chatId &&
+                    chatBuildProject == com.arin.builder.BuildRunner.projectId &&
+                    (name.isBlank() || name.equals(current.appName, ignoreCase = true) ||
+                        retryWords.containsMatchIn(description.take(80)))
+                val lastFailed = (com.arin.builder.BuildRunner.timeline.lastOrNull { it is com.arin.builder.TimelineItem.Result }
+                    as? com.arin.builder.TimelineItem.Result)?.success == false
+                if (!same) com.arin.builder.BuildRunner.newProject(app)
+                val appName = if (same) current!!.appName
+                    else name.ifBlank { description.split(Regex("\\s+")).take(3).joinToString(" ").take(30) }
                 com.arin.builder.BuildService.start(
                     app,
                     com.arin.builder.BuildRequest(
                         description = description,
-                        appName = name.ifBlank { description.split(Regex("\\s+")).take(3).joinToString(" ").take(30) },
+                        appName = appName,
                         provider = provider,
                         model = model,
                         apiKey = settings.key(provider),
                         effort = effort,
                         githubToken = token,
                         allowOtherSites = true,
+                        project = if (same) current else null,
+                        resume = same && lastFailed && retryWords.containsMatchIn(description.take(80)),
                     ),
                 )
-                openBuild = true
+                followBuildInChat(if (same) "Working on $appName again" else "Building $appName")
                 null
             }
         }
@@ -573,7 +701,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                         selfBranch = selfBranch(),
                     ),
                 )
-                openBuild = true
+                followBuildInChat("Updating Arin")
                 null
             }
         }
