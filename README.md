@@ -13,6 +13,7 @@ Every push to `main` builds an APK in GitHub Actions and publishes it as the lat
 - **Models:** free models by default with no key; optional Claude, Gemini and ChatGPT keys in Settings; model menu at the top
 - **Custom API:** your own base URL, key and model (Settings → Custom API). Presets for Token Harbor, OpenRouter, DeepSeek, Groq, Together, Mistral, xAI, Moonshot, Fireworks, Cerebras and NVIDIA, or paste any address. Speaks the OpenAI format or the Claude (Anthropic) format; each address keeps its own key and model
 - **Files of any type and size:** photos, PDFs, Word, Excel, PowerPoint, OpenDocument, EPUB, RTF, ZIP archives and any text or code file. Big files are kept on the phone and the parts that best match your question are sent when a file is larger than the model can take. Audio, video and other files are attached by name, type and size. Photos need a key (Claude, Gemini, ChatGPT or Custom API); free models get PDF text
+- **Linux (built in):** Settings → Linux → Install Linux puts Ubuntu 24.04 inside Arin (PRoot, no root, no other apps) with Node.js 24, npm, git and Python. Commands and MCP servers run there; attached files are copied to `/root/files`. "Install Linux + REA" also installs REA and connects it. Termux remains an alternative
 - **Terminal (Termux):** the model can run shell commands in Termux and read their output, so it can install and run tools (Node, npm, Python, git) and check that they work. Each command needs your OK unless you turn that off. Settings → Terminal has the one-time setup and a connection test
 - **Tools (MCP):** connect MCP servers, local (in Termux, behind Arin's bridge `app/src/main/assets/mcp-bridge.mjs`) or remote (URL and token). The model finds and calls their tools, as in Claude Code
 - **REA (Reverse Engineer Anything):** Settings → Tools → "Set up REA" installs REA in Termux, starts it and connects it. Attached files are also saved to Download/Arin so REA and terminal tools can open them
@@ -43,3 +44,10 @@ com.arin
 ├── llm/              Providers, streaming, prompt and tools, web search
 └── data/             Chats, projects, memory, settings, keys, attachments
 ```
+
+## Third-party components
+
+- PRoot for Android from [green-green-avk/proot](https://github.com/green-green-avk/proot) (GPL-2.0; source at that link), prebuilt by [green-green-avk/build-proot-android](https://github.com/green-green-avk/build-proot-android) (MIT). Shipped as `app/src/main/jniLibs/*/libproot*.so`; licences in `app/src/main/assets/`.
+- Ubuntu base image and Node.js are downloaded on the phone from cdimage.ubuntu.com and nodejs.org when you tap Install Linux.
+
+Arin targets Android API 28 (like Termux) because Android doesn't let apps targeting newer versions run programs from their own storage, which the built-in Linux needs.

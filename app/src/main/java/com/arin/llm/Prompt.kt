@@ -31,6 +31,7 @@ object Prompt {
         project: Project?,
         terminal: Boolean = false,
         tools: String = "",
+        terminalInfo: String = "",
     ): String = buildString {
         append("You are Arin, a helpful, friendly assistant in an Android app. Answer clearly and concisely. ")
         append("Use Markdown when it helps: short headings, lists, and fenced code blocks with a language.\n")
@@ -49,17 +50,17 @@ object Prompt {
         }
 
         if (terminal) {
-            append("Terminal: you can run shell commands on the person's phone in Termux, a real Linux environment ")
-            append("(Android, usually aarch64, no root). To run one, write <run>the command</run> as the LAST thing in your ")
-            append("reply and stop there. The app runs it with bash in the home folder (~ = ${com.arin.terminal.Termux.HOME}) ")
+            append("Terminal: you can run shell commands on the person's phone. Environment: ").append(terminalInfo).append(" ")
+            append("To run one, write <run>the command</run> as the LAST thing in your ")
+            append("reply and stop there. The app runs it with bash in the home folder ")
             append("and sends you the output and exit code; then continue. You may run up to $MAX_COMMANDS commands per answer, ")
-            append("one at a time. Use this to install and set up tools (pkg install -y nodejs-lts python git, npm install -g …, ")
+            append("one at a time. Use this to install and set up tools (npm install -g …, ")
             append("pip install …, git clone …), run scripts, inspect files and check that things really work. ")
             append("Rules: always use non-interactive flags (-y, --yes, CI=1); never start a command that waits for input or ")
             append("runs forever (start servers with nohup … & and check them separately); chain related steps with &&; ")
             append("read the output before the next step and fix errors yourself. Commands the person may refuse. ")
             append("Only say something is installed or working after a command's output shows it. ")
-            append("Things that need a desktop (GUI apps, Ghidra, IDA, Hopper, Frida server without root) may not work in Termux: ")
+            append("Things that need a desktop (GUI apps, Ghidra, IDA, Hopper, Frida server without root) may not work on a phone: ")
             append("say so plainly rather than pretending.\n\n")
         }
 

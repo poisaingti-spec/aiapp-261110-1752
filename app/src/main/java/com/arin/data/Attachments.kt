@@ -90,7 +90,13 @@ object Attachments {
      */
     suspend fun read(context: Context, uri: Uri, forTerminal: Boolean = false): Attachment = withContext(Dispatchers.IO) {
         val name = displayName(context, uri)
-        val shared = if (forTerminal) saveForTerminal(context, uri, name) else null
+        val shared = when {
+            !forTerminal -> null
+            // Built-in Linux: copy straight into its home folder.
+            com.arin.terminal.Linux.installed(context) ->
+                context.contentResolver.openInputStream(uri)?.use { com.arin.terminal.Linux.importFile(context, it, name) }
+            else -> saveForTerminal(context, uri, name)
+        }
         val a = readOnly(context, uri, name)
         if (shared != null) a.copy(sharedPath = shared) else a
     }
@@ -376,7 +382,10 @@ object Attachments {
                 val media = m.attachments.filter { sendsNatively(provider, it) }
                 val notes = buildList {
                     m.attachments.filter { it.sharedPath.isNotEmpty() }.forEach { a ->
-                        add("[\"${a.name}\" is also saved at ${a.sharedPath} (in Termux: ~/storage/downloads/Arin/${a.sharedPath.substringAfterLast('/')}) for terminal tools.]")
+                        add(
+                            if (a.sharedPath.startsWith("/root/")) "[\"${a.name}\" is also at ${a.sharedPath} in Linux, for terminal tools.]"
+                            else "[\"${a.name}\" is also saved at ${a.sharedPath} (in Termux: ~/storage/downloads/Arin/${a.sharedPath.substringAfterLast('/')}) for terminal tools.]",
+                        )
                     }
                     m.attachments.forEach { a ->
                         when {

@@ -159,14 +159,124 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
      * Adds REA, turns on the terminal, and starts a chat where the model installs and checks it,
      * the way the setup is done with Claude Code.
      */
+    // ---- Built-in Linux ----
+
+    var linuxInstalled by mutableStateOf(com.arin.terminal.Linux.installed(app))
+        private set
+    var linuxReady by mutableStateOf(com.arin.terminal.Linux.nodeReady(app))
+        private set
+    /** True while installing Linux or REA. */
+    var linuxBusy by mutableStateOf(false)
+        private set
+    /** Recent progress lines from installing. */
+    val linuxLog = mutableStateListOf<String>()
+
+    private fun logLine(line: String) {
+        ArinApp.scope.launch(kotlinx.coroutines.Dispatchers.Main) {
+            linuxLog += line
+            while (linuxLog.size > 40) linuxLog.removeAt(0)
+        }
+    }
+
+    /** Installs Ubuntu inside Arin (and REA too, with [withRea]). Keeps going if the screen closes. */
+    fun installLinux(withRea: Boolean = false) {
+        if (linuxBusy) return
+        val app = getApplication<Application>()
+        linuxBusy = true
+        linuxLog.clear()
+        ReplyService.start(app)
+        ArinApp.scope.launch {
+            try {
+                com.arin.terminal.Linux.install(app) { logLine(it) }
+                linuxInstalled = true
+                linuxReady = true
+                toggleTerminal(true)
+                if (withRea) installReaInLinux(app)
+                notice = if (withRea) "Linux and REA are installed" else "Linux is installed"
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                logLine("Failed: ${e.message}")
+                notice = "Linux install failed: ${e.message}"
+            } finally {
+                linuxInstalled = com.arin.terminal.Linux.installed(app)
+                linuxReady = com.arin.terminal.Linux.nodeReady(app)
+                linuxBusy = false
+                ReplyService.stop(app)
+            }
+        }
+    }
+
+    private suspend fun installReaInLinux(app: Application) {
+        val r = com.arin.terminal.Linux.installRea(app) { logLine(it) }
+        if (r.exitCode != 0 || r.error != null) throw IllegalStateException("REA didn't install: " + (r.error ?: r.combined().takeLast(400)))
+        logLine("Installing Arin's MCP bridge…")
+        com.arin.mcp.Mcp.installBridge(app)
+        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+            saveServer(com.arin.mcp.Mcp.REA.copy(enabled = true))
+        }
+        logLine("Starting REA and connecting…")
+        val problems = com.arin.mcp.Mcp.connectAll(app, listOf(com.arin.mcp.Mcp.REA), canStart = true)
+        val status = com.arin.mcp.Mcp.status(com.arin.mcp.Mcp.REA.name)
+        serverStatus[com.arin.mcp.Mcp.REA.name] = status ?: problems.firstOrNull() ?: "Not reachable"
+        logLine(status?.let { "REA is connected: $it" } ?: ("REA didn't connect: " + problems.joinToString("; ")))
+    }
+
+    fun removeLinux() {
+        if (linuxBusy) return
+        val app = getApplication<Application>()
+        linuxBusy = true
+        ArinApp.scope.launch {
+            com.arin.mcp.Mcp.forget(com.arin.mcp.Mcp.REA.name)
+            com.arin.terminal.Linux.remove(app)
+            linuxInstalled = false
+            linuxReady = false
+            linuxBusy = false
+            linuxLog.clear()
+            notice = "Linux removed"
+        }
+    }
+
     fun setUpRea() {
         toggleTerminal(true)
         if (mcpServers.none { it.name == com.arin.mcp.Mcp.REA.name }) saveServer(com.arin.mcp.Mcp.REA)
         val app = getApplication<Application>()
+        if (com.arin.terminal.Linux.installed(app) || com.arin.terminal.Termux.problem(app) != null) {
+            // Built-in Linux: install everything without the model, then let the model check it works.
+            if (!com.arin.terminal.Linux.supported()) {
+                notice = "This phone's processor isn't supported by Arin's built-in Linux. Set up Termux instead."
+                return
+            }
+            if (linuxBusy) return
+            linuxBusy = true
+            linuxLog.clear()
+            ReplyService.start(app)
+            ArinApp.scope.launch {
+                try {
+                    if (!com.arin.terminal.Linux.nodeReady(app)) com.arin.terminal.Linux.install(app) { logLine(it) }
+                    linuxInstalled = true
+                    linuxReady = true
+                    installReaInLinux(app)
+                    kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                        newChat()
+                        send(REA_CHECK_PROMPT)
+                    }
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    throw e
+                } catch (e: Throwable) {
+                    logLine("Failed: ${e.message}")
+                    notice = "REA setup failed: ${e.message}"
+                } finally {
+                    linuxBusy = false
+                    ReplyService.stop(app)
+                }
+            }
+            return
+        }
         newChat()
         viewModelScope.launch {
             // Put Arin's bridge in Termux first, so the model can start and test REA through it.
-            if (com.arin.terminal.Termux.problem(app) == null) com.arin.mcp.Mcp.installBridge(app)
+            if (com.arin.terminal.Shell.problem(app) == null) com.arin.mcp.Mcp.installBridge(app)
             send(REA_SETUP_PROMPT)
         }
     }
@@ -203,7 +313,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Runs a quick check in Termux; returns what it printed or the problem. */
     suspend fun testTerminal(): String {
-        val r = com.arin.terminal.Termux.run(
+        val r = com.arin.terminal.Shell.run(
             getApplication(),
             "echo \"Termux is connected\"; uname -m; (node -v 2>/dev/null && npm -v 2>/dev/null) || echo 'Node not installed yet'; python --version 2>/dev/null || echo 'Python not installed yet'",
             timeoutMs = 30_000,
@@ -301,7 +411,10 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                     status = null
                     if (problems.isNotEmpty()) notice = problems.joinToString("\n")
                 }
-                val system = Prompt.system(searchFlag, memoryFlag, memoryList, project, useTerminal, com.arin.mcp.Mcp.promptSection())
+                val system = Prompt.system(
+                    searchFlag, memoryFlag, memoryList, project, useTerminal, com.arin.mcp.Mcp.promptSection(),
+                    terminalInfo = com.arin.terminal.Shell.describe(app),
+                )
                 var searches = 0
                 while (true) {
                     val text = StringBuilder()
@@ -329,7 +442,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                             com.arin.data.CommandRun(cmd, "The person chose not to run this command.", null, ran = false)
                         } else {
                             status = "Running: " + cmd.lineSequence().first().take(80)
-                            val r = com.arin.terminal.Termux.run(app, cmd)
+                            val r = com.arin.terminal.Shell.run(app, cmd)
                             status = null
                             com.arin.data.CommandRun(cmd, r.forModel(), r.exitCode)
                         }
@@ -740,6 +853,14 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     companion object {
+        /** After REA is installed in the built-in Linux: have the model prove it works. */
+        val REA_CHECK_PROMPT = """
+            REA (Reverse Engineer Anything) was just installed in Arin's built-in Linux and connected as MCP tools. Check that it really works:
+            1. Run rea --version in the terminal.
+            2. Use find_tools to look up analyze_javascript_application, then create a tiny test app (mkdir -p /root/rea-test && echo 'export function add(a,b){return a+b}' > /root/rea-test/app.js) and call that tool on /root/rea-test.
+            3. Tell me what worked, what REA can do on this phone (static JavaScript/web bundles, APKs, Flutter, archives…), and what needs a desktop (Ghidra, IDA, Hopper, live Chrome). Only claim what the outputs show.
+        """.trimIndent()
+
         /** What "Set up REA" asks the model to do, step by step in the terminal. */
         val REA_SETUP_PROMPT = """
             Set up REA (Reverse Engineer Anything, npm package rea-agents from github.com/morluto/rea) on this phone in Termux and connect it to Arin, then verify it works. Steps:

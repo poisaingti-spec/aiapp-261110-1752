@@ -103,7 +103,9 @@ fun SettingsScreen(vm: ChatViewModel, onBack: () -> Unit) {
                 }
             }
 
-            Section("Terminal (Termux)") { TerminalSettings(vm) }
+            Section("Linux (built in)") { LinuxSettings(vm) }
+
+            Section("Terminal") { TerminalSettings(vm) }
 
             Section("Tools (MCP)") { ToolsSettings(vm) }
 
@@ -171,7 +173,7 @@ fun SettingsScreen(vm: ChatViewModel, onBack: () -> Unit) {
             }
 
             Text(
-                "Arin 0.5.0",
+                "Arin 0.6.0",
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(vertical = 12.dp),
@@ -211,7 +213,62 @@ private fun Toggle(title: String, detail: String, checked: Boolean, onChange: (B
     }
 }
 
-/** Lets the model run commands in Termux: setup steps, permission, test, and the ask-first switch. */
+/** Install, check and remove Arin's own Ubuntu Linux. */
+@Composable
+private fun LinuxSettings(vm: ChatViewModel) {
+    var confirmRemove by remember { mutableStateOf(false) }
+    Text(
+        "Install Ubuntu Linux inside Arin, no root or other apps needed. Arin then runs commands, Node.js, npm, " +
+            "Python, git and tools like REA in it, like Claude Code on a computer. Needs about 1 GB of space and " +
+            "a few minutes on Wi-Fi.",
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+    when {
+        !com.arin.terminal.Linux.supported() -> Text(
+            "This phone's processor isn't supported by the built-in Linux. Use Termux below instead.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.error,
+        )
+        vm.linuxBusy -> Row(verticalAlignment = Alignment.CenterVertically) {
+            androidx.compose.material3.CircularProgressIndicator(Modifier.padding(end = 10.dp).height(18.dp), strokeWidth = 2.dp)
+            Text("Working… you can leave this screen.", style = MaterialTheme.typography.bodyMedium)
+        }
+        vm.linuxReady -> Text("✓ Linux is installed (Ubuntu 24.04 with Node.js, npm, git, Python).", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.primary)
+        vm.linuxInstalled -> Text("Ubuntu is unpacked but setup didn't finish. Tap Install again to finish it.", style = MaterialTheme.typography.bodyMedium)
+        else -> Text("Not installed.", style = MaterialTheme.typography.bodyMedium)
+    }
+    if (com.arin.terminal.Linux.supported() && !vm.linuxBusy) {
+        androidx.compose.foundation.layout.FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            if (!vm.linuxReady) androidx.compose.material3.Button(onClick = { vm.installLinux() }) { Text("Install Linux") }
+            if (vm.mcpServers.none { it.name == com.arin.mcp.Mcp.REA.name && com.arin.mcp.Mcp.status(it.name) != null }) {
+                OutlinedButton(onClick = { vm.setUpRea() }) { Text(if (vm.linuxReady) "Install REA" else "Install Linux + REA") }
+            }
+            if (vm.linuxInstalled) TextButton(onClick = { confirmRemove = true }) { Text("Remove Linux") }
+        }
+    }
+    if (vm.linuxLog.isNotEmpty()) {
+        Surface(color = MaterialTheme.colorScheme.surfaceContainerHigh, shape = MaterialTheme.shapes.small) {
+            Text(
+                vm.linuxLog.takeLast(12).joinToString("\n"),
+                style = MaterialTheme.typography.bodySmall.copy(fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace),
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(10.dp).fillMaxWidth(),
+            )
+        }
+    }
+    if (confirmRemove) {
+        AlertDialog(
+            onDismissRequest = { confirmRemove = false },
+            title = { Text("Remove Linux?") },
+            text = { Text("Everything installed in it, including REA and files in /root, is deleted. Your chats stay.") },
+            confirmButton = { TextButton(onClick = { vm.removeLinux(); confirmRemove = false }) { Text("Remove") } },
+            dismissButton = { TextButton(onClick = { confirmRemove = false }) { Text("Cancel") } },
+        )
+    }
+}
+
+/** Lets the model run commands (built-in Linux or Termux): ask-first switch, Termux setup, test. */
 @Composable
 private fun TerminalSettings(vm: ChatViewModel) {
     val context = androidx.compose.ui.platform.LocalContext.current
@@ -228,7 +285,8 @@ private fun TerminalSettings(vm: ChatViewModel) {
 
     Toggle(
         "Let Arin run commands",
-        "Arin can install and run tools (Node, npm, Python, git, REA…) in Termux, a Linux terminal app, and read the results, like Claude Code.",
+        "Arin can install and run tools (Node, npm, Python, git, REA…) and read the results, like Claude Code. " +
+            "Uses the built-in Linux when it's installed, otherwise Termux.",
         vm.terminalOn,
         vm::toggleTerminal,
     )
@@ -238,7 +296,7 @@ private fun TerminalSettings(vm: ChatViewModel) {
         vm.terminalAsk,
         vm::toggleTerminalAsk,
     )
-    Text("Set up (once)", style = MaterialTheme.typography.bodyLarge)
+    Text("Or use Termux instead (optional)", style = MaterialTheme.typography.bodyLarge)
     Text(
         (if (installed) "✓ " else "1. ") + "Install Termux from F-Droid (the Play Store version is outdated).",
         style = MaterialTheme.typography.bodySmall,
@@ -267,7 +325,7 @@ private fun TerminalSettings(vm: ChatViewModel) {
         OutlinedButton(onClick = { askPermission.launch(com.arin.terminal.Termux.PERMISSION) }) { Text("Allow Arin to use Termux") }
     }
     Row(verticalAlignment = Alignment.CenterVertically) {
-        OutlinedButton(enabled = installed && permitted, onClick = {
+        OutlinedButton(enabled = vm.linuxInstalled || (installed && permitted), onClick = {
             test = "Testing…"
             scope.launch { test = vm.testTerminal() }
         }) { Text("Test connection") }

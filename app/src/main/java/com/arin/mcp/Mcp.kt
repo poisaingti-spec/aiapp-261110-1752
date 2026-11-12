@@ -1,6 +1,7 @@
 package com.arin.mcp
 
 import android.content.Context
+import com.arin.terminal.Shell
 import com.arin.terminal.Termux
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -220,7 +221,7 @@ object Mcp {
     /** Writes Arin's bridge script into Termux, so start commands can use it. */
     suspend fun installBridge(context: Context): Termux.Result {
         val script = context.assets.open(BRIDGE_ASSET).bufferedReader().use { it.readText() }
-        return Termux.run(
+        return Shell.run(
             context,
             "mkdir -p ~/.arin && cat > $BRIDGE_PATH <<'ARIN_BRIDGE_EOF'\n$script\nARIN_BRIDGE_EOF\necho bridge installed",
             timeoutMs = 60_000,
@@ -239,9 +240,9 @@ object Mcp {
             if (existing != null && existing.server == s && existing.ready) continue
             val client = McpClient(s)
             val first = runCatching { client.connect() }
-            if (first.isFailure && canStart && s.startCommand.isNotBlank() && Termux.problem(context) == null) {
+            if (first.isFailure && canStart && s.startCommand.isNotBlank() && Shell.problem(context) == null) {
                 if (s.startCommand.contains(BRIDGE_PATH)) installBridge(context)
-                val started = Termux.run(context, s.startCommand, timeoutMs = 120_000)
+                val started = Shell.run(context, s.startCommand, timeoutMs = 120_000)
                 if (started.stdout.contains(NOT_INSTALLED)) {
                     problems += "${s.name} isn't installed in Termux yet."
                 } else {
@@ -316,8 +317,8 @@ object Mcp {
             append("and stop. The app runs it and sends you the result. The body must be one JSON object (use {} for none). ")
             append("If you don't know a tool's parameters, first call <tool name=\"find_tools\">a few keywords</tool>, which returns ")
             append("matching tools with their descriptions and parameters. One tool call at a time; read each result before the next. ")
-            append("Tools work on files on this phone: Termux's home is ${Termux.HOME}; files the person attaches are also saved to ")
-            append("/storage/emulated/0/Download/Arin/. Base claims on what the tools return.\n")
+            append("Tools run in the same Linux as your terminal commands; attached files are at the paths given in the messages. ")
+            append("Base claims on what the tools return.\n")
             list.forEach { c ->
                 append("\nServer \"").append(c.server.name).append("\" (").append(c.tools.size).append(" tools)")
                 if (c.instructions.isNotBlank()) append(". Its guidance: ").append(c.instructions.take(1_200))

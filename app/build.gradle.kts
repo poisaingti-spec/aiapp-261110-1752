@@ -12,9 +12,11 @@ android {
     defaultConfig {
         applicationId = "com.arin.app"
         minSdk = 26
-        targetSdk = 35
-        versionCode = 7
-        versionName = "0.5.0"
+        // 28, like Termux: Android blocks running programs from app storage for apps targeting 29+,
+        // and the built-in Linux (PRoot) needs that. Arin is installed from GitHub, not the Play Store.
+        targetSdk = 28
+        versionCode = 8
+        versionName = "0.6.0"
     }
 
     signingConfigs {
@@ -37,6 +39,16 @@ android {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
+    packaging {
+        // Keep PRoot (lib*.so) extracted to nativeLibraryDir so it can be run.
+        jniLibs { useLegacyPackaging = true }
+    }
+
+    lint {
+        disable += "ExpiredTargetSdkVersion"
+        disable += "OldTargetApi"
+    }
+
     buildFeatures {
         compose = true
     }
@@ -64,4 +76,6 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
     // Reads the text of PDFs, so big PDFs and models without PDF support still work.
     implementation("com.tom-roush:pdfbox-android:2.0.27.0")
+    // Unpacks the Ubuntu image for the built-in Linux.
+    implementation("org.apache.commons:commons-compress:1.27.1")
 }
