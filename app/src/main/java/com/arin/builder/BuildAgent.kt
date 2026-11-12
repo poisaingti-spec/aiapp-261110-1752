@@ -298,14 +298,14 @@ class BuildAgent(
             currentRound = round
             step(BuildEvent.Kind.STEP, "Reading the build errors")
             val errors = gh.failureSummary(repo, run.id)
-            // From the second failed build on, look the main error up online and give the model what others did.
-            val web = if (round >= 2) {
+            // Look the main error up online every time, and give the model what others did to fix it.
+            val web = kotlin.run {
                 val query = mainError(errors)
                 if (query.isNotBlank()) {
                     step(BuildEvent.Kind.WEB, "Searching the web for the error: $query")
                     runCatching { WebTools.search(query) }.getOrNull()?.take(6_000).orEmpty()
                 } else ""
-            } else ""
+            }
             val count = errors.lines().count { it.startsWith("e: ") || it.contains("error:", true) }.coerceAtLeast(1)
             step(BuildEvent.Kind.ERROR, "Build failed with $count error${if (count == 1) "" else "s"}. Fixing (round $round of $maxFixRounds)")
             notes = apply(ask(fixPrompt(errors, notes, web)))
@@ -512,7 +512,7 @@ class BuildAgent(
         }
         if (web.isNotBlank()) {
             appendLine()
-            appendLine("The build has failed more than once, so I searched the web for the main error. Results:")
+            appendLine("I searched the web for the main error. Results:")
             appendLine(web)
             appendLine("Use what fits (you may also <search> or <fetch> for more), and try a different approach than last time.")
         }

@@ -594,13 +594,13 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     // ---- Fixing errors automatically ----
 
     /**
-     * What the model is told after a failure. The first time: fix it yourself and retry. From the second failure in a
-     * row: Arin searches the web for the error itself and passes on what it found, so the model can apply a known fix.
+     * What the model is told after a failure: Arin searches the web for the error itself, every time, and passes on what
+     * it found with the instruction to apply a fix and retry, so known solutions are used straight away.
      */
     private suspend fun fixAdvice(streak: Int, errorQuery: String, sources: MutableList<Source>): String {
         val base = "Fix this yourself and keep going: find the cause in the output, apply a fix (install what's missing, change " +
             "the command or flags, correct the code or config) and try again. Don't stop to ask unless it truly needs the person."
-        if (streak < 2 || errorQuery.isBlank()) {
+        if (errorQuery.isBlank()) {
             return "$base If you're not sure of the fix, search the web for the error with <search>…</search>."
         }
         status = "Searching the web for the error: “${errorQuery.take(60)}”"
@@ -609,11 +609,11 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         found?.first?.take(4)?.forEach { h -> if (sources.none { it.url == h.url }) sources += Source(h.title, h.url) }
         val web = found?.second?.take(7_000).orEmpty()
         return if (web.isBlank()) {
-            "$base This failed $streak times in a row and a web search for the error found nothing: try a different approach."
+            "$base A web search for the error found nothing; search with other words (<search>) or try a different approach."
         } else {
-            "This failed $streak times in a row, so I searched the web for \"$errorQuery\". Results:\n$web\n\n" +
-                "Use these to fix it (read a page with <fetch> if you need details), apply the fix and try again. " +
-                "If this approach keeps failing, try a different one."
+            "I searched the web for this error (\"$errorQuery\"). Results:\n$web\n\n" +
+                "Use them to fix it: read the most relevant page with <fetch> if you need the details, apply the fix and " +
+                "try again." + if (streak >= 2) " This has failed $streak times in a row, so try a different approach than before." else ""
         }
     }
 
