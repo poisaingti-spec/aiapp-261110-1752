@@ -253,7 +253,7 @@ private fun EventRow(e: BuildEvent, active: Boolean) {
         Text(
             e.text + if (active) "…" else "",
             style = MaterialTheme.typography.bodyMedium,
-            fontFamily = if (e.kind == BuildEvent.Kind.FILE) FontFamily.Monospace else null,
+            fontFamily = null,
             color = if (active) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant,
         )
     }

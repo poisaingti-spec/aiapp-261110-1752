@@ -467,7 +467,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 com.arin.builder.BuildEvent.Kind.DOWNLOAD, com.arin.builder.BuildEvent.Kind.LIBRARY -> "📦"
                 else -> "•"
             }
-            val line = e.text.lines().first().take(160)
+            val line = e.text.lines().first().take(240)
             append("- $icon ").append(line).append('\n')
         }
         if (!done) {

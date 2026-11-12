@@ -106,6 +106,9 @@ class BuildAgent(
     /** The model's last answer, kept so a failure report can show what it sent. */
     private var lastReply = ""
 
+    /** Parts written so far, numbered for the plain-English progress. */
+    private var part = 0
+
     private fun modelReplyLog(): String =
         if (lastReply.isBlank()) "(The model sent back an empty answer: it may have spent its whole answer thinking, or the service cut it off.)"
         else "Last answer from the model (end):\n" + lastReply.takeLast(1_500)
@@ -281,7 +284,7 @@ class BuildAgent(
                                 runCatching { WebTools.search(query) }.getOrNull()?.take(6_000).orEmpty()
                             } else ""
                             val count = out.log.lines().count { it.startsWith("e: ") || it.contains("error:", true) }.coerceAtLeast(1)
-                            step(BuildEvent.Kind.ERROR, "Phone build failed with $count error${if (count == 1) "" else "s"}. Fixing on the phone (round $localRounds of $maxFixRounds)")
+                            step(BuildEvent.Kind.ERROR, "Phone build failed with $count error${if (count == 1) "" else "s"}: ${plainError(out.log)}. Fixing on the phone (round $localRounds of $maxFixRounds)")
                             notes = apply(ask(fixPrompt(out.log, notes, web)))
                             continue
                         }
@@ -389,7 +392,7 @@ class BuildAgent(
                 } else ""
             }
             val count = errors.lines().count { it.startsWith("e: ") || it.contains("error:", true) }.coerceAtLeast(1)
-            step(BuildEvent.Kind.ERROR, "Build failed with $count error${if (count == 1) "" else "s"}. Fixing (round $round of $maxFixRounds)")
+            step(BuildEvent.Kind.ERROR, "Build failed with $count error${if (count == 1) "" else "s"}: ${plainError(errors)}. Fixing (round $round of $maxFixRounds)")
             notes = apply(ask(fixPrompt(errors, notes, web)))
             saveProject(repo, null)
         }
@@ -469,6 +472,7 @@ class BuildAgent(
             val sb = StringBuilder()
             val thinking = StringBuilder()
             var scanned = 0
+            var about: String? = null
             resilient(
                 attempt = { model -> streamModel(req.provider, req.apiKey, model, working.toList(), system) },
                 model = req.model,
@@ -478,11 +482,11 @@ class BuildAgent(
                 if (raw.startsWith(THOUGHT)) {
                     // Show what the model is thinking, live, under the current step.
                     thinking.append(raw.substring(1))
-                    onProgress(-1f, "Thinking: " + thinking.toString().replace('\n', ' ').takeLast(160))
+                    onProgress(-1f, "Thinking: " + proseOnly(thinking.toString()).takeLast(160))
                     return@collect
                 }
                 if (thinking.isNotEmpty()) {
-                    step(BuildEvent.Kind.THINKING, "Thought it through: " + thinking.toString().replace('\n', ' ').trim().take(140) + "…")
+                    step(BuildEvent.Kind.THINKING, "Planned it: " + proseOnly(thinking.toString()).trim().take(160) + "…")
                     thinking.clear()
                     onProgress(null, "")
                 }
@@ -492,7 +496,15 @@ class BuildAgent(
                 val nl = sb.lastIndexOf("\n")
                 if (nl > scanned) {
                     sb.substring(scanned, nl).lines().forEach { line ->
-                        fileStart.find(line.trim())?.let { step(BuildEvent.Kind.FILE, "Writing ${it.groupValues[1].trim('`', ' ').substringAfterLast('/')}") }
+                        aboutLine.find(line.trim())?.let { about = it.groupValues[1].trim() }
+                        fileStart.find(line.trim())?.let {
+                            // Say in plain English what this part of the app does, like Claude does, not the code.
+                            val path = it.groupValues[1].trim('`', ' ')
+                            part++
+                            val what = about?.takeIf { a -> a.length > 3 } ?: plainEnglish(path)
+                            step(BuildEvent.Kind.FILE, "Part $part: $what (${path.substringAfterLast('/')})")
+                            about = null
+                        }
                     }
                     scanned = nl
                 }
@@ -522,7 +534,8 @@ class BuildAgent(
     /** Sent again when a reply had no files: just the format, as plainly as possible. */
     private fun formatReminder() = "\n\n" + """
         IMPORTANT: your last reply contained no files, so nothing could be built. Don't explain or plan this time.
-        Reply with ONLY the complete files, starting right away with the first line below, every file in this exact format:
+        Reply with ONLY the complete files, starting right away with the lines below, every file in this exact format:
+        === ABOUT: what this part of the app does, in plain English ===
         === FILE: app/src/main/java/${packageName.replace('.', '/')}/MainActivity.kt ===
         (the whole file)
         === END FILE ===
@@ -776,6 +789,59 @@ class BuildAgent(
         private const val MAX_WEB_STEPS = 3
         private val fileStart = Regex("^=+\\s*FILE:\\s*(.+?)\\s*=*\\s*$")
         private val fileEnd = Regex("^=+\\s*END FILE\\s*=*\\s*$")
+        private val aboutLine = Regex("^=+\\s*ABOUT:\\s*(.+?)\\s*=*\\s*$")
+
+        private val codeish = Regex("""[{};=<>()\[\]]|\b(fun|val|var|import|class|return|@Composable)\b""")
+
+        /** The model's thinking without the code in it, so progress reads as plain English. */
+        fun proseOnly(text: String): String {
+            val lines = text.lines().map { it.trim() }.filter { it.isNotEmpty() && !it.startsWith("```") }
+            val prose = lines.filter { l -> codeish.findAll(l).count() * 12 < l.length.coerceAtLeast(1) && l.count { it.isLetter() } > l.length / 2 }
+            return prose.joinToString(" ").ifBlank { "working out the code" }
+        }
+
+        /** The main build error, said simply. */
+        fun plainError(errors: String): String {
+            val e = errors.lines().firstOrNull { it.startsWith("e: ") || it.contains("error:", true) } ?: errors.lines().firstOrNull { it.isNotBlank() }.orEmpty()
+            val where = Regex("""([A-Za-z0-9_]+\.(kt|java|xml))""").find(e)?.groupValues?.get(1)?.let { " in $it" } ?: ""
+            val name = Regex("""Unresolved reference:?\s*'?([A-Za-z0-9_]+)""").find(e)?.groupValues?.get(1)
+            return when {
+                name != null -> "the code uses \"$name\"$where, which doesn't exist or isn't imported"
+                e.contains("Type mismatch", true) || e.contains("Argument type mismatch", true) -> "a value has the wrong type$where"
+                e.contains("No value passed for parameter", true) -> "something is called without all the information it needs$where"
+                e.contains("Could not resolve", true) || e.contains("Could not find", true) -> "a library couldn't be downloaded (wrong name or version)"
+                e.contains("@Composable", true) -> "screen code is called from a place that can't draw screens$where"
+                e.contains("resource", true) || e.contains("AAPT", true) -> "a picture, color, text or other resource is missing or broken$where"
+                e.contains("Manifest merger", true) -> "the app's Android settings (manifest) conflict"
+                e.contains("Expecting", true) || e.contains("Syntax", true) -> "the code has a typing mistake (like a missing bracket)$where"
+                e.contains("Overload resolution ambiguity", true) || e.contains("Conflicting", true) -> "two things have the same name$where"
+                e.contains("OutOfMemory", true) || e.contains("heap space", true) -> "the build ran out of memory"
+                else -> "a problem$where"
+            }
+        }
+
+        /** A plain-English guess at what a file is for, when the model didn't say. */
+        fun plainEnglish(path: String): String {
+            val file = path.substringAfterLast('/')
+            val name = file.substringBeforeLast('.')
+            val words = name.replace(Regex("([a-z])([A-Z])"), "$1 $2").replace('_', ' ').lowercase()
+            return when {
+                file == "MainActivity.kt" || file == "MainActivity.java" -> "The app's starting point: opens the first screen when you tap the icon"
+                file == "AndroidManifest.xml" -> "The app's settings for Android: its name, icon, screens and permissions"
+                file.startsWith("build.gradle") || file.startsWith("settings.gradle") || file == "libs.versions.toml" -> "The build setup: which tools and ready-made libraries the app uses"
+                file == "strings.xml" -> "The words and labels shown in the app"
+                file == "colors.xml" || file == "themes.xml" || name in setOf("Color", "Theme", "Type") -> "The app's look: colors, fonts and style"
+                name.endsWith("Screen") -> "The ${words.removeSuffix(" screen")} screen: what you see and tap there"
+                name.endsWith("ViewModel") -> "The brain behind the ${words.removeSuffix(" view model")} screen: keeps its data and reacts to your taps"
+                name.endsWith("Dao") || name.endsWith("Database") || name.endsWith("Repository") || name.endsWith("Store") -> "Saving and loading the app's data on the phone"
+                name.endsWith("Api") || name.endsWith("Client") || name.endsWith("Service") -> "Talking to the internet or running work in the background (${words})"
+                path.contains("/model/") || path.contains("/data/") -> "The kind of information the app keeps: $words"
+                path.contains("/res/drawable") || path.contains("/res/mipmap") -> "A picture or icon used in the app"
+                path.contains("/res/raw") || path.contains("/assets/") -> "A media or data file the app uses ($file)"
+                file.endsWith(".kt") || file.endsWith(".java") -> "Code for the $words part of the app"
+                else -> "Supporting file: $file"
+            }
+        }
         private val depLine = Regex("^=+\\s*DEPENDENCY:\\s*(.+?)\\s*=*\\s*$")
         private val downloadLine = Regex("^=+\\s*DOWNLOAD:\\s*(\\S+)\\s*->\\s*(\\S+?)\\s*=*\\s*$")
 

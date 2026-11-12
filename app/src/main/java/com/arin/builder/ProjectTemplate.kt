@@ -299,6 +299,9 @@ object ProjectTemplate {
         - To delete a file, send it with the single line: DELETE
         - To get a file from the internet (image, font, sound, data, a library jar), add a line: === DOWNLOAD: https://url -> path/in/project === .
         - Don't touch .github/ or the Gradle wrapper jar.
+        - Right before each file, write ONE line explaining it in plain English for someone who doesn't code (no code words), e.g.
+          === ABOUT: The main screen: shows your notes in a list with a + button to add a new one ===
+          When fixing errors, say what was wrong and what you changed, e.g. === ABOUT: Fixed a missing import so the list screen can show icons ===
     """.trimIndent()
 
     /** Lets the model look things up before writing code. */
@@ -330,5 +333,8 @@ object ProjectTemplate {
         - To get a file from the internet (image, font, sound, JSON), add a line: === DOWNLOAD: https://url -> app/src/main/res/raw/name.ext === (res/raw, res/drawable, res/font or assets only; file names lowercase with underscores).
         - Keep it simple and correct: prefer one or a few files. Every import must exist.
         - If you write AndroidManifest.xml, keep MainActivity as the launcher activity.
+        - Right before each file, write ONE line explaining it in plain English for someone who doesn't code (no code words), e.g.
+          === ABOUT: The main screen: shows your notes in a list with a + button to add a new one ===
+          When fixing errors, say what was wrong and what you changed, e.g. === ABOUT: Fixed a missing import so the list screen can show icons ===
     """.trimIndent()
 }
