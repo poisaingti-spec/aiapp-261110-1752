@@ -37,6 +37,7 @@ import androidx.compose.ui.unit.dp
 import com.arin.chat.ChatViewModel
 import com.arin.data.ThemeMode
 import com.arin.llm.Provider
+import kotlinx.coroutines.launch
 
 @OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 @Composable
@@ -102,6 +103,10 @@ fun SettingsScreen(vm: ChatViewModel, onBack: () -> Unit) {
                 }
             }
 
+            Section("Terminal (Termux)") { TerminalSettings(vm) }
+
+            Section("Tools (MCP)") { ToolsSettings(vm) }
+
             Section("Web search") {
                 Toggle(
                     "Search the web",
@@ -166,7 +171,7 @@ fun SettingsScreen(vm: ChatViewModel, onBack: () -> Unit) {
             }
 
             Text(
-                "Arin 0.4.0",
+                "Arin 0.5.0",
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(vertical = 12.dp),
@@ -203,6 +208,147 @@ private fun Toggle(title: String, detail: String, checked: Boolean, onChange: (B
             Text(detail, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
         Switch(checked = checked, onCheckedChange = onChange)
+    }
+}
+
+/** Lets the model run commands in Termux: setup steps, permission, test, and the ask-first switch. */
+@Composable
+private fun TerminalSettings(vm: ChatViewModel) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val uri = androidx.compose.ui.platform.LocalUriHandler.current
+    val clipboard = androidx.compose.ui.platform.LocalClipboardManager.current
+    val scope = androidx.compose.runtime.rememberCoroutineScope()
+    var refresh by remember { mutableStateOf(0) }
+    val installed = remember(refresh) { com.arin.terminal.Termux.installed(context) }
+    val permitted = remember(refresh) { com.arin.terminal.Termux.permitted(context) }
+    var test by remember { mutableStateOf<String?>(null) }
+    val askPermission = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.RequestPermission(),
+    ) { refresh++ }
+
+    Toggle(
+        "Let Arin run commands",
+        "Arin can install and run tools (Node, npm, Python, git, REA…) in Termux, a Linux terminal app, and read the results, like Claude Code.",
+        vm.terminalOn,
+        vm::toggleTerminal,
+    )
+    Toggle(
+        "Ask before each command",
+        "Shows every command and tool call for you to allow first. Turn off only if you trust what the model will run.",
+        vm.terminalAsk,
+        vm::toggleTerminalAsk,
+    )
+    Text("Set up (once)", style = MaterialTheme.typography.bodyLarge)
+    Text(
+        (if (installed) "✓ " else "1. ") + "Install Termux from F-Droid (the Play Store version is outdated).",
+        style = MaterialTheme.typography.bodySmall,
+    )
+    if (!installed) OutlinedButton(onClick = { uri.openUri(com.arin.terminal.Termux.DOWNLOAD_URL) }) { Text("Get Termux") }
+    Text(
+        "2. Open Termux, paste this and press Enter. It lets Arin send commands and installs Node, Python and git:",
+        style = MaterialTheme.typography.bodySmall,
+    )
+    Surface(color = MaterialTheme.colorScheme.surfaceContainerHigh, shape = MaterialTheme.shapes.small) {
+        Text(
+            com.arin.terminal.Termux.SETUP_COMMAND,
+            style = MaterialTheme.typography.bodySmall.copy(fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace),
+            modifier = Modifier.padding(10.dp),
+        )
+    }
+    TextButton(onClick = {
+        clipboard.setText(androidx.compose.ui.text.AnnotatedString(com.arin.terminal.Termux.SETUP_COMMAND))
+        vm.notice = "Setup command copied"
+    }) { Text("Copy setup command") }
+    Text(
+        (if (permitted) "✓ " else "3. ") + "Allow Arin to send commands to Termux.",
+        style = MaterialTheme.typography.bodySmall,
+    )
+    if (installed && !permitted) {
+        OutlinedButton(onClick = { askPermission.launch(com.arin.terminal.Termux.PERMISSION) }) { Text("Allow Arin to use Termux") }
+    }
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        OutlinedButton(enabled = installed && permitted, onClick = {
+            test = "Testing…"
+            scope.launch { test = vm.testTerminal() }
+        }) { Text("Test connection") }
+    }
+    test?.let {
+        Text(
+            it,
+            style = MaterialTheme.typography.bodySmall.copy(fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace),
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
+/** MCP servers: REA in one tap, any other local or remote server, with connect status. */
+@Composable
+private fun ToolsSettings(vm: ChatViewModel) {
+    var adding by remember { mutableStateOf(false) }
+    Text(
+        "Connect MCP servers so the model can use their tools, as in Claude Code. Local servers run in Termux; " +
+            "remote ones are reached by URL.",
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+    if (vm.mcpServers.none { it.name == com.arin.mcp.Mcp.REA.name }) {
+        androidx.compose.material3.Button(onClick = { vm.setUpRea() }) { Text("Set up REA (Reverse Engineer Anything)") }
+        Text(
+            "Turns on the terminal and starts a chat where Arin installs REA in Termux, connects it and checks it works.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+    vm.mcpServers.forEach { s ->
+        Column {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text(s.name, style = MaterialTheme.typography.bodyLarge)
+                    Text(
+                        vm.serverStatus[s.name] ?: com.arin.mcp.Mcp.status(s.name) ?: s.url,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Switch(checked = s.enabled, onCheckedChange = { vm.toggleServer(s, it) })
+            }
+            Row {
+                TextButton(onClick = { vm.checkServer(s) }) { Text("Connect") }
+                TextButton(onClick = { vm.removeServer(s) }) { Text("Remove") }
+            }
+        }
+    }
+    if (adding) {
+        var name by remember { mutableStateOf("") }
+        var url by remember { mutableStateOf("") }
+        var start by remember { mutableStateOf("") }
+        var token by remember { mutableStateOf("") }
+        OutlinedTextField(value = name, onValueChange = { name = it.filter { c -> c.isLetterOrDigit() || c == '-' || c == '_' } }, label = { Text("Name") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+        OutlinedTextField(value = url, onValueChange = { url = it }, label = { Text("URL") }, placeholder = { Text("http://127.0.0.1:8766/mcp or https://…") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+        OutlinedTextField(
+            value = start,
+            onValueChange = { start = it },
+            label = { Text("Start command in Termux (optional)") },
+            placeholder = { Text("node ~/.arin/mcp-bridge.mjs --port 8766 -- npx -y some-mcp-server") },
+            modifier = Modifier.fillMaxWidth(),
+        )
+        Text(
+            "For a local stdio server, wrap it with Arin's bridge: (nohup node ~/.arin/mcp-bridge.mjs --port PORT -- COMMAND > ~/.arin/NAME.log 2>&1 &); sleep 5",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        OutlinedTextField(value = token, onValueChange = { token = it }, label = { Text("Token (optional)") }, singleLine = true, visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth())
+        Row {
+            TextButton(enabled = name.isNotBlank() && url.isNotBlank(), onClick = {
+                val s = com.arin.mcp.McpServer(name.trim(), url.trim(), start.trim(), token.trim())
+                vm.saveServer(s)
+                vm.checkServer(s)
+                adding = false
+            }) { Text("Add and connect") }
+            TextButton(onClick = { adding = false }) { Text("Cancel") }
+        }
+    } else {
+        OutlinedButton(onClick = { adding = true }) { Text("Add MCP server") }
     }
 }
 

@@ -7,6 +7,8 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -124,6 +126,38 @@ fun ChatScreen(
         input = if (input.isBlank()) shared else input + "\n" + shared
         vm.sharedText = null
     }
+    vm.commandToApprove?.let { cmd ->
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = {},
+            title = { Text(if (vm.approvingTool) "Allow this tool call?" else "Run this command in Termux?") },
+            text = {
+                Column {
+                    Surface(color = MaterialTheme.colorScheme.surfaceContainerHigh, shape = MaterialTheme.shapes.small) {
+                        Text(
+                            cmd,
+                            style = MaterialTheme.typography.bodySmall.copy(fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace),
+                            modifier = Modifier.padding(10.dp)
+                                .heightIn(max = 240.dp)
+                                .verticalScroll(androidx.compose.foundation.rememberScrollState()),
+                        )
+                    }
+                    Text(
+                        if (vm.approvingTool) "A connected MCP server will run it on your phone. Only allow what you're comfortable with."
+                        else "It runs on your phone with Termux's access. Only allow commands you're comfortable with.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(top = 8.dp),
+                    )
+                    androidx.compose.material3.TextButton(onClick = { vm.answerCommand(allow = true, always = true) }) {
+                        Text("Always allow (don't ask again)")
+                    }
+                }
+            },
+            confirmButton = { androidx.compose.material3.TextButton(onClick = { vm.answerCommand(true) }) { Text("Run") } },
+            dismissButton = { androidx.compose.material3.TextButton(onClick = { vm.answerCommand(false) }) { Text("Don't run") } },
+        )
+    }
+
     LaunchedEffect(vm.notice) {
         val n = vm.notice ?: return@LaunchedEffect
         snackbar.showSnackbar(n)
@@ -289,7 +323,7 @@ private fun Conversation(vm: ChatViewModel, onEdit: (Int) -> Unit) {
             else ArinMessage(m, vm.showThinking, isLast = i == vm.messages.lastIndex && !vm.streaming, onRetry = vm::retry)
         }
         if (vm.streaming) {
-            item(key = "live") { LiveReply(vm.liveText, vm.liveThinking, vm.showThinking, vm.status) }
+            item(key = "live") { LiveReply(vm.liveText, vm.liveThinking, vm.showThinking, vm.status, vm.liveCommands.toList()) }
         }
     }
 }

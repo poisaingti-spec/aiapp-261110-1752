@@ -10,10 +10,28 @@ import java.util.Locale
 object Prompt {
     const val MAX_SEARCHES = 3
 
+    /** Commands one reply may run in the terminal before it has to answer. */
+    const val MAX_COMMANDS = 25
+
+    private val toolTag = Regex("""<tool\s+name\s*=\s*"([^"]+)"\s*>(.*?)</tool>""", RegexOption.DOT_MATCHES_ALL)
+
+    /** A tool call in a reply: name and its JSON (or, for find_tools, the keywords). */
+    fun toolCall(reply: String): Pair<String, String>? =
+        toolTag.find(reply)?.let { it.groupValues[1].trim() to it.groupValues[2].trim() }
+
+    private val runTag = Regex("""<run>\s*(.+?)\s*</run>""", RegexOption.DOT_MATCHES_ALL)
+
     private val searchTag = Regex("""^\s*<search>(.{1,200}?)</search>""", RegexOption.DOT_MATCHES_ALL)
     private val rememberTag = Regex("""<remember>(.{1,300}?)</remember>""", RegexOption.DOT_MATCHES_ALL)
 
-    fun system(webSearch: Boolean, memoryOn: Boolean, memories: List<Memory>, project: Project?): String = buildString {
+    fun system(
+        webSearch: Boolean,
+        memoryOn: Boolean,
+        memories: List<Memory>,
+        project: Project?,
+        terminal: Boolean = false,
+        tools: String = "",
+    ): String = buildString {
         append("You are Arin, a helpful, friendly assistant in an Android app. Answer clearly and concisely. ")
         append("Use Markdown when it helps: short headings, lists, and fenced code blocks with a language.\n")
         append("Today is ").append(SimpleDateFormat("EEEE d MMMM yyyy", Locale.ENGLISH).format(Date())).append(".\n\n")
@@ -29,6 +47,23 @@ object Prompt {
             append("then answer using them and mention the sources by name. Search at most $MAX_SEARCHES times per answer. ")
             append("Don't search for things you already know well.\n\n")
         }
+
+        if (terminal) {
+            append("Terminal: you can run shell commands on the person's phone in Termux, a real Linux environment ")
+            append("(Android, usually aarch64, no root). To run one, write <run>the command</run> as the LAST thing in your ")
+            append("reply and stop there. The app runs it with bash in the home folder (~ = ${com.arin.terminal.Termux.HOME}) ")
+            append("and sends you the output and exit code; then continue. You may run up to $MAX_COMMANDS commands per answer, ")
+            append("one at a time. Use this to install and set up tools (pkg install -y nodejs-lts python git, npm install -g …, ")
+            append("pip install …, git clone …), run scripts, inspect files and check that things really work. ")
+            append("Rules: always use non-interactive flags (-y, --yes, CI=1); never start a command that waits for input or ")
+            append("runs forever (start servers with nohup … & and check them separately); chain related steps with &&; ")
+            append("read the output before the next step and fix errors yourself. Commands the person may refuse. ")
+            append("Only say something is installed or working after a command's output shows it. ")
+            append("Things that need a desktop (GUI apps, Ghidra, IDA, Hopper, Frida server without root) may not work in Termux: ")
+            append("say so plainly rather than pretending.\n\n")
+        }
+
+        if (tools.isNotBlank()) append(tools)
 
         if (memoryOn) {
             append("Memory: when the person tells you a lasting fact about themselves or a preference for how you should ")
@@ -65,7 +100,13 @@ object Prompt {
     /** Facts to remember, found in the reply. */
     fun memories(reply: String): List<String> = rememberTag.findAll(reply).map { it.groupValues[1].trim() }.toList()
 
+    /** The command the reply asks to run, if any. */
+    fun command(reply: String): String? = runTag.find(reply)?.groupValues?.get(1)?.trim()?.takeIf { it.isNotEmpty() }
+
     /** The reply with tool tags taken out, for showing and saving. */
     fun clean(reply: String): String =
-        reply.replace(rememberTag, "").replace(Regex("""<remember>[^<]*$"""), "").trimEnd()
+        reply.replace(rememberTag, "").replace(Regex("""<remember>[^<]*$"""), "")
+            .replace(runTag, "").replace(Regex("""<run>[\s\S]*$"""), "")
+            .replace(toolTag, "").replace(Regex("""<tool[\s\S]*$"""), "")
+            .trimEnd()
 }

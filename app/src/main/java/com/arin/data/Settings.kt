@@ -84,6 +84,21 @@ class Settings(context: Context) {
         get() = prefs.getBoolean("web_search", true)
         set(value) = prefs.edit().putBoolean("web_search", value).apply()
 
+    /** MCP servers (JSON list), see [com.arin.mcp.Mcp]. */
+    var mcpServers: List<com.arin.mcp.McpServer>
+        get() = com.arin.mcp.Mcp.load(prefs.getString("mcp_servers", null))
+        set(value) = prefs.edit().putString("mcp_servers", com.arin.mcp.Mcp.save(value)).apply()
+
+    /** Let the model run commands in Termux. */
+    var terminalOn: Boolean
+        get() = prefs.getBoolean("terminal_on", false)
+        set(value) = prefs.edit().putBoolean("terminal_on", value).apply()
+
+    /** Ask before each command (on by default). */
+    var terminalAsk: Boolean
+        get() = prefs.getBoolean("terminal_ask", true)
+        set(value) = prefs.edit().putBoolean("terminal_ask", value).apply()
+
     var memoryOn: Boolean
         get() = prefs.getBoolean("memory_on", true)
         set(value) = prefs.edit().putBoolean("memory_on", value).apply()

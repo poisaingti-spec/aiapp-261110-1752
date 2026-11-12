@@ -98,6 +98,7 @@ fun ArinMessage(message: Message, showThinking: Boolean, isLast: Boolean, onRetr
                 ThinkingPanel(message.thinking, message.thoughtSeconds, live = false)
                 Spacer(Modifier.size(8.dp))
             }
+            message.commands.forEach { CommandCard(it) }
             if (message.failed) {
                 Surface(
                     color = MaterialTheme.colorScheme.errorContainer,
@@ -119,6 +120,60 @@ fun ArinMessage(message: Message, showThinking: Boolean, isLast: Boolean, onRetr
                     TextButton(onClick = { clipboard.setText(AnnotatedString(message.text)) }) { Text("Copy") }
                 }
                 if (isLast) TextButton(onClick = onRetry) { Text("Retry") }
+            }
+        }
+    }
+}
+
+/** A terminal command and its output, folded to one line until tapped. */
+@Composable
+fun CommandCard(run: com.arin.data.CommandRun) {
+    var open by remember { mutableStateOf(false) }
+    val failed = run.ran && run.exitCode != 0
+    Column(
+        Modifier.fillMaxWidth()
+            .padding(bottom = 6.dp)
+            .background(MaterialTheme.colorScheme.surfaceContainerHigh, MaterialTheme.shapes.medium)
+            .clickable { open = !open }
+            .padding(horizontal = 12.dp, vertical = 8.dp)
+            .animateContentSize(),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                when {
+                    !run.ran -> "⊘"
+                    failed -> "✗"
+                    else -> "✓"
+                },
+                color = when {
+                    !run.ran -> MaterialTheme.colorScheme.onSurfaceVariant
+                    failed -> MaterialTheme.colorScheme.error
+                    else -> MaterialTheme.colorScheme.primary
+                },
+                style = MaterialTheme.typography.labelLarge,
+            )
+            Spacer(Modifier.width(8.dp))
+            Text(
+                "$ " + run.command.lineSequence().first(),
+                style = MaterialTheme.typography.labelLarge.copy(fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace),
+                maxLines = if (open) Int.MAX_VALUE else 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f),
+            )
+            Text(if (open) " ▴" else " ▾", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        if (open) {
+            Spacer(Modifier.size(6.dp))
+            if (run.command.contains('\n')) {
+                Text(run.command, style = MaterialTheme.typography.bodySmall.copy(fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace))
+                Spacer(Modifier.size(6.dp))
+            }
+            SelectionContainer {
+                Text(
+                    run.output.take(20_000) + if (run.ran) "\n[exit code ${run.exitCode ?: "?"}]" else "",
+                    style = MaterialTheme.typography.bodySmall.copy(fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
         }
     }
@@ -147,7 +202,13 @@ private fun Sources(sources: List<Source>) {
 
 /** The reply as it streams in. */
 @Composable
-fun LiveReply(text: String, thinking: String, showThinking: Boolean, status: String?) {
+fun LiveReply(
+    text: String,
+    thinking: String,
+    showThinking: Boolean,
+    status: String?,
+    commands: List<com.arin.data.CommandRun> = emptyList(),
+) {
     Row(Modifier.fillMaxWidth()) {
         ArinMark(size = 22.dp, modifier = Modifier.padding(top = 2.dp))
         Spacer(Modifier.width(10.dp))
@@ -156,6 +217,7 @@ fun LiveReply(text: String, thinking: String, showThinking: Boolean, status: Str
                 ThinkingPanel(thinking, 0, live = text.isEmpty())
                 Spacer(Modifier.size(8.dp))
             }
+            commands.forEach { CommandCard(it) }
             when {
                 status != null -> Row(verticalAlignment = Alignment.CenterVertically) {
                     CircularProgressIndicator(strokeWidth = 2.dp, modifier = Modifier.size(16.dp))

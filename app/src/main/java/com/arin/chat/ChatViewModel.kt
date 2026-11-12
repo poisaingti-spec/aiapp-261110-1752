@@ -103,6 +103,113 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         private set
     var memoryOn by mutableStateOf(settings.memoryOn)
         private set
+    var terminalOn by mutableStateOf(settings.terminalOn)
+        private set
+    var terminalAsk by mutableStateOf(settings.terminalAsk)
+        private set
+
+    /** Commands run so far in the reply being written (shown live). */
+    val liveCommands = mutableStateListOf<com.arin.data.CommandRun>()
+
+    /** A command or tool call waiting for the person to allow or refuse it. */
+    var commandToApprove by mutableStateOf<String?>(null)
+        private set
+    /** True when [commandToApprove] is an MCP tool call rather than a shell command. */
+    var approvingTool by mutableStateOf(false)
+        private set
+
+    private fun shorten(text: String, max: Int = 20_000): String =
+        if (text.length <= max) text
+        else text.take(4_000) + "\n…(${text.length - max} characters skipped)…\n" + text.takeLast(max - 4_000)
+
+    // ---- MCP servers ----
+
+    var mcpServers by mutableStateOf(settings.mcpServers)
+        private set
+
+    /** Status line per server name, filled by [checkServer]. */
+    val serverStatus = androidx.compose.runtime.mutableStateMapOf<String, String>()
+
+    fun saveServer(server: com.arin.mcp.McpServer) {
+        mcpServers = mcpServers.filterNot { it.name == server.name } + server
+        settings.mcpServers = mcpServers
+        com.arin.mcp.Mcp.forget(server.name)
+    }
+
+    fun removeServer(server: com.arin.mcp.McpServer) {
+        mcpServers = mcpServers.filterNot { it.name == server.name }
+        settings.mcpServers = mcpServers
+        com.arin.mcp.Mcp.forget(server.name)
+        serverStatus.remove(server.name)
+    }
+
+    fun toggleServer(server: com.arin.mcp.McpServer, on: Boolean) = saveServer(server.copy(enabled = on))
+
+    /** Connects to [server] (starting it in Termux if needed) and records the result. */
+    fun checkServer(server: com.arin.mcp.McpServer) {
+        serverStatus[server.name] = "Connecting…"
+        viewModelScope.launch {
+            com.arin.mcp.Mcp.forget(server.name)
+            val problems = com.arin.mcp.Mcp.connectAll(getApplication(), listOf(server.copy(enabled = true)), canStart = terminalOn)
+            serverStatus[server.name] = com.arin.mcp.Mcp.status(server.name) ?: problems.firstOrNull() ?: "Not reachable"
+        }
+    }
+
+    /**
+     * Adds REA, turns on the terminal, and starts a chat where the model installs and checks it,
+     * the way the setup is done with Claude Code.
+     */
+    fun setUpRea() {
+        toggleTerminal(true)
+        if (mcpServers.none { it.name == com.arin.mcp.Mcp.REA.name }) saveServer(com.arin.mcp.Mcp.REA)
+        val app = getApplication<Application>()
+        newChat()
+        viewModelScope.launch {
+            // Put Arin's bridge in Termux first, so the model can start and test REA through it.
+            if (com.arin.terminal.Termux.problem(app) == null) com.arin.mcp.Mcp.installBridge(app)
+            send(REA_SETUP_PROMPT)
+        }
+    }
+    private var approval: kotlinx.coroutines.CompletableDeferred<Boolean>? = null
+
+    fun answerCommand(allow: Boolean, always: Boolean = false) {
+        if (always) toggleTerminalAsk(false)
+        approval?.complete(allow)
+    }
+
+    private suspend fun askToRun(command: String, tool: Boolean): Boolean {
+        if (!terminalAsk) return true
+        val d = kotlinx.coroutines.CompletableDeferred<Boolean>()
+        approval = d
+        approvingTool = tool
+        commandToApprove = command
+        try {
+            return d.await()
+        } finally {
+            commandToApprove = null
+            approval = null
+        }
+    }
+
+    fun toggleTerminal(on: Boolean) {
+        terminalOn = on
+        settings.terminalOn = on
+    }
+
+    fun toggleTerminalAsk(on: Boolean) {
+        terminalAsk = on
+        settings.terminalAsk = on
+    }
+
+    /** Runs a quick check in Termux; returns what it printed or the problem. */
+    suspend fun testTerminal(): String {
+        val r = com.arin.terminal.Termux.run(
+            getApplication(),
+            "echo \"Termux is connected\"; uname -m; (node -v 2>/dev/null && npm -v 2>/dev/null) || echo 'Node not installed yet'; python --version 2>/dev/null || echo 'Python not installed yet'",
+            timeoutMs = 30_000,
+        )
+        return r.combined()
+    }
     var notifyOnReply by mutableStateOf(settings.notifyOnReply)
         private set
 
@@ -165,7 +272,11 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         val m = model
         val key = settings.key(p)
         val project = chatProject
-        val system = Prompt.system(webSearch, memoryOn, if (memoryOn) memories.toList() else emptyList(), project)
+        val useTerminal = terminalOn
+        val servers = mcpServers.filter { it.enabled }
+        val memoryList = if (memoryOn) memories.toList() else emptyList()
+        val memoryFlag = memoryOn
+        val searchFlag = webSearch
         val useSearch = webSearch
         val app = getApplication<Application>()
         streaming = true
@@ -179,9 +290,18 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             var thinkStart = 0L
             var answer = ""
             val sources = mutableListOf<Source>()
+            val ran = mutableListOf<com.arin.data.CommandRun>()
+            liveCommands.clear()
             var failure: String? = null
             try {
                 val turns = Attachments.toTurns(p, history, projectMedia(project)).toMutableList()
+                if (servers.isNotEmpty()) {
+                    status = "Connecting to tools…"
+                    val problems = com.arin.mcp.Mcp.connectAll(app, servers, canStart = useTerminal)
+                    status = null
+                    if (problems.isNotEmpty()) notice = problems.joinToString("\n")
+                }
+                val system = Prompt.system(searchFlag, memoryFlag, memoryList, project, useTerminal, com.arin.mcp.Mcp.promptSection())
                 var searches = 0
                 while (true) {
                     val text = StringBuilder()
@@ -201,6 +321,62 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                         }
                     }
                     val full = text.toString()
+                    val cmd = if (useTerminal && ran.size < Prompt.MAX_COMMANDS) Prompt.command(full) else null
+                    if (cmd != null) {
+                        liveText = ""
+                        val allowed = askToRun(cmd, tool = false)
+                        val run = if (!allowed) {
+                            com.arin.data.CommandRun(cmd, "The person chose not to run this command.", null, ran = false)
+                        } else {
+                            status = "Running: " + cmd.lineSequence().first().take(80)
+                            val r = com.arin.terminal.Termux.run(app, cmd)
+                            status = null
+                            com.arin.data.CommandRun(cmd, r.forModel(), r.exitCode)
+                        }
+                        ran += run
+                        liveCommands += run
+                        turns += Turn(false, full)
+                        turns += Turn(
+                            true,
+                            if (!run.ran) "I chose not to run that command. Continue without it, or suggest another way."
+                            else "Command finished (exit code ${run.exitCode ?: "unknown"}). Output:\n```\n${run.output}\n```\n" +
+                                "Continue the task: run the next command if needed, or answer when you're done.",
+                        )
+                        continue
+                    }
+                    val call = if (ran.size < Prompt.MAX_COMMANDS && com.arin.mcp.Mcp.connected().isNotEmpty()) Prompt.toolCall(full) else null
+                    if (call != null) {
+                        liveText = ""
+                        val (name, body) = call
+                        val run = if (name == "find_tools") {
+                            com.arin.data.CommandRun("find_tools: $body", com.arin.mcp.Mcp.find(body), 0, kind = "tool")
+                        } else {
+                            val args = runCatching {
+                                kotlinx.serialization.json.Json.parseToJsonElement(body.ifBlank { "{}" }) as kotlinx.serialization.json.JsonObject
+                            }.getOrNull()
+                            val label = "$name ${body.take(400)}"
+                            when {
+                                args == null -> com.arin.data.CommandRun(label, "The arguments weren't one valid JSON object. Send them as {\"name\": value}.", 1, kind = "tool")
+                                !askToRun(label, tool = true) -> com.arin.data.CommandRun(label, "The person chose not to allow this tool call.", null, ran = false, kind = "tool")
+                                else -> {
+                                    status = "Using $name"
+                                    val r = com.arin.mcp.Mcp.call(name, args)
+                                    status = null
+                                    com.arin.data.CommandRun(label, shorten(r.text), if (r.isError) 1 else 0, kind = "tool")
+                                }
+                            }
+                        }
+                        ran += run
+                        liveCommands += run
+                        turns += Turn(false, full)
+                        turns += Turn(
+                            true,
+                            if (!run.ran) "I didn't allow that tool call. Continue without it, or suggest another way."
+                            else "Result of $name" + (if (run.exitCode != 0) " (error)" else "") + ":\n```\n${run.output}\n```\n" +
+                                "Continue the task: call the next tool or command if needed, or answer when you're done.",
+                        )
+                        continue
+                    }
                     val q = if (useSearch && searches < Prompt.MAX_SEARCHES) Prompt.searchQuery(full) else null
                     if (q == null) {
                         answer = full
@@ -215,7 +391,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                     turns += Turn(false, "<search>$q</search>")
                     turns += Turn(true, results + "\n\nNow answer my earlier message using these results where they help.")
                 }
-                if (Prompt.clean(answer).isBlank()) failure = "The model sent an empty reply. Tap Retry, or pick another model."
+                if (Prompt.clean(answer).isBlank() && ran.isEmpty()) failure = "The model sent an empty reply. Tap Retry, or pick another model."
             } catch (e: CancellationException) {
                 answer = liveText // Stop pressed: keep whatever arrived.
             } catch (e: Throwable) {
@@ -230,16 +406,18 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                     if (failure != null) notice = failure
                     Message(
                         fromUser = false,
-                        text = shown.ifBlank { "(Stopped)" },
+                        text = shown.ifBlank { if (ran.isNotEmpty()) "Ran ${ran.size} command${if (ran.size == 1) "" else "s"}." else "(Stopped)" },
                         thinking = thinking.toString(),
                         thoughtSeconds = seconds,
                         sources = sources,
+                        commands = ran.toList(),
                     )
                 }
                 messages += msg
                 streaming = false
                 liveText = ""
                 liveThinking = ""
+                liveCommands.clear()
                 status = null
                 job = null
                 persist()
@@ -282,7 +460,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             uris.forEach { uri ->
                 readingFile = uri.lastPathSegment?.substringAfterLast('/')?.substringAfterLast(':') ?: "file"
                 try {
-                    pending += Attachments.read(getApplication(), uri)
+                    pending += Attachments.read(getApplication(), uri, forTerminal = terminalOn)
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Throwable) {
@@ -559,5 +737,22 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             val saved = settings.model(p)
             model = list.firstOrNull { it.id == saved }?.id ?: list.first().id
         }
+    }
+
+    companion object {
+        /** What "Set up REA" asks the model to do, step by step in the terminal. */
+        val REA_SETUP_PROMPT = """
+            Set up REA (Reverse Engineer Anything, npm package rea-agents from github.com/morluto/rea) on this phone in Termux and connect it to Arin, then verify it works. Steps:
+            1. Check what's installed: node -v, npm -v. REA needs Node.js ^22.23.4, ^24.22.1 or >=26.12.1. If Node is missing or too old, run pkg update -y, then pkg install -y nodejs (or nodejs-lts if that version fits better) and check again.
+            2. Install REA: npm install --global rea-agents, then confirm with rea --version.
+            3. Install only what REA needs for app and website work; skip the heavy native engines (Ghidra, IDA, Hopper, Frida). Don't run the interactive "rea-agents setup" wizard: Arin connects to REA itself.
+            4. Run termux-setup-storage only if ~/storage doesn't exist yet (I'll approve the prompt), so REA can read files I attach (they are saved in Download/Arin).
+            5. Start REA through Arin's bridge (already saved at ~/.arin/mcp-bridge.mjs) and check it answers:
+               (nohup env REA_MCP_OUTPUT_SCHEMA_PROFILE=compact node ~/.arin/mcp-bridge.mjs --port 8765 -- rea mcp > ~/.arin/rea.log 2>&1 &); sleep 6; curl -s http://127.0.0.1:8765/health
+               then list its tools: curl -s -X POST http://127.0.0.1:8765/mcp -H 'content-type: application/json' -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"check","version":"1"}}}' | head -c 400; and curl -s -X POST http://127.0.0.1:8765/mcp -H 'content-type: application/json' -d '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' | grep -o '"name":"[a-z_]*"' | wc -l
+               If it fails, read ~/.arin/rea.log and fix the cause.
+            6. Tell me the result. From my next message on, Arin connects to REA automatically and you can call its tools directly.
+            Report each step's real output. Only say it works once a command shows it.
+        """.trimIndent()
     }
 }

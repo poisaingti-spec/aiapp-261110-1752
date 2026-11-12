@@ -84,12 +84,44 @@ object Attachments {
 
     // ---------------------------------------------------------------- reading
 
-    suspend fun read(context: Context, uri: Uri): Attachment = withContext(Dispatchers.IO) {
+    /**
+     * Reads [uri]. With [forTerminal], the original file is also copied to Download/Arin so tools in
+     * Termux (REA, scripts) can open it.
+     */
+    suspend fun read(context: Context, uri: Uri, forTerminal: Boolean = false): Attachment = withContext(Dispatchers.IO) {
         val name = displayName(context, uri)
+        val shared = if (forTerminal) saveForTerminal(context, uri, name) else null
+        val a = readOnly(context, uri, name)
+        if (shared != null) a.copy(sharedPath = shared) else a
+    }
+
+    /** Copies the original to Download/Arin and returns its path, or null if that isn't possible. */
+    private fun saveForTerminal(context: Context, uri: Uri, name: String): String? = runCatching {
+        if (Build.VERSION.SDK_INT < 29) return null
+        val resolver = context.contentResolver
+        val values = android.content.ContentValues().apply {
+            put(android.provider.MediaStore.Downloads.DISPLAY_NAME, name)
+            put(android.provider.MediaStore.Downloads.MIME_TYPE, resolver.getType(uri) ?: "application/octet-stream")
+            put(android.provider.MediaStore.Downloads.RELATIVE_PATH, "Download/Arin")
+            put(android.provider.MediaStore.Downloads.IS_PENDING, 1)
+        }
+        val dest = resolver.insert(android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI, values) ?: return null
+        resolver.openOutputStream(dest)?.use { out ->
+            resolver.openInputStream(uri)?.use { it.copyTo(out, 64 * 1024) }
+        }
+        values.clear()
+        values.put(android.provider.MediaStore.Downloads.IS_PENDING, 0)
+        resolver.update(dest, values, null, null)
+        val finalName = resolver.query(dest, arrayOf(android.provider.MediaStore.Downloads.DISPLAY_NAME), null, null, null)
+            ?.use { c -> if (c.moveToFirst()) c.getString(0) else null } ?: name
+        "/storage/emulated/0/Download/Arin/$finalName"
+    }.getOrNull()
+
+    private fun readOnly(context: Context, uri: Uri, name: String): Attachment {
         val size = displaySize(context, uri)
         val mime = context.contentResolver.getType(uri).orEmpty()
         val ext = name.substringAfterLast('.', "").lowercase()
-        when {
+        return when {
             mime.startsWith("image/") && mime != "image/svg+xml" || ext in imageExtensions -> readImage(context, uri, name)
             mime == "application/pdf" || ext == "pdf" -> readPdf(context, uri, name)
             ext in setOf("docx", "xlsx", "pptx", "odt", "ods", "odp", "epub") -> readZipDocument(context, uri, name, ext, mime, size)
@@ -343,6 +375,9 @@ object Attachments {
                 val asText = m.attachments.filter { a -> a.hasText && !(sendMedia && sendsNatively(provider, a)) }
                 val media = m.attachments.filter { sendsNatively(provider, it) }
                 val notes = buildList {
+                    m.attachments.filter { it.sharedPath.isNotEmpty() }.forEach { a ->
+                        add("[\"${a.name}\" is also saved at ${a.sharedPath} (in Termux: ~/storage/downloads/Arin/${a.sharedPath.substringAfterLast('/')}) for terminal tools.]")
+                    }
                     m.attachments.forEach { a ->
                         when {
                             a.kind == Attachment.FILE -> add(fileNote(a))
@@ -381,7 +416,8 @@ object Attachments {
         "[Attached file \"${a.name}\"" +
             (if (a.mime.isNotBlank()) ", ${a.mime}" else "") +
             (if (a.size > 0) ", ${readableSize(a.size)}" else "") +
-            ". Arin can't read inside this kind of file, so only its name, type and size are known.]"
+            (if (a.sharedPath.isNotEmpty()) ". You can't read it directly, but terminal tools can open it at ${a.sharedPath}.]"
+            else ". Arin can't read inside this kind of file, so only its name, type and size are known.]")
 
     /** Gives each file an equal share of [total]; files smaller than their share pass the rest on. */
     private fun shareBudget(files: List<Attachment>, total: Int): Map<Attachment, Int> {

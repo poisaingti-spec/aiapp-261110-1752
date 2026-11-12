@@ -24,6 +24,8 @@ data class Attachment(
     val textPath: String = "",
     /** Length of the full text, in characters. */
     val chars: Long = 0,
+    /** A copy in Download/Arin that terminal tools (Termux, REA) can open; empty if none. */
+    val sharedPath: String = "",
 ) {
     val isMedia: Boolean get() = kind == IMAGE || kind == PDF
 
@@ -51,10 +53,24 @@ data class Message(
     val failed: Boolean = false,
     /** Web pages the reply drew on. */
     val sources: List<Source> = emptyList(),
+    /** Terminal commands the reply ran, in order. */
+    val commands: List<CommandRun> = emptyList(),
 )
 
 @Serializable
 data class Source(val title: String, val url: String)
+
+/** A command Arin ran in the terminal while writing a reply, with what it printed. */
+@Serializable
+data class CommandRun(
+    val command: String,
+    val output: String,
+    val exitCode: Int? = null,
+    /** False when the person chose not to run it. */
+    val ran: Boolean = true,
+    /** "terminal" for a shell command, "tool" for an MCP tool call. */
+    val kind: String = "terminal",
+)
 
 @Serializable
 data class Chat(
