@@ -194,7 +194,7 @@ object Linux {
         "chmod +x /usr/local/bin/apktool",
         "JH=\$(dirname \"\$(dirname \"\$(readlink -f \"\$(command -v javac)\")\")\")",
         "mkdir -p /root/.arin",
-        "{ echo \"REA_JADX_MCP_JAR=/opt/rea-android/\$JADX\"; echo \"JAVA_HOME=\$JH\"; echo \"REA_APKTOOL_COMMAND=/usr/local/bin/apktool\"; } > /root/.arin/rea.env",
+        "{ echo \"REA_JADX_MCP_JAR=/opt/rea-android/\$JADX\"; echo \"JAVA_HOME=\$JH\"; echo \"REA_APKTOOL_COMMAND=/usr/local/bin/apktool\"; echo COLUMNS=120; echo LINES=40; } > /root/.arin/rea.env",
         "java -version 2>&1 | head -1",
         "apktool --version 2>/dev/null | head -1",
         "echo \"Android tools ready: \$JADX, apktool, JAVA_HOME=\$JH\"",
@@ -215,7 +215,7 @@ object Linux {
         return run(
             context,
             // --omit=optional skips frida's native add-on (needs a desktop, and its install crashes under PRoot).
-            "npm install --global rea-agents --omit=optional --no-fund --no-audit 2>&1 | tail -15 && rea --version",
+            "npm install --global rea-agents --omit=optional --no-fund --no-audit 2>&1 | tail -15 && COLUMNS=120 rea --version",
             timeoutMs = 30 * 60_000L,
             onOutput = log,
         )
@@ -302,7 +302,9 @@ object Linux {
         File(root, "etc/profile.d").mkdirs()
         File(root, "etc/profile.d/arin.sh").writeText(
             "# Set by Arin: PRoot can't translate io_uring or handle glibc's rseq; both can crash Node/npm.\n" +
-                "export UV_USE_IO_URING=0\nexport GLIBC_TUNABLES=glibc.pthread.rseq=0\n",
+                "export UV_USE_IO_URING=0\nexport GLIBC_TUNABLES=glibc.pthread.rseq=0\n" +
+                "# No real terminal: give a size, or REA's CLI crashes (double free) when it asks for one.\n" +
+                "export COLUMNS=\${COLUMNS:-120} LINES=\${LINES:-40}\n",
         )
         File(root, "root/.npmrc").takeIf { !it.exists() }?.writeText("fund=false\naudit=false\nupdate-notifier=false\n")
         File(root, "root/.arin").mkdirs()
@@ -338,7 +340,7 @@ object Linux {
         if (!installed(context)) return@withContext Termux.Result("", "", null, "Linux isn't installed. Open Settings → Linux and tap Install Linux.")
         val root = rootfs(context)
         // Installs from older Arin versions get the newer fixes too.
-        if (File(root, "etc/profile.d/arin.sh").let { !it.exists() || !it.readText().contains("rseq") } ||
+        if (File(root, "etc/profile.d/arin.sh").let { !it.exists() || !it.readText().contains("COLUMNS") } ||
             !File(root, ANDROID_TOOLS_SCRIPT.removePrefix("/")).exists()
         ) runCatching { configure(context) }
         val id = UUID.randomUUID().toString().replace("-", "").take(12)
@@ -369,6 +371,9 @@ object Linux {
             "UV_USE_IO_URING=0",
             // glibc 2.35+ registers rseq, which PRoot doesn't handle; it can corrupt the heap.
             "GLIBC_TUNABLES=glibc.pthread.rseq=0",
+            // No real terminal here: programs that ask for the terminal size (REA's CLI does) crash under PRoot
+            // with "double free or corruption" unless a size is given.
+            "COLUMNS=120", "LINES=40",
             "NPM_CONFIG_FUND=false", "NPM_CONFIG_AUDIT=false",
             "/bin/bash", "-l", "/tmp/arin-$id.sh",
         )
