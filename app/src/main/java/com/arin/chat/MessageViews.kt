@@ -1,0 +1,243 @@
+package com.arin.chat
+
+import androidx.compose.animation.animateContentSize
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.font.FontStyle
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import android.content.Intent
+import android.net.Uri
+import androidx.compose.ui.platform.LocalContext
+import com.arin.artifact.Artifact
+import com.arin.artifact.ArtifactCard
+import com.arin.artifact.ArtifactViewer
+import com.arin.artifact.Artifacts
+import com.arin.data.Attachment
+import com.arin.data.Message
+import com.arin.data.Source
+import com.arin.design.ArinMark
+import com.arin.design.ImageThumb
+import com.arin.design.ImageViewer
+import com.arin.design.LocalArinExtras
+import com.arin.design.MarkdownText
+
+/** The person's message: a teal bubble on the right, attachments above it, and Edit below. */
+@OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
+@Composable
+fun UserMessage(message: Message, onEdit: (() -> Unit)?) {
+    val extras = LocalArinExtras.current
+    var viewing by remember { mutableStateOf<String?>(null) }
+    Column(Modifier.fillMaxWidth().padding(start = 48.dp), horizontalAlignment = Alignment.End) {
+        val photos = message.attachments.filter { it.kind == Attachment.IMAGE }
+        if (photos.isNotEmpty()) {
+            androidx.compose.foundation.layout.FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.End),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+                modifier = Modifier.padding(bottom = 6.dp),
+            ) {
+                photos.forEach { p -> ImageThumb(p.path, if (photos.size == 1) 180.dp else 96.dp) { viewing = p.path } }
+            }
+        }
+        message.attachments.filterNot { it.kind == Attachment.IMAGE }.forEach { FileChip(it, onRemove = null) }
+        if (message.text.isNotBlank()) {
+            Surface(
+                color = extras.userBubble,
+                contentColor = extras.onUserBubble,
+                shape = RoundedCornerShape(topStart = 20.dp, topEnd = 6.dp, bottomStart = 20.dp, bottomEnd = 20.dp),
+            ) {
+                SelectionContainer {
+                    Text(
+                        message.text,
+                        style = MaterialTheme.typography.bodyLarge,
+                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+                    )
+                }
+            }
+        }
+        if (onEdit != null) TextButton(onClick = onEdit) { Text("Edit") }
+    }
+    viewing?.let { ImageViewer(it) { viewing = null } }
+}
+
+/** Arin's reply: full width under the Arin mark, with Copy and (for the last reply) Retry. */
+@Composable
+fun ArinMessage(message: Message, showThinking: Boolean, isLast: Boolean, onRetry: () -> Unit) {
+    val clipboard = LocalClipboardManager.current
+    Row(Modifier.fillMaxWidth()) {
+        ArinMark(size = 22.dp, modifier = Modifier.padding(top = 2.dp))
+        Spacer(Modifier.width(10.dp))
+        Column(Modifier.weight(1f)) {
+            if (showThinking && message.thinking.isNotBlank()) {
+                ThinkingPanel(message.thinking, message.thoughtSeconds, live = false)
+                Spacer(Modifier.size(8.dp))
+            }
+            if (message.failed) {
+                Surface(
+                    color = MaterialTheme.colorScheme.errorContainer,
+                    contentColor = MaterialTheme.colorScheme.onErrorContainer,
+                    shape = MaterialTheme.shapes.medium,
+                ) {
+                    Text(message.text, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(12.dp))
+                }
+            } else {
+                SelectionContainer { MarkdownText(message.text) }
+                val artifacts = remember(message.text) { Artifacts.find(message.text) }
+                var open by remember { mutableStateOf<Artifact?>(null) }
+                artifacts.forEach { art -> ArtifactCard(art) { open = art } }
+                open?.let { ArtifactViewer(it) { open = null } }
+                if (message.sources.isNotEmpty()) Sources(message.sources)
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                if (!message.failed) {
+                    TextButton(onClick = { clipboard.setText(AnnotatedString(message.text)) }) { Text("Copy") }
+                }
+                if (isLast) TextButton(onClick = onRetry) { Text("Retry") }
+            }
+        }
+    }
+}
+
+/** Web pages a reply drew on; tap one to open it in the browser. */
+@Composable
+private fun Sources(sources: List<Source>) {
+    val context = LocalContext.current
+    Column(Modifier.fillMaxWidth().padding(top = 8.dp)) {
+        Text("Sources", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        sources.forEachIndexed { i, src ->
+            Text(
+                "${i + 1}. ${src.title}",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.primary,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.fillMaxWidth().clickable {
+                    runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(src.url))) }
+                }.padding(vertical = 4.dp),
+            )
+        }
+    }
+}
+
+/** The reply as it streams in. */
+@Composable
+fun LiveReply(text: String, thinking: String, showThinking: Boolean, status: String?) {
+    Row(Modifier.fillMaxWidth()) {
+        ArinMark(size = 22.dp, modifier = Modifier.padding(top = 2.dp))
+        Spacer(Modifier.width(10.dp))
+        Column(Modifier.weight(1f)) {
+            if (showThinking && thinking.isNotBlank()) {
+                ThinkingPanel(thinking, 0, live = text.isEmpty())
+                Spacer(Modifier.size(8.dp))
+            }
+            when {
+                status != null -> Row(verticalAlignment = Alignment.CenterVertically) {
+                    CircularProgressIndicator(strokeWidth = 2.dp, modifier = Modifier.size(16.dp))
+                    Spacer(Modifier.width(10.dp))
+                    Text(status, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                text.isNotEmpty() -> MarkdownText(text)
+                thinking.isEmpty() || !showThinking -> Row(verticalAlignment = Alignment.CenterVertically) {
+                    CircularProgressIndicator(strokeWidth = 2.dp, modifier = Modifier.size(16.dp))
+                    Spacer(Modifier.width(10.dp))
+                    Text("Arin is thinking…", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+        }
+    }
+}
+
+/** The model's reasoning: open while it streams, then folded to "Reasoned for N s" (tap to open). */
+@Composable
+fun ThinkingPanel(text: String, seconds: Int, live: Boolean) {
+    var open by remember(live) { mutableStateOf(live) }
+    val extras = LocalArinExtras.current
+    Column(
+        Modifier.fillMaxWidth()
+            .background(MaterialTheme.colorScheme.surfaceContainerHigh, MaterialTheme.shapes.medium)
+            .clickable(enabled = !live) { open = !open }
+            .padding(horizontal = 12.dp, vertical = 8.dp)
+            .animateContentSize(),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(Modifier.size(8.dp).background(MaterialTheme.colorScheme.secondary, RoundedCornerShape(50)))
+            Spacer(Modifier.width(8.dp))
+            Text(
+                when {
+                    live -> "Reasoning…"
+                    seconds > 0 -> "Reasoned for $seconds s"
+                    else -> "Reasoning"
+                } + if (live) "" else if (open) "  ▴" else "  ▾",
+                style = MaterialTheme.typography.labelLarge,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        if (open) {
+            Text(
+                if (live) text.takeLast(1500) else text,
+                style = MaterialTheme.typography.bodySmall,
+                fontStyle = FontStyle.Italic,
+                color = extras.subtle,
+                modifier = Modifier.padding(top = 6.dp),
+            )
+        }
+    }
+}
+
+/** An attached file (or, in the message box, a photo). With [onRemove], shows an × to take it off the next message. */
+@Composable
+fun FileChip(file: Attachment, onRemove: (() -> Unit)?) {
+    Surface(
+        color = MaterialTheme.colorScheme.surfaceContainerHigh,
+        shape = MaterialTheme.shapes.small,
+        modifier = Modifier.padding(bottom = 6.dp).widthIn(max = 260.dp),
+    ) {
+        Row(Modifier.padding(start = 8.dp, end = if (onRemove == null) 10.dp else 0.dp, top = 6.dp, bottom = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+            when (file.kind) {
+                Attachment.IMAGE -> ImageThumb(file.path, 36.dp)
+                Attachment.PDF -> Text("📕", style = MaterialTheme.typography.titleMedium)
+                else -> Text("📄", style = MaterialTheme.typography.titleMedium)
+            }
+            Spacer(Modifier.width(8.dp))
+            Column(Modifier.weight(1f, fill = false)) {
+                Text(file.name, style = MaterialTheme.typography.labelLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(
+                    when (file.kind) {
+                        Attachment.IMAGE -> "Photo"
+                        Attachment.PDF -> "PDF · ${file.pages} page${if (file.pages == 1) "" else "s"}"
+                        else -> "${file.text.length / 1000 + 1}k characters"
+                    },
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            if (onRemove != null) TextButton(onClick = onRemove) { Text("✕") }
+        }
+    }
+}

@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- A simple microphone: rounded capsule, cradle and stand. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M12,2 C10.3,2 9,3.3 9,5 L9,11 C9,12.7 10.3,14 12,14 C13.7,14 15,12.7 15,11 L15,5 C15,3.3 13.7,2 12,2 Z" />
+    <path
+        android:pathData="M5.5,10.5 C5.5,14.1 8.4,17 12,17 C15.6,17 18.5,14.1 18.5,10.5 M12,17 L12,21 M8.5,21 L15.5,21"
+        android:strokeWidth="1.8"
+        android:strokeColor="#FFFFFFFF"
+        android:strokeLineCap="round"
+        android:fillColor="#00000000" />
+</vector>

@@ -1,0 +1,53 @@
+name: Build APK
+
+on:
+  push:
+    branches: [main, arin]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Build debug APK
+        run: |
+          chmod +x gradlew
+          set -o pipefail
+          ./gradlew assembleDebug --stacktrace 2>&1 | tee build.log
+
+      - name: Report compile errors
+        if: failure()
+        run: |
+          grep -E "^e: |error:|What went wrong|Could not resolve" -A2 build.log | head -60 | while IFS= read -r l; do
+            echo "::error::${l//%/%25}"
+          done
+
+      - name: Rename APK
+        run: cp app/build/outputs/apk/debug/app-debug.apk Arin-${{ github.run_number }}.apk
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Arin-${{ github.run_number }}
+          path: Arin-*.apk
+
+      - name: Publish release with a download link
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: arin-${{ github.run_number }}
+          name: Arin build ${{ github.run_number }}
+          files: Arin-*.apk
+          # Only main marks the newest release, so a build on the arin branch doesn't replace another app's latest release.
+          make_latest: ${{ github.ref_name == 'main' }}

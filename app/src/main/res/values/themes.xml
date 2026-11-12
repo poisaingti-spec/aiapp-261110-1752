@@ -1,0 +1,11 @@
+<resources>
+    <color name="arin_night">#0E1117</color>
+    <color name="ic_launcher_background">#0E1117</color>
+
+    <!-- Window colour shown for the instant before Compose draws, so the app opens without a white flash. -->
+    <style name="Theme.Arin" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/arin_night</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+    </style>
+</resources>

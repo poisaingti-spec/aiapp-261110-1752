@@ -1,0 +1,42 @@
+# Arin
+
+An AI assistant for Android (Kotlin + Jetpack Compose) with its own design.
+
+## Install
+
+Every push to `main` builds an APK in GitHub Actions and publishes it as the latest release:
+**Releases → latest → `Arin-N.apk`**. Each build installs over the previous one.
+
+## What it does (version 0.3)
+
+- **Chat:** replies stream in, with Stop, Copy, Retry, editing a sent message, and the model's reasoning when it shares it
+- **Models:** free models by default with no key; optional Claude, Gemini and ChatGPT keys in Settings; model menu at the top
+- **Custom API:** your own base URL, key and model (Settings → Custom API). Presets for Token Harbor, OpenRouter, DeepSeek, Groq, Together, Mistral, xAI, Moonshot, Fireworks, Cerebras and NVIDIA, or paste any address. Speaks the OpenAI format or the Claude (Anthropic) format; each address keeps its own key and model
+- **Files:** photos, PDFs, and text, CSV, JSON or code files (photos and PDFs need a Claude, Gemini or ChatGPT key)
+- **Projects:** chats grouped with shared instructions and files
+- **Artifacts:** web pages, SVG images, documents and long code open in a viewer with a live preview, Copy and Share
+- **Web search:** Arin searches when it needs current facts and lists its sources (switch in the + menu and Settings)
+- **Memory:** lasting facts about you, saved on the phone, shown and editable in Settings
+- **Voice mode:** tap the mic to talk; Arin answers aloud and you can tap to interrupt
+- **Background replies:** a reply keeps going if you leave the app, with a notification when it's ready
+- **Home-screen widget:** "Ask Arin" and a mic button
+- **Share to Arin** from other apps; chats saved on the phone with search, rename, move and delete; light and dark themes
+
+## Code layout
+
+```
+com.arin
+├── ArinApp.kt        App-wide scope for replies, notification channels
+├── MainActivity.kt   Starts the app, receives shares, widget and notification taps
+├── app/              AppShell (screens), Launch (outside entry points), ReplyService
+├── chat/             Chat screen, messages, view model
+├── chatlist/         Side panel with projects and saved chats
+├── project/          Projects list and project screen
+├── artifact/         Finding artifacts in replies, and the viewer
+├── voice/            Voice mode screen and speech controller
+├── widget/           Home-screen widget
+├── settings/         Settings screen
+├── design/           Theme, Arin logo, Markdown, photo thumbnails
+├── llm/              Providers, streaming, prompt and tools, web search
+└── data/             Chats, projects, memory, settings, keys, attachments
+```
