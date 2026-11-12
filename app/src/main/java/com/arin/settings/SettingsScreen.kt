@@ -246,7 +246,7 @@ private fun CustomApiSettings(vm: ChatViewModel) {
     Text("Request format", style = MaterialTheme.typography.bodyLarge)
     androidx.compose.foundation.layout.FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
         com.arin.llm.ApiFormat.entries.forEach { f ->
-            FilterChip(selected = vm.customFormat == f, onClick = { vm.setCustomFormat(f) }, label = { Text(f.label) })
+            FilterChip(selected = vm.customFormat == f, onClick = { vm.chooseCustomFormat(f) }, label = { Text(f.label) })
         }
     }
     Text(
@@ -266,7 +266,7 @@ private fun CustomApiSettings(vm: ChatViewModel) {
         modifier = Modifier.fillMaxWidth(),
     )
     Row(verticalAlignment = Alignment.CenterVertically) {
-        TextButton(onClick = { vm.setCustomModel(modelText); modelNote = "Saved" }) { Text("Save model") }
+        TextButton(onClick = { vm.saveCustomModel(modelText); modelNote = "Saved" }) { Text("Save model") }
         modelNote?.let { Text(it, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary) }
     }
     Text(

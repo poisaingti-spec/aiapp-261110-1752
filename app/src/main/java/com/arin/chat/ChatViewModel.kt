@@ -482,13 +482,13 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         refreshCustom()
     }
 
-    fun setCustomFormat(format: com.arin.llm.ApiFormat) {
+    fun chooseCustomFormat(format: com.arin.llm.ApiFormat) {
         settings.customFormat = format
         customFormat = format
         refreshCustom()
     }
 
-    fun setCustomModel(id: String) {
+    fun saveCustomModel(id: String) {
         settings.customModel = id
         customModel = settings.customModel
         if (provider == Provider.Custom && id.isNotBlank()) settings.setModel(Provider.Custom, id.trim())
