@@ -62,7 +62,8 @@ fun SettingsScreen(vm: ChatViewModel, onBack: () -> Unit) {
                 "API keys are stored encrypted on this phone only.",
                 style = MaterialTheme.typography.bodyMedium,
             )
-            ProviderId.entries.filter { it.needsKey }.forEach { KeyField(it, vm) }
+            ProviderId.entries.filter { it.needsKey && it != ProviderId.CUSTOM }.forEach { KeyField(it, vm) }
+            CustomApiSection(vm)
             GithubTokenField(vm)
             OfflineSection(vm)
         }
@@ -74,6 +75,7 @@ private fun keyUrl(p: ProviderId): String = when (p) {
     ProviderId.GEMINI -> "aistudio.google.com/apikey"
     ProviderId.OPENAI -> "platform.openai.com/api-keys"
     ProviderId.OPEN -> "openrouter.ai/keys (one key for Kimi, DeepSeek, GLM, Qwen; some are free)"
+    ProviderId.CUSTOM -> com.aiapp.llm.CustomEndpoint.presetFor()?.keyPage ?: "the site you entered above"
     ProviderId.OFFLINE -> ""
 }
 
@@ -111,6 +113,107 @@ private fun KeyField(p: ProviderId, vm: ChatViewModel) {
             }) { Text("Clear") }
             note?.let { Text(it, style = MaterialTheme.typography.labelMedium) }
         }
+    }
+}
+
+/** Any OpenAI-compatible site: base URL (typed or a preset), its own key, and an optional model id. */
+@OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
+@Composable
+private fun CustomApiSection(vm: ChatViewModel) {
+    var base by remember { mutableStateOf(vm.customBase()) }
+    var urlText by remember { mutableStateOf(base) }
+    var key by remember(base) { mutableStateOf(vm.key(ProviderId.CUSTOM)) }
+    var modelId by remember(base) { mutableStateOf(vm.customModel()) }
+    var note by remember(base) { mutableStateOf<String?>(null) }
+
+    fun useUrl(url: String) {
+        vm.saveCustomBase(url)
+        base = vm.customBase()
+        urlText = base
+    }
+
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        HorizontalDivider()
+        Text("Custom API (any OpenAI-compatible site)", style = MaterialTheme.typography.titleMedium)
+        Text(
+            "Use any service that speaks the OpenAI chat format. Pick one or paste its base URL; " +
+                "each site keeps its own key. Then choose \"Custom API\" in the model picker.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        androidx.compose.foundation.layout.FlowRow(
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            com.aiapp.llm.CustomEndpoint.presets.forEach { preset ->
+                androidx.compose.material3.FilterChip(
+                    selected = base == preset.baseUrl,
+                    onClick = { useUrl(preset.baseUrl) },
+                    label = { Text(preset.name) },
+                )
+            }
+        }
+        OutlinedTextField(
+            value = urlText,
+            onValueChange = { urlText = it },
+            label = { Text("Base URL") },
+            placeholder = { Text("https://example.com/v1") },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth(),
+        )
+        Button(
+            onClick = { useUrl(urlText) },
+            enabled = urlText.isNotBlank() && com.aiapp.llm.CustomEndpoint.normalize(urlText) != base,
+        ) { Text("Use this URL") }
+        Text(
+            "Now using $base",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+
+        OutlinedTextField(
+            value = key,
+            onValueChange = {
+                key = it
+                note = null
+            },
+            label = { Text("API key for ${com.aiapp.llm.CustomEndpoint.label(base)}") },
+            singleLine = true,
+            visualTransformation = PasswordVisualTransformation(),
+            modifier = Modifier.fillMaxWidth(),
+        )
+        Text(
+            "Get one at ${keyUrl(ProviderId.CUSTOM)}" +
+                if (base.contains("tokenharbor.ai")) ". For free models, turn on :free routes in the dashboard." else "",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Button(onClick = {
+                vm.saveKey(ProviderId.CUSTOM, key)
+                note = "Saved"
+            }) { Text("Save") }
+            TextButton(onClick = {
+                key = ""
+                vm.saveKey(ProviderId.CUSTOM, "")
+                note = "Cleared"
+            }) { Text("Clear") }
+            note?.let { Text(it, style = MaterialTheme.typography.labelMedium) }
+        }
+
+        OutlinedTextField(
+            value = modelId,
+            onValueChange = { modelId = it },
+            label = { Text("Model id (optional)") },
+            placeholder = { Text("e.g. deepseek-v4.1-flash:free") },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth(),
+        )
+        Text(
+            "Only needed if the site has no model list, or to use a model that isn't listed.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        OutlinedButton(onClick = { vm.saveCustomModel(modelId) }) { Text("Save model id") }
     }
 }
 

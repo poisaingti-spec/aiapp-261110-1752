@@ -23,6 +23,13 @@ object ModelRanking {
             "kimi" to 60, "deepseek" to 55, "glm" to 50, "qwen" to 45, "minimax" to 40,
             "gpt-oss" to 35, "llama" to 30, "mistral" to 25, "gemma" to 20,
         ),
+        // Any service: strongest known lines first, whoever makes them.
+        ProviderId.CUSTOM to listOf(
+            "mythos" to 70, "fable" to 68, "opus" to 66, "gpt-5" to 64, "grok-4" to 62, "gemini" to 60,
+            "kimi" to 58, "deepseek" to 56, "sonnet" to 54, "glm" to 50, "qwen" to 48, "mimo" to 44,
+            "minimax" to 42, "mistral-large" to 40, "gpt-oss" to 36, "llama" to 30, "mistral" to 26,
+            "haiku" to 24, "gemma" to 20,
+        ),
     )
 
     private val versionRegex = Regex("(\\d+(?:[.-]\\d{1,2}(?!\\d))?)")

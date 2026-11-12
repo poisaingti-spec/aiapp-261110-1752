@@ -9,6 +9,7 @@ enum class ProviderId(val label: String, val needsKey: Boolean = true) {
     GEMINI("Gemini"),
     OPENAI("ChatGPT"),
     OPEN("Open models"),
+    CUSTOM("Custom API"),
     OFFLINE("Offline", needsKey = false),
 }
 
@@ -94,7 +95,7 @@ fun fallbackOn400(primary: () -> Flow<String>, fallback: () -> Flow<String>): Fl
  * HTTP 400 before any text arrived. Lets the newest reasoning settings be tried first, with older
  * formats as backups for models that don't accept them.
  */
-fun fallbackChain(attempts: List<() -> Flow<String>>): Flow<String> = flow {
+fun fallbackChain(attempts: List<() -> Flow<String>>, retryOn: Set<Int> = setOf(400)): Flow<String> = flow {
     for ((index, attempt) in attempts.withIndex()) {
         var emitted = false
         try {
@@ -104,7 +105,7 @@ fun fallbackChain(attempts: List<() -> Flow<String>>): Flow<String> = flow {
             }
             return@flow
         } catch (e: ProviderException) {
-            if (e.code != 400 || emitted || index == attempts.lastIndex) throw e
+            if (e.code !in retryOn || emitted || index == attempts.lastIndex) throw e
         }
     }
 }
@@ -115,6 +116,7 @@ object Providers {
         GeminiProvider(),
         OpenAiProvider(),
         OpenModelsProvider(),
+        OpenModelsProvider.custom(),
     ).associateBy { it.id }
 
     private lateinit var offlineProvider: OfflineProvider

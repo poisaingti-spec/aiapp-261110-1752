@@ -124,7 +124,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         private set
     var loadingModels by mutableStateOf(false)
         private set
-    var model by mutableStateOf(prefs.getString("model_${provider.name}", "").orEmpty())
+    var model by mutableStateOf(prefs.getString(modelPref(provider), "").orEmpty())
         private set
     var effort by mutableStateOf(
         enumValueOrDefault(prefs.getString("effort", null), Effort.AUTO),
@@ -338,6 +338,33 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    // ---- Custom API (any OpenAI-compatible site) ----
+
+    fun customBase(): String = keys.customBase()
+
+    fun customModel(): String = keys.customModel()
+
+    /** Switches the Custom API to [url]. Each URL remembers its own key and model. */
+    fun saveCustomBase(url: String) {
+        keys.setCustomBase(url)
+        if (provider == ProviderId.CUSTOM) {
+            model = prefs.getString("model_CUSTOM@${keys.customBase()}", "").orEmpty()
+            models = emptyList()
+            refreshModels()
+        }
+    }
+
+    fun saveCustomModel(id: String) {
+        keys.setCustomModel(id)
+        if (provider == ProviderId.CUSTOM) {
+            if (id.isNotBlank()) selectModel(id.trim())
+            refreshModels()
+        }
+    }
+
+    private fun modelPref(p: ProviderId) =
+        if (p == ProviderId.CUSTOM) "model_CUSTOM@${keys.customBase()}" else "model_${p.name}"
+
     fun saveKey(p: ProviderId, value: String) {
         keys.set(p, value)
         if (p == provider) refreshModels()
@@ -347,14 +374,14 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         if (p == provider) return
         provider = p
         prefs.edit().putString("provider", p.name).apply()
-        model = prefs.getString("model_${p.name}", "").orEmpty()
+        model = prefs.getString(modelPref(p), "").orEmpty()
         models = emptyList()
         refreshModels()
     }
 
     fun selectModel(id: String) {
         model = id
-        prefs.edit().putString("model_${provider.name}", id).apply()
+        prefs.edit().putString(modelPref(provider), id).apply()
     }
 
     fun selectEffort(e: Effort) {
@@ -495,6 +522,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             ProviderId.CLAUDE -> pick("haiku", "sonnet")
             ProviderId.GEMINI -> pick("flash", exclude = listOf("lite", "image", "tts", "live", "audio"))
             ProviderId.OPENAI -> pick("mini", exclude = listOf("audio", "realtime", "tts", "transcribe", "search"))
+            ProviderId.CUSTOM -> pick("flash", "mini", "haiku")
             else -> null
         }
         return fast ?: model
@@ -681,6 +709,19 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private fun friendly(t: Throwable): String = when {
+        t is ProviderException && (t.code == 401 || t.code == 403) && provider == ProviderId.OPEN ->
+            "Your Open models key was rejected by OpenRouter. This slot needs an openrouter.ai key; " +
+                "keys from other sites (Token Harbor, DeepSeek, Groq…) go in Settings → Custom API."
+        t is ProviderException && (t.code == 401 || t.code == 403) && provider == ProviderId.CUSTOM ->
+            "${com.aiapp.llm.CustomEndpoint.label()} rejected the key: ${t.message}. In Settings → Custom API, check that " +
+                "the base URL is the site the key came from (${com.aiapp.llm.CustomEndpoint.baseUrl})."
+        t is ProviderException && t.code == 404 && provider == ProviderId.CUSTOM ->
+            "Nothing found at ${com.aiapp.llm.CustomEndpoint.baseUrl}. Check the base URL in Settings → Custom API " +
+                "(it usually ends in /v1), or type a model id there."
+        t is java.net.UnknownHostException ->
+            "Can't reach ${t.message ?: "that site"}. Check the address and your connection."
+        t is ProviderException && t.code == 402 ->
+            "No credit left for this model. Pick a :free model or add credit. (${t.message})"
         t is ProviderException && (t.code == 401 || t.code == 403) ->
             "Your ${provider.label} key was rejected. Check it in Settings."
         t is ProviderException && t.code == 429 ->

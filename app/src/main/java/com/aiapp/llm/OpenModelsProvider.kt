@@ -13,40 +13,68 @@ import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonArray
 
 /**
- * The biggest open-weight models (Kimi, DeepSeek, GLM, Qwen and others), hosted in the cloud by
- * OpenRouter, so no PC is needed. One OpenRouter key reaches all of them; some have free versions.
+ * An OpenAI-compatible service serving chat models.
+ *
+ * - [ProviderId.OPEN]: OpenRouter, limited to the biggest open-weight models (Kimi, DeepSeek, GLM, Qwen…).
+ * - [ProviderId.CUSTOM]: any OpenAI-compatible base URL the user enters (Token Harbor, DeepSeek, Groq,
+ *   Together, Mistral, xAI…), showing every chat model that service offers. See [CustomEndpoint].
  */
-class OpenModelsProvider : LlmProvider {
-    override val id = ProviderId.OPEN
-
-    private val base = "https://openrouter.ai/api/v1"
-
-    private fun headers(key: String) = mapOf(
-        "Authorization" to "Bearer $key",
-        "X-OpenRouter-Title" to "AI App",
-    )
-
-    /** Makers of open-weight models. Closed models are reached through their own providers instead. */
-    private val openVendors = listOf(
+class OpenModelsProvider(
+    override val id: ProviderId = ProviderId.OPEN,
+    private val baseUrl: () -> String = { "https://openrouter.ai/api/v1" },
+    /** Model-id prefixes to keep; empty keeps every chat model. */
+    private val openVendors: List<String> = listOf(
         "moonshotai/", "deepseek/", "z-ai/", "qwen/", "minimax/", "meta-llama/", "mistralai/",
         "google/gemma", "openai/gpt-oss", "nvidia/", "microsoft/phi", "stepfun", "baidu/", "xiaomi/",
+    ),
+) : LlmProvider {
+
+    private val base get() = baseUrl()
+
+    private fun headers(key: String): Map<String, String> {
+        val h = mutableMapOf("Authorization" to "Bearer $key")
+        if (base.contains("openrouter.ai")) h["X-OpenRouter-Title"] = "AI App"
+        return h
+    }
+
+    companion object {
+        fun custom() = OpenModelsProvider(
+            id = ProviderId.CUSTOM,
+            baseUrl = { CustomEndpoint.baseUrl },
+            openVendors = emptyList(),
+        )
+    }
+
+    /** Ids that are clearly not chat models (only filtered for the Custom API, which lists everything). */
+    private val notChat = listOf(
+        "embed", "whisper", "tts", "transcribe", "moderation", "rerank", "dall-e", "gpt-image",
+        "imagen", "flux", "stable-diffusion", "sdxl", "guard",
     )
 
     /** Uncensored re-releases are left out (blueprint §10). */
     private val excluded = listOf("uncensored", "abliterated", "dolphin", "venice")
 
     override suspend fun listModels(apiKey: String): List<ModelInfo> {
-        val data = Http.getJson("$base/models", headers(apiKey))["data"] as? JsonArray ?: return emptyList()
-        return data.mapNotNull { el ->
+        val manual = if (id == ProviderId.CUSTOM) CustomEndpoint.manualModel else ""
+        val data = try {
+            Http.getJson("$base/models", headers(apiKey))["data"] as? JsonArray
+        } catch (e: ProviderException) {
+            // Some services have no model list: use the model id typed in Settings instead.
+            if (manual.isNotBlank() && e.code != 401 && e.code != 403) null else throw e
+        }
+        val listed = data.orEmpty().mapNotNull { el ->
             val o = el as? JsonObject ?: return@mapNotNull null
             val id = (o["id"] as? JsonPrimitive)?.contentOrNull ?: return@mapNotNull null
             val lower = id.lowercase()
-            if (openVendors.none { lower.startsWith(it) } || excluded.any { lower.contains(it) }) return@mapNotNull null
+            if (openVendors.isNotEmpty() && openVendors.none { lower.startsWith(it) }) return@mapNotNull null
+            if (excluded.any { lower.contains(it) }) return@mapNotNull null
+            if (openVendors.isEmpty() && notChat.any { lower.contains(it) }) return@mapNotNull null
             val outputs = ((o["architecture"] as? JsonObject)?.get("output_modalities") as? JsonArray)
                 ?.mapNotNull { (it as? JsonPrimitive)?.contentOrNull }
             if (outputs != null && "text" !in outputs) return@mapNotNull null
             ModelInfo(id, (o["name"] as? JsonPrimitive)?.contentOrNull ?: id)
         }
+        return if (manual.isNotBlank() && listed.none { it.id == manual }) listOf(ModelInfo(manual, manual)) + listed else listed
     }
 
     private fun effortValue(effort: Effort): String? = when (effort) {
@@ -69,7 +97,8 @@ class OpenModelsProvider : LlmProvider {
         if (level != null) attempts += { request(apiKey, model, messages, system, level) }
         if (level == "xhigh") attempts += { request(apiKey, model, messages, system, "high") }
         attempts += { request(apiKey, model, messages, system, null) }
-        return fallbackChain(attempts)
+        // Stricter servers answer an unknown reasoning setting with 422 instead of 400.
+        return fallbackChain(attempts, retryOn = setOf(400, 422))
     }
 
     private fun request(
@@ -96,7 +125,8 @@ class OpenModelsProvider : LlmProvider {
                 }
             }
             if (effort != null) put("reasoning_effort", effort)
-            put("include_reasoning", true)
+            // OpenRouter-only switch; other gateways may reject unknown fields with HTTP 400.
+            if (base.contains("openrouter.ai")) put("include_reasoning", true)
         }.toString()
 
         return Http.sse("$base/chat/completions", headers(apiKey), body).mapNotNull { data -> parse(data) }
@@ -110,7 +140,8 @@ class OpenModelsProvider : LlmProvider {
         val choice = (o["choices"] as? JsonArray)?.firstOrNull() as? JsonObject ?: return null
         val delta = choice["delta"] as? JsonObject ?: return null
         val content = (delta["content"] as? JsonPrimitive)?.contentOrNull.orEmpty()
-        val reasoning = (delta["reasoning"] as? JsonPrimitive)?.contentOrNull.orEmpty()
+        // OpenRouter uses "reasoning"; DeepSeek-style services use "reasoning_content".
+        val reasoning = ((delta["reasoning"] ?: delta["reasoning_content"]) as? JsonPrimitive)?.contentOrNull.orEmpty()
         return when {
             content.isNotEmpty() -> content
             reasoning.isNotEmpty() -> thought(reasoning)

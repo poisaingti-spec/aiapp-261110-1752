@@ -11,6 +11,11 @@ Every push to `main` builds a debug APK in GitHub Actions and publishes it as th
 
 Settings → paste your API keys (stored encrypted on the phone, never in this repo).
 
+**Custom API:** connect any OpenAI-compatible site. In Settings → Custom API, tap a preset
+(Token Harbor, OpenRouter, DeepSeek, Groq, Together, Mistral, xAI, Moonshot, Fireworks, Cerebras, NVIDIA)
+or paste a base URL such as `https://example.com/v1`, then save that site's key. Each site keeps its own
+key and model. Pick "Custom API" in the model picker to chat with it.
+
 ## Status
 
 v0.1: streaming chat, 3 providers, model picker, effort levels.
