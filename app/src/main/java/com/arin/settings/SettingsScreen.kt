@@ -192,7 +192,7 @@ fun SettingsScreen(vm: ChatViewModel, onBack: () -> Unit) {
             }
 
             Text(
-                "Arin 0.8.9",
+                "Arin version ${com.arin.ArinApp.versionLabel(androidx.compose.ui.platform.LocalContext.current)}",
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(vertical = 12.dp),
@@ -408,8 +408,8 @@ private fun LinuxSettings(vm: ChatViewModel) {
             if (vm.mcpServers.none { it.name == com.arin.mcp.Mcp.REA.name && com.arin.mcp.Mcp.status(it.name) != null }) {
                 OutlinedButton(onClick = { vm.setUpRea() }) { Text(if (vm.linuxReady) "Install REA" else "Install Linux + REA") }
             }
-            if (!vm.devToolsReady) {
-                OutlinedButton(onClick = { vm.installDevTools() }) { Text("Install Java, Kotlin, Gradle") }
+            if (!vm.androidBuildReady) {
+                OutlinedButton(onClick = { vm.installDevTools() }) { Text("Install Android build tools (JDK, Gradle, SDK)") }
             }
             if (vm.linuxReady && vm.mcpServers.any { it.name == com.arin.mcp.Mcp.REA.name }) {
                 OutlinedButton(onClick = { vm.repairRea() }) { Text("Repair REA") }

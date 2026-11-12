@@ -35,8 +35,12 @@ jobs:
             echo "::error::${l//%/%25}"
           done
 
-      - name: Rename APK
-        run: cp app/build/outputs/apk/debug/app-debug.apk Arin-${{ github.run_number }}.apk
+      - name: Rename APK (with the version number)
+        id: ver
+        run: |
+          V=$(grep -oE 'versionName = "[^"]+"' app/build.gradle.kts | head -1 | cut -d'"' -f2)
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+          cp app/build/outputs/apk/debug/app-debug.apk "Arin-v${V}-build${{ github.run_number }}.apk"
 
       - uses: actions/upload-artifact@v4
         with:
@@ -47,7 +51,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: arin-${{ github.run_number }}
-          name: Arin build ${{ github.run_number }}
+          name: Arin v${{ steps.ver.outputs.version }} (build ${{ github.run_number }})
           files: Arin-*.apk
           # Only main marks the newest release, so a build on the arin branch doesn't replace another app's latest release.
           make_latest: ${{ github.ref_name == 'main' }}

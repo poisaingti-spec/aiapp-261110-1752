@@ -159,6 +159,31 @@ object Linux {
         return r
     }
 
+    private fun androidBuildMarker(context: Context) = File(base(context), "android-build-ready")
+
+    /** True when apps can be compiled to APKs right here in Linux (JDK, Gradle, Android SDK, aapt2). */
+    fun androidBuildReady(context: Context): Boolean = installed(context) && androidBuildMarker(context).exists()
+
+    /**
+     * Installs everything needed to compile Android apps on the phone: JDK 21, Gradle, the Android SDK
+     * (command-line tools, platform ${com.arin.builder.ProjectTemplate.SDK}), an aapt2 that runs on ARM, and the
+     * arin-build command. Build mode then checks each build here before GitHub.
+     */
+    suspend fun installAndroidBuild(context: Context, log: (String) -> Unit): Termux.Result {
+        log("Installing Android build tools: JDK 21, Gradle ${com.arin.builder.ProjectTemplate.GRADLE}, Android SDK ${com.arin.builder.ProjectTemplate.SDK}, aapt2…")
+        configure(context)
+        val script = context.assets.open("android-build-setup.sh").bufferedReader().use { it.readText() }
+            .replace("@@GRADLE@@", com.arin.builder.ProjectTemplate.GRADLE)
+            .replace("@@SDK@@", com.arin.builder.ProjectTemplate.SDK.toString())
+        File(rootfs(context), "root/.arin/setup-android-build.sh").writeText(script)
+        val r = run(context, "bash /root/.arin/setup-android-build.sh", timeoutMs = 60 * 60_000L, onOutput = log)
+        if (r.exitCode == 0 && r.error == null && r.combined().contains("ANDROID_BUILD_READY")) {
+            androidBuildMarker(context).writeText("ok")
+            devMarker(context).writeText("ok")
+        }
+        return r
+    }
+
     /** Script (inside Linux) that installs what REA needs to analyse APKs. */
     const val ANDROID_TOOLS_SCRIPT = "/root/.arin/setup-android-tools.sh"
 
@@ -466,7 +491,12 @@ object Shell {
                 "Install packages with apt-get install -y; Node.js 24, npm, git and Python 3 are installed. " +
                 "Files the person attaches are copied to ${Linux.FILES}. " +
                 (if (Linux.devToolsReady(context)) "Developer tools are installed: Java 21 (javac, java), Kotlin (kotlinc), Gradle. " else "") +
-                "Android APKs can't be compiled on the phone (Google ships no ARM build tools); use Build mode (<build>) for APKs. " +
+                (if (Linux.androidBuildReady(context))
+                    "Android build tools are installed (JDK 21, Gradle, Android SDK at /opt/android-sdk, ARM aapt2): compile any Android " +
+                        "project folder to an APK with: arin-build /path/to/project (prints ARIN_APK=<path> on success, errors otherwise). " +
+                        "Build mode (<build>) also compiles and fixes apps here first, then on GitHub for download links. "
+                else "Android APKs can't be compiled on the phone until the Android build tools are installed (Settings → Linux → " +
+                    "Install Android build tools); meanwhile use Build mode (<build>), which builds on GitHub. ") +
                 "If an REA Android/APK tool says JADX, a JDK or apktool is missing, run: bash ${Linux.ANDROID_TOOLS_SCRIPT} " +
                 "(then call the tool again; REA restarts automatically). Other APK tools you can install yourself: " +
                 "pip install androguard, or use unzip/apktool on files in /root/files."

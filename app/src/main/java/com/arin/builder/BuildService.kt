@@ -49,6 +49,7 @@ class BuildService : Service() {
             val result = try {
                 BuildAgent(
                     request,
+                    context = this@BuildService,
                     emit = { event ->
                         scope.launch {
                             BuildRunner.timeline += TimelineItem.Event(event)

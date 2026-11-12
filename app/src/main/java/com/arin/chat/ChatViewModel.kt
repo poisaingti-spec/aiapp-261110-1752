@@ -254,7 +254,11 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     var devToolsReady by mutableStateOf(com.arin.terminal.Linux.devToolsReady(app))
         private set
 
-    /** Installs Java, Kotlin and Gradle in the built-in Linux. */
+    /** Whether apps can be compiled to APKs in the built-in Linux. */
+    var androidBuildReady by mutableStateOf(com.arin.terminal.Linux.androidBuildReady(app))
+        private set
+
+    /** Installs Java, Kotlin, Gradle and the Android SDK in the built-in Linux. */
     fun installDevTools() {
         if (linuxBusy) return
         val app = getApplication<Application>()
@@ -269,8 +273,13 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 val r = com.arin.terminal.Linux.installDevTools(app) { logLine(it) }
                 if (r.exitCode != 0 || r.error != null) throw IllegalStateException(r.error ?: r.combined().takeLast(400))
                 devToolsReady = true
+                // The Android SDK too, so apps compile to APKs right on the phone.
+                val a = com.arin.terminal.Linux.installAndroidBuild(app) { logLine(it) }
+                androidBuildReady = com.arin.terminal.Linux.androidBuildReady(app)
                 toggleTerminal(true)
-                notice = "Java, Kotlin and Gradle are installed"
+                notice = if (androidBuildReady) "Java, Kotlin, Gradle and the Android SDK are installed: apps now build on this phone too"
+                    else "Java, Kotlin and Gradle are installed, but the Android SDK part didn't finish: " +
+                        (a.error ?: a.combined().lines().lastOrNull { it.isNotBlank() } ?: "") + " Apps still build on GitHub."
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
             } catch (e: Throwable) {
@@ -293,6 +302,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             linuxInstalled = false
             linuxReady = false
             devToolsReady = false
+            androidBuildReady = false
             linuxBusy = false
             linuxLog.clear()
             notice = "Linux removed"
@@ -518,6 +528,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             val zip = com.arin.builder.BuildRunner.sourceZipUrl(project)
             append("- **Source code (zip):** [Download source zip]($zip)\n  $zip\n")
             append("- **GitHub repository:** [Open on GitHub](${com.arin.builder.BuildRunner.repoPage(project)})\n")
+            result.phoneApk?.let { append("- **Also compiled on this phone:** `$it`\n") }
             append(if (project.selfUpdate) "\nTap the APK link (or Install in Build mode) to update Arin." else "\nTap the APK link to download and install it.")
         } else {
             buildString {

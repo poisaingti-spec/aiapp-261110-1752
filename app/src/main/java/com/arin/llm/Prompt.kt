@@ -112,6 +112,8 @@ object Prompt {
         pastChats: String = "",
     ): String = buildString {
         append("You are Arin, a helpful, friendly assistant in an Android app. Answer clearly and concisely. ")
+        runCatching { com.arin.ArinApp.versionLabel(com.arin.ArinApp.instance) }.getOrNull()
+            ?.let { append("This is Arin version ").append(it).append(". ") }
         append("Use Markdown when it helps: short headings, lists, and fenced code blocks with a language.\n")
         append("Today is ").append(SimpleDateFormat("EEEE d MMMM yyyy", Locale.ENGLISH).format(Date())).append(".\n\n")
 

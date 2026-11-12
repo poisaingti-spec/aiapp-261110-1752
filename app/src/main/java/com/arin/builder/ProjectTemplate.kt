@@ -7,13 +7,22 @@ package com.arin.builder
  */
 object ProjectTemplate {
 
-    /** Toolchain for new apps (checked November 2026; tested with a real GitHub build). */
+    /**
+     * Toolchain for new apps (checked November 2026 against the Android Gradle plugin and AndroidX
+     * release pages; tested with a real GitHub build). AGP 9.5 needs Gradle 9.6 or newer and supports API 37.
+     */
     const val AGP = "9.5.0"
     const val KOTLIN = "2.4.20"
     const val COMPOSE_BOM = "2026.08.00"
     const val GRADLE = "9.9.0"
     const val JDK = "21"
     const val SDK = 37
+    const val CORE = "1.19.0"
+    const val ACTIVITY = "1.13.0"
+    const val LIFECYCLE = "2.11.0"
+    const val NAVIGATION = "2.10.2"
+    const val COROUTINES = "1.10.2"
+    const val SERIALIZATION = "1.10.0"
 
     /** Files the app writes; the model is not allowed to replace these. */
     fun files(appName: String, packageName: String, extraDeps: List<String>): Map<String, String> = mapOf(
@@ -96,23 +105,35 @@ object ProjectTemplate {
             dependencies {
                 val composeBom = platform("androidx.compose:compose-bom:$COMPOSE_BOM")
                 implementation(composeBom)
-                implementation("androidx.core:core-ktx:1.16.0")
-                implementation("androidx.activity:activity-compose:1.10.1")
+                implementation("androidx.core:core-ktx:$CORE")
+                implementation("androidx.activity:activity-compose:$ACTIVITY")
                 implementation("androidx.compose.ui:ui")
                 implementation("androidx.compose.ui:ui-tooling-preview")
                 implementation("androidx.compose.foundation:foundation")
                 implementation("androidx.compose.material3:material3")
                 implementation("androidx.compose.material:material-icons-extended")
-                implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.9.1")
-                implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.9.1")
-                implementation("androidx.navigation:navigation-compose:2.9.0")
-                implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2")
-                implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.8.1")
+                implementation("androidx.lifecycle:lifecycle-viewmodel-compose:$LIFECYCLE")
+                implementation("androidx.lifecycle:lifecycle-runtime-ktx:$LIFECYCLE")
+                implementation("androidx.lifecycle:lifecycle-runtime-compose:$LIFECYCLE")
+                implementation("androidx.navigation:navigation-compose:$NAVIGATION")
+                implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:$COROUTINES")
+                implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:$SERIALIZATION")
                 implementation("com.squareup.okhttp3:okhttp:4.12.0")
             ${extraDeps.joinToString("\n") { "    implementation(\"$it\")" }}
             }
         """.trimIndent(),
-        ".gitignore" to "build/\n.gradle/\nlocal.properties\n*.iml\n",
+        ".gitignore" to "build/\n.gradle/\n.kotlin/\nlocal.properties\n*.iml\n.idea/\n.DS_Store\ncaptures/\n.cxx/\n",
+        "app/proguard-rules.pro" to "# Add app-specific ProGuard rules here.\n",
+        // So Android Studio opens the project with the right Gradle (the workflow adds gradlew and the jar).
+        "gradle/wrapper/gradle-wrapper.properties" to """
+            distributionBase=GRADLE_USER_HOME
+            distributionPath=wrapper/dists
+            distributionUrl=https\://services.gradle.org/distributions/gradle-$GRADLE-bin.zip
+            networkTimeout=10000
+            validateDistributionUrl=true
+            zipStoreBase=GRADLE_USER_HOME
+            zipStorePath=wrapper/dists
+        """.trimIndent(),
         ".github/workflows/build.yml" to """
             name: Build APK
             on:
@@ -133,15 +154,25 @@ object ProjectTemplate {
                   - uses: gradle/actions/setup-gradle@v5
                     with:
                       gradle-version: "$GRADLE"
-                  - name: Signing key (created once, then reused)
+                  - name: Signing key and Gradle wrapper (created once, then reused)
                     run: |
+                      CHANGED=""
                       if [ ! -f app/signing.keystore ]; then
                         keytool -genkeypair -keystore app/signing.keystore -storepass android -keypass android -alias app -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Arin"
+                        git add app/signing.keystore
+                        CHANGED=1
+                      fi
+                      # gradlew + its jar, so the project also opens and builds in Android Studio with no setup.
+                      if [ ! -f gradlew ] || [ ! -f gradle/wrapper/gradle-wrapper.jar ]; then
+                        gradle wrapper --gradle-version "$GRADLE" --distribution-type bin && chmod +x gradlew
+                        git add gradlew gradlew.bat gradle/wrapper/gradle-wrapper.jar gradle/wrapper/gradle-wrapper.properties
+                        CHANGED=1
+                      fi
+                      if [ -n "${'$'}CHANGED" ]; then
                         git config user.name "Arin"
                         git config user.email "arin@users.noreply.github.com"
-                        git add app/signing.keystore
-                        git commit -m "Add signing key"
-                        git push origin HEAD:${'$'}{{ github.ref_name }} || echo "Couldn't save the key; this build still works."
+                        git commit -m "Add signing key and Gradle wrapper"
+                        git push origin HEAD:${'$'}{{ github.ref_name }} || echo "Couldn't save them; this build still works."
                       fi
                   - name: Build debug APK
                     run: |
@@ -203,19 +234,35 @@ object ProjectTemplate {
               - uses: actions/setup-java@v5
                 with:
                   distribution: temurin
-                  java-version: "17"
+                  java-version: |
+                    11
+                    17
+                    21
               - uses: gradle/actions/setup-gradle@v5
                 with:
-                  gradle-version: "8.14.3"
+                  gradle-version: "$GRADLE"
               - name: Build debug APK
                 run: |
                   set -o pipefail
-                  if [ -f gradlew ]; then
-                    chmod +x gradlew
-                    ./gradlew assembleDebug --stacktrace 2>&1 | tee build.log
-                  else
-                    gradle assembleDebug --stacktrace 2>&1 | tee build.log
+                  # Old projects need an older JDK and Gradle; new ones (AGP 9) need JDK 21 and Gradle 9.
+                  ver() { printf '%s' "${'$'}1" | awk -F. '{ printf "%d%03d", ${'$'}1, ${'$'}2 }'; }
+                  GV=${'$'}(grep -o 'gradle-[0-9.]*-' gradle/wrapper/gradle-wrapper.properties 2>/dev/null | head -1 | sed 's/gradle-//; s/-${'$'}//')
+                  AGPV=${'$'}(grep -rhoE '(com\.android\.tools\.build:gradle:|com\.android\.application"?\)? version "?|agp ?= ?")[0-9]+\.[0-9]+' --include=*.gradle* --include=*.toml . 2>/dev/null | grep -oE '[0-9]+\.[0-9]+${'$'}' | head -1)
+                  if [ -z "${'$'}GV" ]; then
+                    if [ -n "${'$'}AGPV" ] && [ "${'$'}(ver ${'$'}AGPV)" -lt "${'$'}(ver 9.0)" ]; then
+                      if [ "${'$'}(ver ${'$'}AGPV)" -lt "${'$'}(ver 7.0)" ]; then GV=6.9.4
+                      elif [ "${'$'}(ver ${'$'}AGPV)" -lt "${'$'}(ver 8.0)" ]; then GV=7.6.4
+                      else GV=8.14.3; fi
+                    else GV="$GRADLE"; fi
+                    echo "No Gradle wrapper: using Gradle ${'$'}GV for AGP ${'$'}{AGPV:-unknown}"
+                    gradle wrapper --gradle-version "${'$'}GV" --distribution-type bin || true
                   fi
+                  if [ "${'$'}(ver ${'$'}GV)" -lt "${'$'}(ver 7.3)" ]; then export JAVA_HOME=${'$'}JAVA_HOME_11_X64
+                  elif [ "${'$'}(ver ${'$'}GV)" -lt "${'$'}(ver 8.5)" ]; then export JAVA_HOME=${'$'}JAVA_HOME_17_X64
+                  else export JAVA_HOME=${'$'}JAVA_HOME_21_X64; fi
+                  echo "Gradle ${'$'}GV, JDK ${'$'}JAVA_HOME"
+                  chmod +x gradlew
+                  ./gradlew assembleDebug --stacktrace 2>&1 | tee build.log
               - name: Report errors
                 if: failure()
                 run: |
@@ -266,7 +313,7 @@ object ProjectTemplate {
     fun systemPrompt(packageName: String): String = """
         You are an expert Android developer. You write complete, working Android apps in Kotlin with Jetpack Compose and Material 3.
 
-        The Gradle setup already exists. It includes: Compose (BOM $COMPOSE_BOM, Compose 1.12), material3, material-icons-extended, activity-compose, lifecycle-viewmodel-compose, navigation-compose, kotlinx-coroutines, kotlinx-serialization-json, okhttp. Kotlin $KOTLIN, Android Gradle plugin $AGP, compileSdk $SDK, minSdk 26.
+        The Gradle setup already exists. It includes: Compose (BOM $COMPOSE_BOM, Compose 1.12), material3, material-icons-extended, activity-compose $ACTIVITY, core-ktx $CORE, lifecycle-viewmodel-compose and lifecycle-runtime-compose $LIFECYCLE, navigation-compose $NAVIGATION, kotlinx-coroutines $COROUTINES, kotlinx-serialization-json $SERIALIZATION (the serialization plugin is applied), okhttp. Kotlin $KOTLIN, Android Gradle plugin $AGP, Gradle $GRADLE, JDK $JDK, compileSdk $SDK, targetSdk $SDK, minSdk 26.
         Package name: $packageName. Source folder: app/src/main/java/${packageName.replace('.', '/')}/
         The entry point must be $packageName.MainActivity (a ComponentActivity calling setContent).
 

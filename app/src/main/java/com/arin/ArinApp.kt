@@ -48,6 +48,13 @@ class ArinApp : Application() {
 
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
 
+        /** The installed version, e.g. "0.9.0 (21)", read from the APK so it is always right. */
+        fun versionLabel(context: android.content.Context): String = runCatching {
+            val info = context.packageManager.getPackageInfo(context.packageName, 0)
+            @Suppress("DEPRECATION")
+            "${info.versionName} (${info.versionCode})"
+        }.getOrDefault("?")
+
         private var visibleActivities = 0
 
         /** True while any Arin screen is on screen. */

@@ -69,7 +69,15 @@ fun ChatsDrawer(
             Row(Modifier.padding(start = 20.dp, end = 12.dp, top = 16.dp, bottom = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                 ArinMark(size = 26.dp)
                 Spacer(Modifier.width(10.dp))
-                Text("Arin", style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f))
+                Row(Modifier.weight(1f), verticalAlignment = Alignment.Bottom) {
+                    Text("Arin", style = MaterialTheme.typography.titleLarge)
+                    Text(
+                        "  v" + com.arin.ArinApp.versionLabel(androidx.compose.ui.platform.LocalContext.current),
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(bottom = 3.dp),
+                    )
+                }
             }
             TextField(
                 value = vm.query,

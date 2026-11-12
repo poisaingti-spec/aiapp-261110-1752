@@ -45,6 +45,8 @@ data class BuildResult(
     val log: String = "",
     /** The GitHub Actions run with the full log. */
     val runUrl: String? = null,
+    /** Where the APK compiled on the phone (built-in Linux) was saved, if it was. */
+    val phoneApk: String? = null,
 )
 
 /**
@@ -58,6 +60,8 @@ class BuildAgent(
     private val onProject: (Project) -> Unit = {},
     /** Live progress for long steps (null = done), with a short description. */
     private val onProgress: (Float?, String) -> Unit = { _, _ -> },
+    /** For building on the phone in the built-in Linux, when its Android build tools are installed. */
+    private val context: android.content.Context? = null,
 ) {
     private val gh = GitHubClient(req.githubToken)
     private val slug = (req.project?.appName ?: req.appName).lowercase().replace(Regex("[^a-z0-9]+"), "").ifEmpty { "app" }.take(30)
@@ -222,6 +226,17 @@ class BuildAgent(
         }
         saveProject(repo, null)
 
+        // Build on the phone first when Linux has the Android build tools: errors are found and fixed here,
+        // and GitHub then only builds code that already compiles (and gives the download links).
+        val localSlug = repo.name
+        var useLocal = !self && context != null && LocalBuild.available(context) &&
+            (existing == null || LocalBuild.hasCopy(context, localSlug))
+        if (useLocal && existing == null) {
+            LocalBuild.write(context!!, localSlug, files.mapValues { it.value.toByteArray() })
+        }
+        var localRounds = 0
+        var phoneApk: String? = null
+
         var round = startRound
         while (true) {
           currentRound = round
@@ -245,6 +260,38 @@ class BuildAgent(
             } else {
                 ProjectTemplate.files(appName, packageName, deps.toList())[".github/workflows/build.yml"]?.let {
                     pendingFiles[".github/workflows/build.yml"] = it.toByteArray()
+                }
+            }
+            if (useLocal) {
+                val ctx = context!!
+                LocalBuild.write(ctx, localSlug, pendingFiles.toMap())
+                LocalBuild.writeFiles(ctx, localSlug, pendingDisk.toMap())
+                step(BuildEvent.Kind.BUILD, "Compiling on this phone in Linux (the first build downloads libraries and can take 10+ minutes)")
+                when (val out = LocalBuild.build(ctx, localSlug, appName) { }) {
+                    is LocalBuild.Outcome.Ok -> {
+                        phoneApk = out.apkPath
+                        step(BuildEvent.Kind.DONE, "Compiled on this phone (${mb(out.size)}), saved to ${out.apkPath}. Now building on GitHub for the download links")
+                    }
+                    is LocalBuild.Outcome.Errors -> {
+                        if (localRounds < maxFixRounds) {
+                            localRounds++
+                            val query = mainError(out.log)
+                            val web = if (query.isNotBlank()) {
+                                step(BuildEvent.Kind.WEB, "Searching the web for the error: $query")
+                                runCatching { WebTools.search(query) }.getOrNull()?.take(6_000).orEmpty()
+                            } else ""
+                            val count = out.log.lines().count { it.startsWith("e: ") || it.contains("error:", true) }.coerceAtLeast(1)
+                            step(BuildEvent.Kind.ERROR, "Phone build failed with $count error${if (count == 1) "" else "s"}. Fixing on the phone (round $localRounds of $maxFixRounds)")
+                            notes = apply(ask(fixPrompt(out.log, notes, web)))
+                            continue
+                        }
+                        step(BuildEvent.Kind.ERROR, "Still failing on the phone after $localRounds fixes; trying GitHub's build")
+                        useLocal = false
+                    }
+                    is LocalBuild.Outcome.Skipped -> {
+                        step(BuildEvent.Kind.STEP, "Couldn't build on this phone (${out.reason.take(120)}); GitHub will build it")
+                        useLocal = false
+                    }
                 }
             }
             val toUpload = pendingFiles.size + pendingDisk.size
@@ -315,6 +362,7 @@ class BuildAgent(
                     },
                     repo.url,
                     apk,
+                    phoneApk = phoneApk,
                 )
             }
 
