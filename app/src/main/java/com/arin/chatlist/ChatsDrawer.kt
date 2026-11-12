@@ -53,6 +53,7 @@ fun ChatsDrawer(
     onPick: () -> Unit,
     onSettings: () -> Unit,
     onProjects: () -> Unit,
+    onBuild: () -> Unit = {},
     onProject: (com.arin.data.Project) -> Unit,
 ) {
     var renaming by remember { mutableStateOf<ChatSummary?>(null) }
@@ -134,6 +135,7 @@ fun ChatsDrawer(
                     }
                 }
             }
+            DrawerRow(icon = { Icon(Icons.Filled.Build, contentDescription = null) }, label = "Build an app (APK)", onClick = onBuild)
             DrawerRow(icon = { Icon(Icons.Filled.Settings, contentDescription = null) }, label = "Settings", onClick = onSettings)
         }
     }

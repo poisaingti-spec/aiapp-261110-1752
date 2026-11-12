@@ -120,6 +120,45 @@ object Linux {
         log("Linux is ready: Ubuntu 24.04 with Node.js, npm, git and Python.")
     }
 
+    private fun devMarker(context: Context) = File(base(context), "devtools-ready")
+
+    fun devToolsReady(context: Context): Boolean = installed(context) && devMarker(context).exists()
+
+    /** Versions installed by [installDevTools] (checked November 2026). */
+    const val KOTLINC_VERSION = "2.4.20"
+    const val GRADLE_VERSION = "9.9.0"
+
+    /**
+     * Installs a Java/Kotlin toolchain: OpenJDK 21, the Kotlin compiler and Gradle, so Java and Kotlin
+     * programs (and Gradle projects that don't need the Android SDK) build and run in Linux.
+     */
+    suspend fun installDevTools(context: Context, log: (String) -> Unit): Termux.Result {
+        log("Installing Java 21, Kotlin $KOTLINC_VERSION and Gradle $GRADLE_VERSION…")
+        val script = """
+            set -e
+            export DEBIAN_FRONTEND=noninteractive
+            apt-get update
+            apt-get install -y --no-install-recommends openjdk-21-jdk-headless unzip zip
+            mkdir -p /opt
+            if [ ! -x /opt/kotlinc/bin/kotlinc ]; then
+              curl -fsSL -o /tmp/kotlinc.zip https://github.com/JetBrains/kotlin/releases/download/v$KOTLINC_VERSION/kotlin-compiler-$KOTLINC_VERSION.zip
+              rm -rf /opt/kotlinc && unzip -q /tmp/kotlinc.zip -d /opt && rm /tmp/kotlinc.zip
+            fi
+            if [ ! -x /opt/gradle-$GRADLE_VERSION/bin/gradle ]; then
+              curl -fsSL -o /tmp/gradle.zip https://services.gradle.org/distributions/gradle-$GRADLE_VERSION-bin.zip
+              unzip -q /tmp/gradle.zip -d /opt && rm /tmp/gradle.zip
+            fi
+            ln -sf /opt/kotlinc/bin/kotlinc /opt/kotlinc/bin/kotlin /usr/local/bin/
+            ln -sf /opt/gradle-$GRADLE_VERSION/bin/gradle /usr/local/bin/gradle
+            java -version 2>&1 | head -1
+            kotlinc -version 2>&1 | tail -1
+            gradle --version 2>/dev/null | grep -m1 Gradle
+        """.trimIndent()
+        val r = run(context, script, timeoutMs = 45 * 60_000L, onOutput = log)
+        if (r.exitCode == 0 && r.error == null) devMarker(context).writeText("ok")
+        return r
+    }
+
     /** Installs REA (npm package rea-agents) in Linux. */
     suspend fun installRea(context: Context, log: (String) -> Unit): Termux.Result {
         log("Installing REA (npm install -g rea-agents)…")
@@ -366,7 +405,9 @@ object Shell {
         if (usesLinux(context)) {
             "Ubuntu 24.04 Linux built into the Arin app (PRoot, ${System.getProperty("os.arch")}), you are root, home is /root. " +
                 "Install packages with apt-get install -y; Node.js 24, npm, git and Python 3 are installed. " +
-                "Files the person attaches are copied to ${Linux.FILES}."
+                "Files the person attaches are copied to ${Linux.FILES}. " +
+                (if (Linux.devToolsReady(context)) "Developer tools are installed: Java 21 (javac, java), Kotlin (kotlinc), Gradle. " else "") +
+                "Android APKs can't be compiled on the phone (Google ships no ARM build tools); use Build mode (<build>) for APKs."
         } else {
             "Termux on Android (${System.getProperty("os.arch")}, no root), home ~ = ${Termux.HOME}. Install packages with pkg install -y."
         }

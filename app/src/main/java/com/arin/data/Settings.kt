@@ -116,6 +116,11 @@ class Settings(context: Context) {
         get() = prefs.getFloat("voice_rate", 1.0f)
         set(value) = prefs.edit().putFloat("voice_rate", value).apply()
 
+    /** Other secrets kept with the API keys, such as the GitHub token Build mode uses. */
+    fun secret(name: String): String = keys.getString("extra_$name", "").orEmpty()
+
+    fun setSecret(name: String, value: String) = keys.edit().putString("extra_$name", value.trim()).apply()
+
     fun key(provider: Provider): String = keys.getString(slot(provider), "").orEmpty()
 
     fun setKey(provider: Provider, value: String) = keys.edit().putString(slot(provider), value.trim()).apply()

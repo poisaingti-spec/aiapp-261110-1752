@@ -1,5 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Only exported chats are shared with other apps. -->
+<!-- Only exported chats and built APKs are shared with other apps. -->
 <paths>
     <cache-path name="exports" path="exports/" />
+    <!-- APKs built in Build mode, opened with Android's installer. -->
+    <cache-path name="apks" path="apks/" />
 </paths>

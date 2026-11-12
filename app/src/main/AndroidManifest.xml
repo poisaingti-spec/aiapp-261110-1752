@@ -8,6 +8,9 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <!-- Run commands in Termux (the person grants this in Settings → Terminal). -->
     <uses-permission android:name="com.termux.permission.RUN_COMMAND" />
+    <!-- Build mode: install the APKs it builds, and keep building with the screen off. -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
 
     <!-- Android 11+: let Arin find the phone's speech recognition and voice. -->
     <queries>
@@ -67,6 +70,12 @@
         <!-- Keeps a reply going while Arin is in the background. -->
         <service
             android:name=".app.ReplyService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
+
+        <!-- Build mode: builds apps on GitHub, keeps going when Arin is closed. -->
+        <service
+            android:name=".builder.BuildService"
             android:exported="false"
             android:foregroundServiceType="dataSync" />
 

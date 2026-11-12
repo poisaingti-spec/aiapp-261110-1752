@@ -248,6 +248,38 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         logLine(status?.let { "REA is connected: $it" } ?: ("REA didn't connect: " + problems.joinToString("; ")))
     }
 
+    var devToolsReady by mutableStateOf(com.arin.terminal.Linux.devToolsReady(app))
+        private set
+
+    /** Installs Java, Kotlin and Gradle in the built-in Linux. */
+    fun installDevTools() {
+        if (linuxBusy) return
+        val app = getApplication<Application>()
+        linuxBusy = true
+        linuxLog.clear()
+        ReplyService.start(app)
+        ArinApp.scope.launch {
+            try {
+                if (!com.arin.terminal.Linux.nodeReady(app)) com.arin.terminal.Linux.install(app) { logLine(it) }
+                linuxInstalled = true
+                linuxReady = true
+                val r = com.arin.terminal.Linux.installDevTools(app) { logLine(it) }
+                if (r.exitCode != 0 || r.error != null) throw IllegalStateException(r.error ?: r.combined().takeLast(400))
+                devToolsReady = true
+                toggleTerminal(true)
+                notice = "Java, Kotlin and Gradle are installed"
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                logLine("Failed: ${e.message}")
+                notice = "Developer tools install failed: ${e.message}"
+            } finally {
+                linuxBusy = false
+                ReplyService.stop(app)
+            }
+        }
+    }
+
     fun removeLinux() {
         if (linuxBusy) return
         val app = getApplication<Application>()
@@ -257,6 +289,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             com.arin.terminal.Linux.remove(app)
             linuxInstalled = false
             linuxReady = false
+            devToolsReady = false
             linuxBusy = false
             linuxLog.clear()
             notice = "Linux removed"
@@ -357,6 +390,117 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     // ---------------- Sending ----------------
+
+    // ---- Build mode (apps compiled to APKs on GitHub) ----
+
+    /** How hard Build mode works (more fix rounds when higher). */
+    var effort by mutableStateOf(com.arin.builder.Effort.HIGH)
+        private set
+
+    fun chooseEffort(e: com.arin.builder.Effort) {
+        effort = e
+    }
+
+    fun key(p: Provider): String = settings.key(p)
+
+    fun githubToken(): String = settings.secret("GITHUB")
+
+    /** Set when chat starts a build, so the screen can switch to Build mode. */
+    var openBuild by mutableStateOf(false)
+
+    /** Starts building an app from chat; returns a problem to show, or null when it started. */
+    fun startBuild(name: String, description: String): String? {
+        val token = githubToken()
+        val app = getApplication<Application>()
+        return when {
+            token.isBlank() -> "To build apps, sign in with GitHub in Settings → GitHub, then ask again."
+            com.arin.builder.BuildRunner.running -> "A build is already running. Open Build mode to see it."
+            provider.needsKey && settings.key(provider).isBlank() -> "Add your ${provider.label} key in Settings."
+            else -> {
+                com.arin.builder.BuildRunner.newProject(app)
+                com.arin.builder.BuildService.start(
+                    app,
+                    com.arin.builder.BuildRequest(
+                        description = description,
+                        appName = name.ifBlank { description.split(Regex("\\s+")).take(3).joinToString(" ").take(30) },
+                        provider = provider,
+                        model = model,
+                        apiKey = settings.key(provider),
+                        effort = effort,
+                        githubToken = token,
+                        allowOtherSites = false,
+                    ),
+                )
+                openBuild = true
+                null
+            }
+        }
+    }
+
+    // ---- Sign in with GitHub (device flow) ----
+
+    var githubUser by mutableStateOf(settings.secret("GITHUB_USER"))
+        private set
+    var githubCode by mutableStateOf<com.arin.builder.GitHubLogin.DeviceCode?>(null)
+        private set
+    var githubLoginError by mutableStateOf<String?>(null)
+        private set
+    private var loginJob: kotlinx.coroutines.Job? = null
+
+    fun githubClientId(): String = settings.secret("GITHUB_CLIENT_ID").ifBlank { com.arin.builder.GitHubLogin.DEFAULT_CLIENT_ID }
+
+    fun saveGithubClientId(value: String) = settings.setSecret("GITHUB_CLIENT_ID", value)
+
+    fun saveGithubToken(value: String) {
+        settings.setSecret("GITHUB", value)
+        if (value.isBlank()) githubUser = "" else refreshGithubUser()
+    }
+
+    /** Starts sign-in; [openBrowser] opens github.com/login/device where you enter the code. */
+    fun signInGithub(openBrowser: (String) -> Unit) {
+        val clientId = githubClientId()
+        loginJob?.cancel()
+        githubLoginError = null
+        loginJob = viewModelScope.launch {
+            try {
+                val code = com.arin.builder.GitHubLogin.start(clientId)
+                githubCode = code
+                openBrowser(code.verificationUri)
+                val token = com.arin.builder.GitHubLogin.waitForToken(clientId, code)
+                settings.setSecret("GITHUB", token)
+                refreshGithubUser()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                githubLoginError = e.message ?: "Sign-in failed."
+            } finally {
+                githubCode = null
+            }
+        }
+    }
+
+    fun signOutGithub() {
+        loginJob?.cancel()
+        settings.setSecret("GITHUB", "")
+        settings.setSecret("GITHUB_USER", "")
+        githubUser = ""
+    }
+
+    private fun refreshGithubUser() {
+        val token = settings.secret("GITHUB")
+        viewModelScope.launch {
+            var result: Result<String> = Result.failure(Exception())
+            for (attempt in 0 until 3) {
+                result = runCatching { com.arin.builder.GitHubClient(token).login() }
+                if (result.isSuccess) break
+                kotlinx.coroutines.delay(3000)
+            }
+            result.onSuccess {
+                githubUser = it
+                settings.setSecret("GITHUB_USER", it)
+            }
+        }
+    }
 
     // ---- Steering: messages sent while a reply is running ----
 
@@ -598,6 +742,13 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             } finally {
                 val seconds = if (thinkStart > 0) ((System.currentTimeMillis() - thinkStart) / 1000).toInt() else 0
                 if (memoryOn) Prompt.memories(answer).forEach { remember(it) }
+                // The model asked to build an app: start Build mode.
+                // (Launched separately: this block also runs after Stop, when this coroutine is cancelled.)
+                if (failure == null) Prompt.buildRequest(answer)?.let { (name, description) ->
+                    ArinApp.scope.launch(kotlinx.coroutines.Dispatchers.Main) {
+                        startBuild(name, description)?.let { notice = it }
+                    }
+                }
                 val shown = Prompt.clean(answer)
                 val msg = if (failure != null && shown.isBlank()) {
                     Message(fromUser = false, text = failure!!, failed = true)

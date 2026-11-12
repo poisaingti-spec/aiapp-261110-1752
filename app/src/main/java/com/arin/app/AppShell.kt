@@ -14,7 +14,7 @@ import com.arin.project.ProjectsScreen
 import com.arin.settings.SettingsScreen
 
 /** Every top-level screen. Chat is home. */
-enum class Screen { Chat, Settings, Projects, Project }
+enum class Screen { Chat, Settings, Projects, Project, Build }
 
 /** Owns which screen is showing. Screens never navigate themselves; they call back here. */
 @Composable
@@ -28,6 +28,13 @@ fun AppShell(vm: ChatViewModel) {
     }
     // Something arrived from outside (a share, the widget, a notification): show Chat.
     LaunchedEffect(Launch.count) { if (Launch.count > 0) screen = Screen.Chat }
+    // Chat started a build: show it.
+    LaunchedEffect(vm.openBuild) {
+        if (vm.openBuild) {
+            vm.openBuild = false
+            screen = Screen.Build
+        }
+    }
 
     when (screen) {
         Screen.Chat -> ChatScreen(
@@ -35,10 +42,17 @@ fun AppShell(vm: ChatViewModel) {
             onOpenSettings = { screen = Screen.Settings },
             onOpenProjects = { screen = Screen.Projects },
             onOpenProject = { p -> projectId = p.id; backToProjects = false; screen = Screen.Project },
+            onOpenBuild = { screen = Screen.Build },
             startVoice = Launch.voicePending,
             onVoiceStarted = { Launch.voicePending = false },
         )
         Screen.Settings -> SettingsScreen(vm, onBack = { screen = Screen.Chat })
+        Screen.Build -> com.arin.builder.BuildScreen(
+            chat = vm,
+            vm = androidx.lifecycle.viewmodel.compose.viewModel<com.arin.builder.BuildViewModel>(),
+            onBack = { screen = Screen.Chat },
+            onOpenSettings = { screen = Screen.Settings },
+        )
         Screen.Projects -> ProjectsScreen(
             vm,
             onBack = { screen = Screen.Chat },

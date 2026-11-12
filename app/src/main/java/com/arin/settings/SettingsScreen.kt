@@ -103,6 +103,8 @@ fun SettingsScreen(vm: ChatViewModel, onBack: () -> Unit) {
                 }
             }
 
+            Section("GitHub (for building apps)") { GithubSettings(vm) }
+
             Section("Linux (built in)") { LinuxSettings(vm) }
 
             Section("Terminal") { TerminalSettings(vm) }
@@ -173,7 +175,7 @@ fun SettingsScreen(vm: ChatViewModel, onBack: () -> Unit) {
             }
 
             Text(
-                "Arin 0.6.1",
+                "Arin 0.7.0",
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(vertical = 12.dp),
@@ -213,6 +215,70 @@ private fun Toggle(title: String, detail: String, checked: Boolean, onChange: (B
     }
 }
 
+/** Sign in with GitHub so Build mode can create repos and build APKs with GitHub Actions. */
+@Composable
+private fun GithubSettings(vm: ChatViewModel) {
+    val uri = androidx.compose.ui.platform.LocalUriHandler.current
+    val clipboard = androidx.compose.ui.platform.LocalClipboardManager.current
+    var showAdvanced by remember { mutableStateOf(false) }
+    var clientId by remember { mutableStateOf(vm.githubClientId()) }
+    var token by remember { mutableStateOf("") }
+    Text(
+        "Build mode writes the app, puts its source in a new repository on your GitHub and compiles it into an APK " +
+            "there (free GitHub Actions), then you install it from here.",
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+    val code = vm.githubCode
+    when {
+        vm.githubToken().isNotBlank() -> {
+            Text("✓ Signed in as ${vm.githubUser.ifBlank { "your GitHub account" }}.", color = MaterialTheme.colorScheme.primary)
+            OutlinedButton(onClick = vm::signOutGithub) { Text("Sign out") }
+        }
+        code != null -> {
+            Text("Enter this code on GitHub, then come back:")
+            Text(code.userCode, style = MaterialTheme.typography.headlineMedium)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                androidx.compose.material3.Button(onClick = { clipboard.setText(androidx.compose.ui.text.AnnotatedString(code.userCode)) }) { Text("Copy code") }
+                OutlinedButton(onClick = { uri.openUri(code.verificationUri) }) { Text("Open GitHub") }
+            }
+            Text("Waiting for you to approve…", style = MaterialTheme.typography.bodySmall)
+        }
+        else -> androidx.compose.material3.Button(onClick = { vm.signInGithub { link -> uri.openUri(link) } }) { Text("Sign in with GitHub") }
+    }
+    vm.githubLoginError?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
+    TextButton(onClick = { showAdvanced = !showAdvanced }) { Text(if (showAdvanced) "Hide advanced" else "Advanced") }
+    if (showAdvanced) {
+        OutlinedTextField(
+            value = clientId,
+            onValueChange = { clientId = it },
+            label = { Text("GitHub OAuth Client ID") },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth(),
+        )
+        Text(
+            "Optional: your own OAuth app from github.com/settings/developers (tick \"Enable Device Flow\").",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        TextButton(onClick = { vm.saveGithubClientId(clientId.trim()) }) { Text("Save Client ID") }
+        OutlinedTextField(
+            value = token,
+            onValueChange = { token = it },
+            label = { Text("Or paste a personal access token") },
+            singleLine = true,
+            visualTransformation = PasswordVisualTransformation(),
+            modifier = Modifier.fillMaxWidth(),
+        )
+        Text(
+            "Classic token with the repo and workflow scopes, from github.com/settings/tokens.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        TextButton(enabled = token.isNotBlank(), onClick = { vm.saveGithubToken(token); token = "" }) { Text("Save token") }
+    }
+}
+
 /** Install, check and remove Arin's own Ubuntu Linux. */
 @OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 @Composable
@@ -235,7 +301,12 @@ private fun LinuxSettings(vm: ChatViewModel) {
             androidx.compose.material3.CircularProgressIndicator(Modifier.padding(end = 10.dp).height(18.dp), strokeWidth = 2.dp)
             Text("Working… you can leave this screen.", style = MaterialTheme.typography.bodyMedium)
         }
-        vm.linuxReady -> Text("✓ Linux is installed (Ubuntu 24.04 with Node.js, npm, git, Python).", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.primary)
+        vm.linuxReady -> Text(
+            "✓ Linux is installed (Ubuntu 24.04 with Node.js, npm, git, Python" +
+                (if (vm.devToolsReady) ", Java 21, Kotlin, Gradle" else "") + ").",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.primary,
+        )
         vm.linuxInstalled -> Text("Ubuntu is unpacked but setup didn't finish. Tap Install again to finish it.", style = MaterialTheme.typography.bodyMedium)
         else -> Text("Not installed.", style = MaterialTheme.typography.bodyMedium)
     }
@@ -244,6 +315,9 @@ private fun LinuxSettings(vm: ChatViewModel) {
             if (!vm.linuxReady) androidx.compose.material3.Button(onClick = { vm.installLinux() }) { Text("Install Linux") }
             if (vm.mcpServers.none { it.name == com.arin.mcp.Mcp.REA.name && com.arin.mcp.Mcp.status(it.name) != null }) {
                 OutlinedButton(onClick = { vm.setUpRea() }) { Text(if (vm.linuxReady) "Install REA" else "Install Linux + REA") }
+            }
+            if (!vm.devToolsReady) {
+                OutlinedButton(onClick = { vm.installDevTools() }) { Text("Install Java, Kotlin, Gradle") }
             }
             if (vm.linuxReady && vm.mcpServers.any { it.name == com.arin.mcp.Mcp.REA.name }) {
                 OutlinedButton(onClick = { vm.repairRea() }) { Text("Repair REA") }

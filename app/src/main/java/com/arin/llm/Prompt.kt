@@ -13,6 +13,12 @@ object Prompt {
     /** Commands one reply may run in the terminal before it has to answer. */
     const val MAX_COMMANDS = 25
 
+    private val buildTag = Regex("""<build(?:\s+name\s*=\s*"([^"]{1,60})")?\s*>(.+?)</build>""", RegexOption.DOT_MATCHES_ALL)
+
+    /** An app the reply asks Arin to build: name (may be blank) and description. */
+    fun buildRequest(reply: String): Pair<String, String>? =
+        buildTag.find(reply)?.let { it.groupValues[1].trim() to it.groupValues[2].trim() }?.takeIf { it.second.isNotBlank() }
+
     private val toolTag = Regex("""<tool\s+name\s*=\s*"([^"]+)"\s*>(.*?)</tool>""", RegexOption.DOT_MATCHES_ALL)
 
     /** A tool call in a reply: name and its JSON (or, for find_tools, the keywords). */
@@ -67,6 +73,14 @@ object Prompt {
             append("say so plainly rather than pretending.\n\n")
         }
 
+        append("Building Android apps: Arin can turn a description into a complete Android app (Kotlin, Jetpack Compose, ")
+        append("Material 3), put the source on the person's GitHub and compile it into an APK with GitHub Actions, fixing ")
+        append("build errors automatically. When the person asks you to make, build or compile an app or APK, first agree ")
+        append("on what it should do (ask briefly only if it's really unclear), then end your reply with ")
+        append("<build name=\"App name\">a complete, detailed description: screens, features, data, look</build>. ")
+        append("Arin then opens Build mode and starts. For an uploaded Android Studio project (.zip), use Build mode's Upload. ")
+        append("Don't paste whole app sources in chat when they asked for an APK.\n\n")
+
         if (tools.isNotBlank()) append(tools)
 
         if (memoryOn) {
@@ -112,6 +126,7 @@ object Prompt {
         reply.replace(rememberTag, "").replace(Regex("""<remember>[^<]*$"""), "")
             .replace(runTag, "").replace(Regex("""<run>[\s\S]*$"""), "")
             .replace(toolTag, "").replace(Regex("""<tool[\s\S]*$"""), "")
-            .replace(Regex("""</?(run|tool)\b[^>]*>"""), "")
+            .replace(buildTag, "").replace(Regex("""<build[\s\S]*$"""), "")
+            .replace(Regex("""</?(run|tool|build)\b[^>]*>"""), "")
             .trimEnd()
 }
