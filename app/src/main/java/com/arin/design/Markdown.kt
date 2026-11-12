@@ -19,6 +19,10 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.LinkAnnotation
+import androidx.compose.ui.text.TextLinkStyles
+import androidx.compose.ui.text.style.TextDecoration
+import androidx.compose.ui.text.withLink
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontStyle
@@ -166,7 +170,7 @@ private fun parseBlocks(text: String): List<Block> {
     return out
 }
 
-/** Bold, italic, inline code and links (shown as their text). */
+/** Bold, italic, inline code, and links (tappable). */
 @Composable
 private fun inline(text: String): AnnotatedString {
     val codeBg = LocalArinExtras.current.codeBackground
@@ -189,6 +193,14 @@ private fun inline(text: String): AnnotatedString {
                         }
                         i += end + 1
                     }
+                    // A bare web address: tappable as it is.
+                    rest.startsWith("https://") || rest.startsWith("http://") -> {
+                        var end = rest.indexOfFirst { it.isWhitespace() || it == ')' || it == '>' || it == '"' }.let { if (it < 0) rest.length else it }
+                        while (end > 0 && rest[end - 1] in ".,;:!?'") end--
+                        val url = rest.substring(0, end)
+                        withLink(LinkAnnotation.Url(url, TextLinkStyles(SpanStyle(color = link, textDecoration = TextDecoration.Underline)))) { append(url) }
+                        i += end
+                    }
                     (rest.startsWith("*") || rest.startsWith("_")) && rest.length > 2 && !rest[1].isWhitespace() &&
                         rest.indexOf(rest[0], 1) > 1 -> {
                         val end = rest.indexOf(rest[0], 1)
@@ -198,7 +210,15 @@ private fun inline(text: String): AnnotatedString {
                     rest.startsWith("[") && rest.indexOf("](") > 0 && rest.indexOf(')', rest.indexOf("](")) > 0 -> {
                         val mid = rest.indexOf("](")
                         val end = rest.indexOf(')', mid)
-                        withStyle(SpanStyle(color = link)) { append(rest.substring(1, mid)) }
+                        val url = rest.substring(mid + 2, end).trim()
+                        if (url.startsWith("http://") || url.startsWith("https://")) {
+                            // Tapping opens the link (downloads such as APKs and source zips open in the browser).
+                            withLink(LinkAnnotation.Url(url, TextLinkStyles(SpanStyle(color = link, textDecoration = TextDecoration.Underline)))) {
+                                append(rest.substring(1, mid))
+                            }
+                        } else {
+                            withStyle(SpanStyle(color = link)) { append(rest.substring(1, mid)) }
+                        }
                         i += end + 1
                     }
                     else -> {

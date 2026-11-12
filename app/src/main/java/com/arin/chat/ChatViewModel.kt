@@ -396,6 +396,39 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
     // ---- Build mode (apps compiled to APKs on GitHub) ----
 
+    init {
+        // When a build ends, post the result in this chat with real download links.
+        com.arin.builder.BuildRunner.onFinished = { result, project -> postBuildResult(result, project) }
+    }
+
+    private fun postBuildResult(result: com.arin.builder.BuildResult, project: com.arin.builder.Project?) {
+        val name = project?.appName ?: "The app"
+        val text = if (result.success && project != null) buildString {
+            append(if (project.selfUpdate) "✅ **The new version of Arin is built.**\n\n" else "✅ **$name is built.**\n\n")
+            result.apkUrl?.let { append("- **APK:** [Download $name APK]($it)\n  $it\n") }
+            val zip = com.arin.builder.BuildRunner.sourceZipUrl(project)
+            append("- **Source code (zip):** [Download source zip]($zip)\n  $zip\n")
+            append("- **GitHub repository:** [Open on GitHub](${com.arin.builder.BuildRunner.repoPage(project)})\n")
+            append(if (project.selfUpdate) "\nTap the APK link (or Install in Build mode) to update Arin." else "\nTap the APK link to download and install it.")
+        } else {
+            "⚠️ **The build of $name didn't finish:** ${result.message}" +
+                (result.repoUrl?.let { "\n\nGitHub repository: [Open on GitHub]($it)" } ?: "") +
+                "\n\nSay \"try again\" or describe what to change, and I'll keep going."
+        }
+        messages += Message(fromUser = false, text = text)
+        persist()
+    }
+
+    /** The latest build's links, for the model to give when asked. */
+    private fun latestBuildInfo(): String {
+        val p = com.arin.builder.BuildRunner.project ?: return ""
+        val apk = p.lastApkUrl ?: return ""
+        return "Latest app built in Build mode: ${p.appName}" + (if (p.selfUpdate) " (Arin itself)" else "") +
+            ". APK download: $apk . Source code zip: ${com.arin.builder.BuildRunner.sourceZipUrl(p)} . " +
+            "GitHub repository: ${com.arin.builder.BuildRunner.repoPage(p)} . When the person asks for the links, the APK or the " +
+            "source code, give these exact links (never make links up).\n\n"
+    }
+
     /** How hard Build mode works (more fix rounds when higher). */
     var effort by mutableStateOf(com.arin.builder.Effort.HIGH)
         private set
@@ -736,7 +769,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 val system = Prompt.system(
                     searchFlag, memoryFlag, memoryList, project, useTerminal, com.arin.mcp.Mcp.promptSection(),
                     terminalInfo = com.arin.terminal.Shell.describe(app),
-                )
+                ) + latestBuildInfo()
                 var searches = 0
                 while (true) {
                     // Messages the person sent while Arin was working go in before the next step.

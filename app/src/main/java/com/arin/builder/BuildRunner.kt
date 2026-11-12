@@ -35,6 +35,17 @@ private data class OldSaved(val project: Project? = null, val timeline: List<Tim
  * come back to any of them later and keep asking for changes (like chats).
  */
 object BuildRunner {
+    /** Called on the main thread when a build ends, so the chat can post the result and its links. */
+    var onFinished: ((BuildResult, Project?) -> Unit)? = null
+
+    /** Download link for the source as a zip: the exact commit that was built, else the branch. */
+    fun sourceZipUrl(p: Project): String =
+        if (!p.lastSha.isNullOrBlank()) "https://github.com/${p.owner}/${p.repo}/archive/${p.lastSha}.zip"
+        else "https://github.com/${p.owner}/${p.repo}/archive/refs/heads/${p.branch}.zip"
+
+    /** The repo page on GitHub. */
+    fun repoPage(p: Project): String = "https://github.com/${p.owner}/${p.repo}" + if (p.selfUpdate) "/tree/${p.branch}" else ""
+
     val timeline = mutableStateListOf<TimelineItem>()
     var running by mutableStateOf(false)
         internal set

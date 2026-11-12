@@ -79,6 +79,10 @@ class BuildService : Service() {
             BuildRunner.running = false
             BuildRunner.progress = null
             BuildRunner.saveNow(this@BuildService)
+            val finished = BuildRunner.project
+            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                runCatching { BuildRunner.onFinished?.invoke(result, finished) }
+            }
             runCatching { wakeLock?.takeIf { it.isHeld }?.release() }
             stopForeground(STOP_FOREGROUND_REMOVE)
             notify(DONE_ID, doneNotification(request.project?.appName ?: request.appName, result))
