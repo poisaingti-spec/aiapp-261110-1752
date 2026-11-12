@@ -41,6 +41,10 @@ data class BuildResult(
     val message: String,
     val repoUrl: String? = null,
     val apkUrl: String? = null,
+    /** Why it failed: the build's error lines, or what the model sent back. */
+    val log: String = "",
+    /** The GitHub Actions run with the full log. */
+    val runUrl: String? = null,
 )
 
 /**
@@ -94,6 +98,13 @@ class BuildAgent(
     } + if (false) 2 else 0
 
     private fun step(kind: BuildEvent.Kind, text: String) = emit(BuildEvent(kind, text))
+
+    /** The model's last answer, kept so a failure report can show what it sent. */
+    private var lastReply = ""
+
+    private fun modelReplyLog(): String =
+        if (lastReply.isBlank()) "(The model sent back an empty answer: it may have spent its whole answer thinking, or the service cut it off.)"
+        else "Last answer from the model (end):\n" + lastReply.takeLast(1_500)
 
     suspend fun run(): BuildResult {
         step(BuildEvent.Kind.STEP, "Checking your GitHub token")
@@ -171,7 +182,7 @@ class BuildAgent(
             val assets = addAttachedAssets()
             notes = apply(ask(changePrompt() + assets, req.attachments))
             if (pendingFiles.isEmpty() && !depsChanged) {
-                return BuildResult(false, "The model didn't change any of Arin's files. Try describing the change differently.", repo.url)
+                return BuildResult(false, "The model didn't change any of Arin's files. Try describing the change differently.", repo.url, log = modelReplyLog())
             }
             uploadedOnce = true
         } else if (existing == null) {
@@ -186,7 +197,12 @@ class BuildAgent(
                 notes = apply(ask(firstPrompt() + assets + formatReminder(), req.attachments))
             }
             if (files.isEmpty()) {
-                return BuildResult(false, "The model didn't return any files, even after asking again. Try again, or pick another model.")
+                return BuildResult(
+                    false,
+                    "The model didn't return any files, even after asking again, so there was nothing to build. " +
+                        "Below is the end of what it sent back. Try again, or pick another model.",
+                    log = modelReplyLog(),
+                )
             }
             val repoName = "$slug-" + SimpleDateFormat("yyMMdd-HHmm", Locale.US).format(Date())
             step(BuildEvent.Kind.STEP, "Creating GitHub repo $repoName")
@@ -201,7 +217,7 @@ class BuildAgent(
             val assets = addAttachedAssets()
             notes = apply(ask(changePrompt() + assets, req.attachments))
             if (pendingFiles.isEmpty() && !depsChanged) {
-                return BuildResult(false, "The model didn't change any files. Try describing the change differently.", repo.url, existing.lastApkUrl)
+                return BuildResult(false, "The model didn't change any files. Try describing the change differently.", repo.url, existing.lastApkUrl, log = modelReplyLog())
             }
         }
         saveProject(repo, null)
@@ -302,13 +318,20 @@ class BuildAgent(
                 )
             }
 
+            step(BuildEvent.Kind.STEP, "Reading the build errors")
+            val errors = gh.failureSummary(repo, run.id)
             if (round >= maxFixRounds) {
-                return BuildResult(false, "The build still fails after $round fix rounds. Try a higher Brain level or a stronger model.", repo.url)
+                return BuildResult(
+                    false,
+                    "The build still fails after $round fix round${if (round == 1) "" else "s"}. The errors are below; " +
+                        "say \"try again\" to keep fixing, or try a stronger model.",
+                    repo.url,
+                    log = errors,
+                    runUrl = run.url,
+                )
             }
             round++
             currentRound = round
-            step(BuildEvent.Kind.STEP, "Reading the build errors")
-            val errors = gh.failureSummary(repo, run.id)
             // Look the main error up online every time, and give the model what others did to fix it.
             val web = kotlin.run {
                 val query = mainError(errors)
@@ -427,6 +450,7 @@ class BuildAgent(
                 }
             }
             val reply = sb.toString()
+            lastReply = reply
             if (steps >= MAX_WEB_STEPS || reply.contains("=== FILE:")) return reply
             val search = WebTools.searchTag.find(reply)?.groupValues?.get(1)?.trim()
             val fetch = WebTools.fetchTag.find(reply)?.groupValues?.get(1)?.trim()

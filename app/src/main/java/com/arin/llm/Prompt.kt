@@ -15,6 +15,11 @@ object Prompt {
 
     private val imagesTag = Regex("""<images>\s*(.{1,200}?)\s*</images>""", RegexOption.DOT_MATCHES_ALL)
     private val videosTag = Regex("""<videos>\s*(.{1,200}?)\s*</videos>""", RegexOption.DOT_MATCHES_ALL)
+    private val recallTag = Regex("""<recall>(.{1,200}?)</recall>""", RegexOption.DOT_MATCHES_ALL)
+
+    /** Words to look for in past chats, if the reply asks to recall one. */
+    fun recall(reply: String): String? = recallTag.find(reply)?.groupValues?.get(1)?.trim()?.takeIf { it.isNotEmpty() }
+
     private val fetchTag = Regex("""<fetch>\s*(https?://\S{1,800}?)\s*</fetch>""", RegexOption.DOT_MATCHES_ALL)
     private val downloadTag = Regex("""<download(?:\s+as\s*=\s*"([^"]{1,120})")?\s*>\s*(https?://\S{1,1500}?)\s*</download>""", RegexOption.DOT_MATCHES_ALL)
     private val updateTag = Regex("""<update_arin>(.+?)</update_arin>""", RegexOption.DOT_MATCHES_ALL)
@@ -104,6 +109,7 @@ object Prompt {
         terminal: Boolean = false,
         tools: String = "",
         terminalInfo: String = "",
+        pastChats: String = "",
     ): String = buildString {
         append("You are Arin, a helpful, friendly assistant in an Android app. Answer clearly and concisely. ")
         append("Use Markdown when it helps: short headings, lists, and fenced code blocks with a language.\n")
@@ -183,6 +189,14 @@ object Prompt {
                 memories.forEach { append("- ").append(it.text).append('\n') }
             }
             append('\n')
+            append("Past conversations: every chat with the person is saved on this phone and you can read them. ")
+            append("When they refer to something from before (\"my app\", \"the error we fixed\", \"what you suggested\", ")
+            append("\"continue where we left off\", \"do you remember…\"), or it would help to know what was said earlier, reply with ")
+            append("ONLY <recall>a few keywords</recall> (topic words that were likely said, not words like \"discussed\"). ")
+            append("The app sends you the matching parts of past chats; then answer from them. Never say you can't remember ")
+            append("past chats or that you have no memory before recalling.\n")
+            if (pastChats.isNotBlank()) append("Most recent past chats (title, date):\n").append(pastChats).append('\n')
+            append('\n')
         }
 
         if (project != null) {
@@ -238,8 +252,9 @@ object Prompt {
             .replace(searchTagAnywhere, "").replace(Regex("""<search>[^<]*$"""), "")
             .replace(buildTag, "").replace(Regex("""<build[\s\S]*$"""), "")
             .replace(updateTag, "").replace(Regex("""<update_arin>[\s\S]*$"""), "")
+            .replace(recallTag, "").replace(Regex("""<recall>[^<]*$"""), "")
             .replace(imagesTag, "").replace(videosTag, "").replace(fetchTag, "").replace(downloadTag, "")
             .replace(Regex("""<(images|videos|fetch|download)\b[\s\S]*$"""), "")
-            .replace(Regex("""</?(run|tool|build|update_arin|images|videos|fetch|download)\b[^>]*>"""), "")
+            .replace(Regex("""</?(run|tool|build|update_arin|images|videos|fetch|download|recall)\b[^>]*>"""), "")
             .trimEnd()
 }

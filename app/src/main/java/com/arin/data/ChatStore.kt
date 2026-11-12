@@ -159,6 +159,51 @@ class ChatStore(private val context: Context) {
         }
     }
 
+    /**
+     * The parts of saved chats that match [query], for the model to read: each matching message
+     * with the message before and after it. Newest chats first; [exclude] is the current chat.
+     */
+    fun recall(query: String, exclude: String?, maxChars: Int = 12_000): String {
+        val words = query.lowercase().split(Regex("""[^\p{L}\p{N}._-]+""")).filter { it.length >= 3 }.distinct()
+        if (words.isEmpty()) return ""
+        data class Hit(val score: Int, val text: String)
+        val hits = mutableListOf<Hit>()
+        val date = java.text.SimpleDateFormat("d MMM yyyy", java.util.Locale.ENGLISH)
+        for (s in list()) {
+            if (s.id == exclude) continue
+            val chat = load(s.id) ?: continue
+            val titleScore = words.count { s.title.contains(it, ignoreCase = true) } * 2
+            val msgs = chat.messages.filterNot { it.failed }
+            val scored = msgs.mapIndexed { i, m -> i to words.count { m.text.contains(it, ignoreCase = true) } }
+                .filter { it.second > 0 }.sortedByDescending { it.second }.take(3)
+            if (scored.isEmpty() && titleScore == 0) continue
+            val picked = (if (scored.isEmpty()) listOf(0, 1) else scored.flatMap { (i, _) -> listOf(i - 1, i, i + 1) })
+                .filter { it in msgs.indices }.distinct().sorted()
+            val body = picked.joinToString("\n") { i ->
+                val m = msgs[i]
+                (if (m.fromUser) "Person: " else "Arin: ") + m.text.replace(Regex("\\s+"), " ").take(700)
+            }
+            hits += Hit(
+                titleScore + scored.sumOf { it.second },
+                "### Chat \"${s.title}\" (${date.format(java.util.Date(s.updated))})\n$body",
+            )
+        }
+        if (hits.isEmpty()) return ""
+        val out = StringBuilder()
+        for (h in hits.sortedByDescending { it.score }.take(6)) {
+            if (out.length + h.text.length > maxChars) break
+            out.append(h.text).append("\n\n")
+        }
+        return out.toString().trim()
+    }
+
+    /** Titles and dates of the newest chats, one per line, for the model to know what exists. */
+    fun recentTitles(exclude: String?, count: Int = 25): String {
+        val date = java.text.SimpleDateFormat("d MMM yyyy", java.util.Locale.ENGLISH)
+        return list().filter { it.id != exclude }.take(count)
+            .joinToString("\n") { "- ${it.title} (${date.format(java.util.Date(it.updated))})" }
+    }
+
     private fun rebuildIndex(): List<ChatSummary> {
         val all = dir.listFiles { f -> f.name.endsWith(".json") && f != indexFile }.orEmpty()
             .mapNotNull { f -> runCatching { json.decodeFromString<Chat>(f.readText()) }.getOrNull() }

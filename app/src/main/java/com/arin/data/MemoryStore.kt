@@ -16,7 +16,7 @@ class MemoryStore(context: Context) {
     private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
 
     /** Kept small so it doesn't crowd out the conversation. */
-    private val maxItems = 60
+    private val maxItems = 200
 
     @Synchronized
     fun list(): List<Memory> = runCatching { json.decodeFromString<List<Memory>>(file.readText()) }.getOrDefault(emptyList())

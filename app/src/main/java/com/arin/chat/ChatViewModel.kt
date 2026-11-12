@@ -411,16 +411,36 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             append("- **GitHub repository:** [Open on GitHub](${com.arin.builder.BuildRunner.repoPage(project)})\n")
             append(if (project.selfUpdate) "\nTap the APK link (or Install in Build mode) to update Arin." else "\nTap the APK link to download and install it.")
         } else {
-            "⚠️ **The build of $name didn't finish:** ${result.message}" +
-                (result.repoUrl?.let { "\n\nGitHub repository: [Open on GitHub]($it)" } ?: "") +
-                "\n\nSay \"try again\" or describe what to change, and I'll keep going."
+            buildString {
+                append("⚠️ **The build of $name failed.**\n\n**Why it failed:** ${result.message}\n")
+                if (result.log.isNotBlank()) {
+                    val lines = result.log.lines().filter { it.isNotBlank() }
+                    append("\n**Failure log**")
+                    if (lines.size > 60) append(" (first 60 of ${lines.size} lines)")
+                    append(":\n```\n")
+                    append(lines.take(60).joinToString("\n") { it.take(300) }.replace("```", "` ` `"))
+                    append("\n```\n")
+                }
+                result.runUrl?.let { append("\n- **Full build log:** [Open the run on GitHub]($it)\n") }
+                result.repoUrl?.let { append("- **GitHub repository:** [Open on GitHub]($it)\n") }
+                append("\nSay \"try again\" to keep fixing it, or describe what to change.")
+            }
         }
+        lastFailure = if (result.success) "" else
+            "The last Build mode run ($name) FAILED. Reason: ${result.message}" +
+                (if (result.log.isNotBlank()) " Error log:\n${result.log.take(4_000)}\n" else "") +
+                (result.runUrl?.let { " Full log: $it ." } ?: "") +
+                " When the person asks why it failed, explain from this log in plain words; to fix it, emit a <build> tag that says what to change.\n\n"
         messages += Message(fromUser = false, text = text)
         persist()
     }
 
+    /** Details of the last failed build, for the model to explain or fix. */
+    private var lastFailure = ""
+
     /** The latest build's links, for the model to give when asked. */
     private fun latestBuildInfo(): String {
+        if (lastFailure.isNotEmpty()) return lastFailure
         val p = com.arin.builder.BuildRunner.project ?: return ""
         val apk = p.lastApkUrl ?: return ""
         return "Latest app built in Build mode: ${p.appName}" + (if (p.selfUpdate) " (Arin itself)" else "") +
@@ -769,7 +789,9 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 val system = Prompt.system(
                     searchFlag, memoryFlag, memoryList, project, useTerminal, com.arin.mcp.Mcp.promptSection(),
                     terminalInfo = com.arin.terminal.Shell.describe(app),
+                    pastChats = if (memoryFlag) withContext(Dispatchers.IO) { runCatching { store.recentTitles(chatId) }.getOrDefault("") } else "",
                 ) + latestBuildInfo()
+                var recalls = 0
                 var searches = 0
                 while (true) {
                     // Messages the person sent while Arin was working go in before the next step.
@@ -884,6 +906,24 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                         )
                         continue
                     }
+                    // Past chats: read what was said before.
+                    val recallQuery = if (memoryFlag && recalls < 4) Prompt.recall(full) else null
+                    if (recallQuery != null) {
+                        recalls++
+                        liveText = ""
+                        status = "Remembering “$recallQuery”"
+                        val found = withContext(Dispatchers.IO) { runCatching { store.recall(recallQuery, chatId) }.getOrDefault("") }
+                        status = null
+                        val result = if (found.isBlank())
+                            "No past chat mentions \"$recallQuery\". Try other words once, or answer from this chat and ask the person for the detail."
+                        else "Matching parts of past chats:\n\n$found\n\nNow answer using these where they help."
+                        val step = com.arin.data.CommandRun("recall: $recallQuery", result.take(2_000), 0, kind = "tool")
+                        ran += step
+                        liveCommands += step
+                        turns += Turn(false, full)
+                        turns += Turn(true, result)
+                        continue
+                    }
                     // Internet steps: show pictures or videos, read a page, download a file.
                     if (webSteps < Prompt.MAX_WEB_STEPS) {
                         val media = Prompt.mediaRequest(full)
@@ -929,7 +969,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                             continue
                         }
                     }
-                    val working = ran.any { it.kind != "steer" }
+                    val working = ran.any { it.kind != "steer" && !it.command.startsWith("recall: ") }
                     val q = when {
                         (useSearch || useTerminal) && working && searches < Prompt.MAX_TASK_SEARCHES -> Prompt.searchQueryAnywhere(full)
                         useSearch && searches < Prompt.MAX_SEARCHES -> Prompt.searchQuery(full)

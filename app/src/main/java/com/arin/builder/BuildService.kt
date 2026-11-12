@@ -76,6 +76,9 @@ class BuildService : Service() {
                 BuildResult(false, friendly(e))
             }
             BuildRunner.timeline += TimelineItem.Result(result.success, result.message, result.apkUrl, result.repoUrl)
+            if (!result.success && result.log.isNotBlank()) {
+                BuildRunner.timeline += TimelineItem.Event(BuildEvent(BuildEvent.Kind.ERROR, "Why it failed:\n" + result.log.take(3_000)))
+            }
             BuildRunner.running = false
             BuildRunner.progress = null
             BuildRunner.saveNow(this@BuildService)
