@@ -633,8 +633,37 @@ private fun CustomApiSettings(vm: ChatViewModel) {
     var modelText by remember(base) { mutableStateOf(vm.customModel) }
     var modelNote by remember(base) { mutableStateOf<String?>(null) }
 
+    // Saved APIs: as many as you like, pick one to use.
+    var apiName by remember(base) { mutableStateOf(vm.savedApis.firstOrNull { it.baseUrl == base }?.name ?: "") }
+    Text("Your APIs", style = MaterialTheme.typography.titleSmall)
+    if (vm.savedApis.isEmpty()) {
+        Text(
+            "Save each API you use (base URL + key + model), then switch between them with one tap here or from the model menu on the chat screen.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+    vm.savedApis.forEach { api ->
+        val inUse = vm.currentSavedApi() == api
+        Surface(
+            color = if (inUse) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceContainerHigh,
+            shape = MaterialTheme.shapes.medium,
+            modifier = Modifier.fillMaxWidth().clickable { vm.useSavedApi(api) },
+        ) {
+            Row(Modifier.padding(start = 12.dp, top = 6.dp, bottom = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                androidx.compose.material3.RadioButton(selected = inUse, onClick = { vm.useSavedApi(api) })
+                Column(Modifier.weight(1f)) {
+                    Text(api.name, style = MaterialTheme.typography.bodyLarge)
+                    Text(api.baseUrl, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1)
+                }
+                TextButton(onClick = { vm.removeSavedApi(api) }) { Text("Remove") }
+            }
+        }
+    }
+    Spacer(Modifier.height(4.dp))
+    Text("Set up an API", style = MaterialTheme.typography.titleSmall)
     Text(
-        "Connect any service with its own base URL and key. Tap one, or paste the address it gives you. " +
+        "Tap a service or paste the base URL it gives you, add its key and model, then save it to Your APIs. " +
             "Each address keeps its own key and model.",
         style = MaterialTheme.typography.bodySmall,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -704,6 +733,17 @@ private fun CustomApiSettings(vm: ChatViewModel) {
         style = MaterialTheme.typography.bodySmall,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
     )
+    OutlinedTextField(
+        value = apiName,
+        onValueChange = { apiName = it.take(40) },
+        label = { Text("Name for this API") },
+        placeholder = { Text(com.arin.llm.CustomApi.label(base)) },
+        singleLine = true,
+        modifier = Modifier.fillMaxWidth(),
+    )
+    androidx.compose.material3.Button(onClick = { vm.saveCurrentApi(apiName); vm.chooseProvider(Provider.Custom) }) {
+        Text(if (vm.savedApis.any { it.baseUrl == base }) "Update in Your APIs" else "Save to Your APIs")
+    }
     if (vm.provider != Provider.Custom) {
         OutlinedButton(onClick = { vm.chooseProvider(Provider.Custom) }) { Text("Use Custom API for replies") }
     }

@@ -7,6 +7,8 @@ import androidx.security.crypto.MasterKey
 import com.arin.llm.ApiFormat
 import com.arin.llm.CustomApi
 import com.arin.llm.Provider
+import kotlinx.serialization.decodeFromString
+import kotlinx.serialization.encodeToString
 
 enum class ThemeMode(val label: String) { System("Match phone"), Light("Light"), Dark("Dark") }
 
@@ -33,6 +35,16 @@ class Settings(context: Context) {
         CustomApi.format = customFormat
         CustomApi.manualModel = customModel
     }
+
+    // ---- Saved APIs: several custom services to switch between ----
+
+    /** The person's saved APIs (name, base URL, format). Each URL keeps its own key and model. */
+    var savedApis: List<SavedApi>
+        get() = runCatching {
+            kotlinx.serialization.json.Json { ignoreUnknownKeys = true }
+                .decodeFromString<List<SavedApi>>(prefs.getString("saved_apis", "[]") ?: "[]")
+        }.getOrDefault(emptyList())
+        set(value) = prefs.edit().putString("saved_apis", kotlinx.serialization.json.Json.encodeToString(value)).apply()
 
     // ---- Custom API: your own base URL, format, key and model ----
 
@@ -139,3 +151,8 @@ class Settings(context: Context) {
 
     fun setKey(provider: Provider, value: String) = keys.edit().putString(slot(provider), value.trim()).apply()
 }
+
+
+/** A custom API the person saved, to switch to with one tap. */
+@kotlinx.serialization.Serializable
+data class SavedApi(val name: String, val baseUrl: String, val format: String = "OpenAI")

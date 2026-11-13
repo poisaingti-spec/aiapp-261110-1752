@@ -1593,6 +1593,36 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
     // ---- Custom API ----
 
+    /** Custom APIs saved by the person; one tap switches to any of them (each keeps its own key and model). */
+    val savedApis = androidx.compose.runtime.mutableStateListOf<com.arin.data.SavedApi>().apply { addAll(settings.savedApis) }
+
+    /** Saves the API in use now under [name] (or renames it if it's already saved). */
+    fun saveCurrentApi(name: String) {
+        val n = name.trim().ifBlank { com.arin.llm.CustomApi.label(customBaseUrl) }
+        val api = com.arin.data.SavedApi(n, customBaseUrl, customFormat.name)
+        val i = savedApis.indexOfFirst { it.baseUrl == customBaseUrl }
+        if (i >= 0) savedApis[i] = api else savedApis += api
+        settings.savedApis = savedApis.toList()
+        notice = "Saved \"$n\""
+    }
+
+    fun removeSavedApi(api: com.arin.data.SavedApi) {
+        savedApis.remove(api)
+        settings.savedApis = savedApis.toList()
+    }
+
+    /** Switches replies to a saved API, with its own key and last model. */
+    fun useSavedApi(api: com.arin.data.SavedApi) {
+        val format = runCatching { com.arin.llm.ApiFormat.valueOf(api.format) }.getOrDefault(com.arin.llm.ApiFormat.OpenAI)
+        setCustomBase(api.baseUrl, format)
+        chooseProvider(Provider.Custom)
+        notice = "Using ${api.name}" + if (!settings.key(Provider.Custom).isNotBlank()) " (no key saved for it yet: add one in Settings → Custom API)" else ""
+    }
+
+    /** The saved API in use right now, if any. */
+    fun currentSavedApi(): com.arin.data.SavedApi? =
+        if (provider == Provider.Custom) savedApis.firstOrNull { it.baseUrl == customBaseUrl } else null
+
     var customBaseUrl by mutableStateOf(settings.customBaseUrl)
         private set
     var customFormat by mutableStateOf(settings.customFormat)

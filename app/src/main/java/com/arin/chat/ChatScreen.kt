@@ -305,8 +305,24 @@ private fun TopBar(vm: ChatViewModel, onMenu: () -> Unit, onNew: () -> Unit, onP
                 }
             }
             DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+                // Saved APIs: switch service with one tap.
+                if (vm.savedApis.isNotEmpty()) {
+                    Text(
+                        "Your APIs",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
+                    )
+                    vm.savedApis.forEach { api ->
+                        DropdownMenuItem(
+                            text = { Text(api.name + if (vm.currentSavedApi() == api) "  ✓" else "") },
+                            onClick = { vm.useSavedApi(api); menu = false },
+                        )
+                    }
+                    androidx.compose.material3.HorizontalDivider()
+                }
                 Text(
-                    vm.provider.label,
+                    vm.currentSavedApi()?.name ?: vm.provider.label,
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
