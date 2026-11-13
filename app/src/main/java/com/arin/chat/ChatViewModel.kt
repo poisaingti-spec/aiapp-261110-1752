@@ -966,7 +966,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             editing = null
         }
         messages += Message(fromUser = true, text = text.trim(), attachments = files)
-        if (messages.size == 1) title = makeTitle(text, files)
+        if (messages.size == 1 && !isReverseEngineeringChat()) title = makeTitle(text, files)
         persist()
         reply()
     }
@@ -1002,7 +1002,10 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         val key = settings.key(p)
         val project = chatProject
         val useTerminal = terminalOn
-        val servers = mcpServers.filter { it.enabled }
+        // REA (reverse engineering) is allowed only in the chat named "Reverse engineering"; other chats run normal.
+        val reChat = isReverseEngineeringChat()
+        val servers = mcpServers.filter { it.enabled && (reChat || it.name != com.arin.mcp.Mcp.REA.name) }
+        val activeNames = servers.map { it.name }.toSet()
         val memoryFlag = memoryOn && !temporary
         val memoryList = if (memoryFlag) memories.toList() else emptyList()
         val deep = deepResearch
@@ -1041,7 +1044,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                     if (problems.isNotEmpty()) notice = problems.joinToString("\n")
                 }
                 val system = Prompt.system(
-                    searchFlag, memoryFlag, memoryList, project, useTerminal, com.arin.mcp.Mcp.promptSection(),
+                    searchFlag, memoryFlag, memoryList, project, useTerminal, com.arin.mcp.Mcp.promptSection(activeNames),
                     terminalInfo = com.arin.terminal.Shell.describe(app),
                     pastChats = if (memoryFlag) withContext(Dispatchers.IO) { runCatching { store.recentTitles(chatId) }.getOrDefault("") } else "",
                     aboutPerson = aboutYou,
@@ -1152,7 +1155,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                         )
                         continue
                     }
-                    val call = if (ran.count { it.kind != "steer" } < Prompt.MAX_COMMANDS && com.arin.mcp.Mcp.connected().isNotEmpty()) Prompt.toolCall(full) else null
+                    val call = if (ran.count { it.kind != "steer" } < Prompt.MAX_COMMANDS && com.arin.mcp.Mcp.connected(activeNames).isNotEmpty()) Prompt.toolCall(full) else null
                     if (call != null) {
                         liveText = ""
                         val (name, body) = call
@@ -1295,7 +1298,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                             continue
                         }
                         // Stopped mid-task ("fixing it by…:" with no command)? Ask the model to carry on.
-                        if (working && nudges < 3 && (useTerminal || com.arin.mcp.Mcp.connected().isNotEmpty()) && Prompt.looksUnfinished(full)) {
+                        if (working && nudges < 3 && (useTerminal || com.arin.mcp.Mcp.connected(activeNames).isNotEmpty()) && Prompt.looksUnfinished(full)) {
                             nudges++
                             turns += Turn(false, full)
                             turns += Turn(
@@ -1476,6 +1479,21 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         pending.clear()
         editing = null
     }
+
+    /** The one chat where REA (reverse engineering) works. Everywhere else it stays off. */
+    fun openReverseEngineering() {
+        val existing = chats.firstOrNull { it.title.equals(REVERSE_ENG_TITLE, ignoreCase = true) }
+        if (existing != null) {
+            open(existing.id)
+        } else {
+            newChat()
+            title = REVERSE_ENG_TITLE
+            notice = "Reverse engineering chat: REA tools work here. Other chats stay normal."
+        }
+    }
+
+    /** True when the open chat is the reverse-engineering chat (the only one that may use REA). */
+    private fun isReverseEngineeringChat() = title.equals(REVERSE_ENG_TITLE, ignoreCase = true)
 
     fun open(id: String) {
         if (id == chatId) return
@@ -1786,6 +1804,9 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     companion object {
+        /** The single chat where REA (reverse engineering) is active. */
+        const val REVERSE_ENG_TITLE = "Reverse engineering"
+
         /** Arin's source repository, set when this build of Arin was made; changeable in Settings → GitHub. */
         const val DEFAULT_SELF_REPO = "poisaingti-spec/aiapp-261110-1752"
         const val DEFAULT_SELF_BRANCH = "arin"

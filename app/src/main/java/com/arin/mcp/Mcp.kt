@@ -263,7 +263,8 @@ object Mcp {
         problems
     }
 
-    fun connected(): List<McpClient> = clients.values.filter { it.ready }
+    fun connected(allowed: Set<String>? = null): List<McpClient> =
+        clients.values.filter { it.ready && (allowed == null || it.server.name in allowed) }
 
     fun status(name: String): String? = clients[name]?.let { if (it.ready) "Connected · ${it.tools.size} tools" else null }
 
@@ -321,8 +322,8 @@ object Mcp {
     }
 
     /** The part of the instructions that tells the model which tools exist and how to call them. */
-    fun promptSection(): String {
-        val list = connected()
+    fun promptSection(allowed: Set<String>? = null): String {
+        val list = connected(allowed)
         if (list.isEmpty()) return ""
         return buildString {
             append("Tools (MCP): you can use tools from connected MCP servers, the same way Claude Code does. ")

@@ -148,6 +148,11 @@ fun ChatsDrawer(
                 }
             }
             DrawerRow(icon = { Icon(Icons.Filled.Build, contentDescription = null) }, label = "Build an app (APK)", onClick = onBuild)
+            DrawerRow(
+                icon = { Icon(Icons.Filled.Build, contentDescription = null) },
+                label = "Reverse engineering (REA)",
+                onClick = { vm.openReverseEngineering(); onPick() },
+            )
             DrawerRow(icon = { Icon(Icons.Filled.Info, contentDescription = null) }, label = "Logs", onClick = onLogs)
             DrawerRow(icon = { Icon(Icons.Filled.Settings, contentDescription = null) }, label = "Settings", onClick = onSettings)
         }
