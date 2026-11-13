@@ -91,6 +91,9 @@ class BuildService : Service() {
                 BuildResult(false, friendly(e), log = e.stackTraceToString().take(2_000))
             }
             BuildRunner.timeline += TimelineItem.Result(result.success, result.message, result.apkUrl, result.repoUrl)
+            if (!result.success && result.message != "Stopped.") {
+                com.arin.CrashLog.note(this@BuildService, "Build failed", "${request.project?.appName ?: request.appName}: ${result.message}", result.log)
+            }
             if (!result.success && result.log.isNotBlank()) {
                 BuildRunner.timeline += TimelineItem.Event(BuildEvent(BuildEvent.Kind.ERROR, "Why it failed:\n" + result.log.take(3_000)))
             }

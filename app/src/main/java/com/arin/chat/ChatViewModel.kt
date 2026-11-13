@@ -1286,6 +1286,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 answer = liveText // Stop pressed: keep whatever arrived.
             } catch (e: Throwable) {
                 failure = e.message ?: "Something went wrong."
+                com.arin.CrashLog.note(getApplication(), "Reply failed", "${p.label} · $m: ${failure}", e.stackTraceToString().take(4_000))
             } finally {
                 val seconds = if (thinkStart > 0) ((System.currentTimeMillis() - thinkStart) / 1000).toInt() else 0
                 if (memoryFlag) Prompt.memories(answer).forEach { remember(it) }

@@ -91,6 +91,7 @@ fun ChatScreen(
     onOpenProjects: () -> Unit,
     onOpenProject: (com.arin.data.Project) -> Unit,
     onOpenBuild: () -> Unit = {},
+    onOpenLogs: () -> Unit = {},
     startVoice: Boolean = false,
     onVoiceStarted: () -> Unit = {},
 ) {
@@ -186,7 +187,7 @@ fun ChatScreen(
             text = {
                 Column(Modifier.heightIn(max = 360.dp).verticalScroll(androidx.compose.foundation.rememberScrollState())) {
                     Text(
-                        "Copy this report and send it to get the crash fixed.\n\n" + report.take(3_000),
+                        "Copy this report and send it to get the crash fixed. It's also saved in Logs (side panel).\n\n" + report.take(3_000),
                         style = MaterialTheme.typography.bodySmall,
                     )
                 }
@@ -218,6 +219,7 @@ fun ChatScreen(
                 onProjects = { scope.launch { drawer.close() }; onOpenProjects() },
                 onProject = { p -> scope.launch { drawer.close() }; onOpenProject(p) },
                 onBuild = { scope.launch { drawer.close() }; onOpenBuild() },
+                onLogs = { scope.launch { drawer.close() }; onOpenLogs() },
             )
         },
     ) {

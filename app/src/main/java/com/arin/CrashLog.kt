@@ -3,42 +3,87 @@ package com.arin
 import android.content.Context
 import android.os.Build
 import java.io.File
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 /**
- * Saves the details of a crash to a file, so the next time Arin opens it can show what went wrong
- * (and the person can copy it and send it to get the crash fixed).
+ * Keeps a log of crashes and errors on the phone (Logs in the side panel), so they can be copied and
+ * sent to get them fixed. The newest crash is also shown once when Arin opens again.
  */
 object CrashLog {
-    private fun file(context: Context) = File(context.filesDir, "last-crash.txt")
+    private const val MAX_ENTRIES = 40
+
+    /** One saved log entry. */
+    data class Entry(val file: File, val time: Long, val kind: String, val title: String, val text: String)
+
+    private fun lastCrash(context: Context) = File(context.filesDir, "last-crash.txt")
+    private fun dir(context: Context) = File(context.filesDir, "logs").apply { mkdirs() }
 
     fun install(context: Context) {
         val app = context.applicationContext
         val previous = Thread.getDefaultUncaughtExceptionHandler()
         Thread.setDefaultUncaughtExceptionHandler { thread, error ->
-            record(app, error, "thread ${thread.name}")
+            record(app, error, "thread ${thread.name}", crash = true)
             previous?.uncaughtException(thread, error)
         }
     }
 
-    /** Writes [error] down; also used for errors that were caught but should never happen. */
-    fun record(context: Context, error: Throwable, where: String = "") {
+    private fun header(context: Context) =
+        "Arin ${ArinApp.versionLabel(context)} · Android ${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT}) · ${Build.MANUFACTURER} ${Build.MODEL}"
+
+    /** Writes [error] down: a crash (the app closed) or an error that was caught. */
+    fun record(context: Context, error: Throwable, where: String = "", crash: Boolean = false) {
         runCatching {
             val text = buildString {
-                appendLine("Arin ${ArinApp.versionLabel(context)} · Android ${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT}) · ${Build.MANUFACTURER} ${Build.MODEL}")
+                appendLine(header(context))
                 if (where.isNotBlank()) appendLine("Where: $where")
                 appendLine(error.stackTraceToString().take(12_000))
             }
-            file(context).writeText(text)
+            val title = (error.javaClass.simpleName + ": " + (error.message ?: "")).take(160)
+            save(context, if (crash) "Crash" else "Error", title, text)
+            if (crash) lastCrash(context).writeText(text)
         }
     }
 
-    /** The saved report, once: it's deleted after it has been read. */
+    /** Writes down a problem that isn't an exception: a failed build, a failed reply. */
+    fun note(context: Context, kind: String, title: String, details: String) {
+        runCatching { save(context, kind, title.take(160), header(context) + "\n" + details.take(12_000)) }
+    }
+
+    @Synchronized
+    private fun save(context: Context, kind: String, title: String, text: String) {
+        val d = dir(context)
+        val time = System.currentTimeMillis()
+        File(d, "$time-${kind.lowercase()}.txt").writeText("$kind\n$title\n$text")
+        d.listFiles().orEmpty().sortedByDescending { it.name }.drop(MAX_ENTRIES).forEach { it.delete() }
+    }
+
+    /** Every saved entry, newest first. */
+    fun entries(context: Context): List<Entry> = dir(context).listFiles().orEmpty().sortedByDescending { it.name }.mapNotNull { f ->
+        runCatching {
+            val lines = f.readText().split('\n', limit = 3)
+            Entry(f, f.name.substringBefore('-').toLongOrNull() ?: f.lastModified(), lines[0], lines.getOrElse(1) { "" }, lines.getOrElse(2) { "" })
+        }.getOrNull()
+    }
+
+    fun delete(entry: Entry) { entry.file.delete() }
+
+    fun clear(context: Context) {
+        dir(context).listFiles().orEmpty().forEach { it.delete() }
+        lastCrash(context).delete()
+    }
+
+    fun format(e: Entry): String =
+        "${e.kind} · ${SimpleDateFormat("d MMM yyyy, HH:mm:ss", Locale.ENGLISH).format(Date(e.time))}\n${e.title}\n${e.text}"
+
+    /** The newest crash, once (for the message shown when Arin opens). It stays in Logs. */
     fun takeReport(context: Context): String? = runCatching {
-        val f = file(context)
+        val f = lastCrash(context)
         if (!f.exists()) null else f.readText().also { f.delete() }
     }.getOrNull()
 
-    /** For coroutine scopes: an error inside a background job is recorded instead of closing the app. */
+    /** For coroutine scopes: an error inside a background job is logged instead of closing the app. */
     fun handler(context: () -> Context?) = kotlinx.coroutines.CoroutineExceptionHandler { _, e ->
         context()?.let { record(it, e, "background job (kept running)") }
     }
