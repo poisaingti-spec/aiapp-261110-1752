@@ -54,6 +54,10 @@ fun SettingsScreen(vm: ChatViewModel, onBack: () -> Unit) {
             Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 16.dp, vertical = 8.dp),
             verticalArrangement = Arrangement.spacedBy(14.dp),
         ) {
+            Section("My APIs") {
+                MyApis(vm)
+            }
+
             Section("Replies come from") {
                 androidx.compose.foundation.layout.FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Provider.entries.forEach { p ->
@@ -585,6 +589,110 @@ private fun ToolsSettings(vm: ChatViewModel) {
         }
     } else {
         OutlinedButton(onClick = { adding = true }) { Text("Add MCP server") }
+    }
+}
+
+/** Every API the person added (name, base URL, key, model), one tap to use; Add API opens one form for all of it. */
+@Composable
+private fun MyApis(vm: ChatViewModel) {
+    var editing by remember { mutableStateOf<com.arin.data.SavedApi?>(null) }
+    var adding by remember { mutableStateOf(false) }
+    if (vm.savedApis.isEmpty()) {
+        Text(
+            "Add your own APIs: each with its name, base URL, API key and model. Then pick any of them here or from the model menu on the chat screen, without typing them again.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+    vm.savedApis.forEach { api ->
+        val inUse = vm.currentSavedApi() == api
+        Surface(
+            color = if (inUse) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceContainerHigh,
+            shape = MaterialTheme.shapes.medium,
+            modifier = Modifier.fillMaxWidth().clickable { vm.useSavedApi(api) },
+        ) {
+            Row(Modifier.padding(start = 4.dp, top = 4.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                androidx.compose.material3.RadioButton(selected = inUse, onClick = { vm.useSavedApi(api) })
+                Column(Modifier.weight(1f)) {
+                    Text(api.name + if (inUse) "  · in use" else "", style = MaterialTheme.typography.bodyLarge)
+                    Text(api.baseUrl, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1)
+                    Text(
+                        (if (api.model.isNotBlank()) "Model: ${api.model}" else "Model: chosen from its list") +
+                            if (vm.hasKeyFor(api)) " · key saved" else " · no key",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = if (vm.hasKeyFor(api)) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.error,
+                        maxLines = 1,
+                    )
+                }
+                TextButton(onClick = { editing = api }) { Text("Edit") }
+            }
+        }
+    }
+    androidx.compose.material3.Button(onClick = { adding = true }) { Text("+ Add API") }
+    if (adding || editing != null) {
+        ApiForm(vm, editing, onClose = { adding = false; editing = null })
+    }
+}
+
+/** One form for an API: name, base URL, key, model and request format. */
+@OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
+@Composable
+private fun ApiForm(vm: ChatViewModel, old: com.arin.data.SavedApi?, onClose: () -> Unit) {
+    var name by remember { mutableStateOf(old?.name ?: "") }
+    var url by remember { mutableStateOf(old?.baseUrl ?: "") }
+    var key by remember { mutableStateOf("") }
+    var model by remember { mutableStateOf(old?.model ?: "") }
+    var format by remember {
+        mutableStateOf(old?.let { runCatching { com.arin.llm.ApiFormat.valueOf(it.format) }.getOrNull() } ?: com.arin.llm.ApiFormat.OpenAI)
+    }
+    var problem by remember { mutableStateOf<String?>(null) }
+    var confirmDelete by remember { mutableStateOf(false) }
+    androidx.compose.material3.AlertDialog(
+        onDismissRequest = onClose,
+        title = { Text(if (old == null) "Add API" else "Edit API") },
+        text = {
+            Column(
+                Modifier.verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                OutlinedTextField(name, { name = it.take(40) }, label = { Text("Name") }, placeholder = { Text("My API") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                OutlinedTextField(url, { url = it.trim(); problem = null }, label = { Text("Base URL") }, placeholder = { Text("https://example.com/v1") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                OutlinedTextField(
+                    key, { key = it.trim() },
+                    label = { Text("API key") },
+                    placeholder = { Text(if (old != null && vm.hasKeyFor(old)) "Saved (leave empty to keep it)" else "Paste the key") },
+                    singleLine = true,
+                    visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(),
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                OutlinedTextField(model, { model = it.trim() }, label = { Text("Model id") }, placeholder = { Text("e.g. deepseek-v4.1-flash") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                Text("Request format", style = MaterialTheme.typography.labelLarge)
+                androidx.compose.foundation.layout.FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    com.arin.llm.ApiFormat.entries.forEach { f ->
+                        FilterChip(selected = format == f, onClick = { format = f }, label = { Text(f.label) })
+                    }
+                }
+                problem?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
+                if (old != null) {
+                    TextButton(onClick = { confirmDelete = true }) { Text("Delete this API", color = MaterialTheme.colorScheme.error) }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = {
+                problem = vm.saveApi(old, name, url, key, model, format)
+                if (problem == null) onClose()
+            }) { Text("Save and use") }
+        },
+        dismissButton = { TextButton(onClick = onClose) { Text("Cancel") } },
+    )
+    if (confirmDelete && old != null) {
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { confirmDelete = false },
+            title = { Text("Delete ${old.name}?") },
+            confirmButton = { TextButton(onClick = { vm.removeSavedApi(old); confirmDelete = false; onClose() }) { Text("Delete") } },
+            dismissButton = { TextButton(onClick = { confirmDelete = false }) { Text("Cancel") } },
+        )
     }
 }
 

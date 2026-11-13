@@ -1633,10 +1633,38 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     /** Switches replies to a saved API, with its own key and last model. */
     fun useSavedApi(api: com.arin.data.SavedApi) {
         val format = runCatching { com.arin.llm.ApiFormat.valueOf(api.format) }.getOrDefault(com.arin.llm.ApiFormat.OpenAI)
+        if (api.model.isNotBlank() && settings.model(Provider.Custom).isNullOrBlank()) settings.setModelFor(api.baseUrl, api.model)
         setCustomBase(api.baseUrl, format)
         chooseProvider(Provider.Custom)
-        notice = "Using ${api.name}" + if (!settings.key(Provider.Custom).isNotBlank()) " (no key saved for it yet: add one in Settings → Custom API)" else ""
+        notice = "Using ${api.name}" + if (settings.key(Provider.Custom).isBlank()) " (no API key saved for it: tap Edit to add one)" else ""
     }
+
+    /**
+     * Adds a new API, or changes [old], from one form: name, base URL, key, model and format.
+     * Returns a problem to show, or null when saved. The new API is switched on right away.
+     */
+    fun saveApi(old: com.arin.data.SavedApi?, name: String, url: String, key: String, model: String, format: com.arin.llm.ApiFormat): String? {
+        val base = com.arin.llm.CustomApi.normalize(url, format)
+        if (base.isBlank()) return "Enter the base URL, e.g. https://example.com/v1"
+        if (!base.startsWith("https://") && !base.startsWith("http://")) return "The base URL must start with https://"
+        val api = com.arin.data.SavedApi(name.trim().ifBlank { com.arin.llm.CustomApi.label(base) }, base, format.name, model.trim())
+        // A key left empty while editing keeps the one already saved.
+        if (key.isNotBlank()) settings.setKeyFor(base, key)
+        else if (old != null && old.baseUrl != base) settings.setKeyFor(base, settings.keyFor(old.baseUrl))
+        settings.setModelFor(base, model)
+        // Replace the one being edited (or one with the same address); keep a single entry per address.
+        val list = savedApis.toMutableList()
+        val i = list.indexOfFirst { (old != null && it == old) || it.baseUrl == base }
+        if (i >= 0) list[i] = api else list += api
+        val cleaned = list.filterIndexed { idx, it -> it.baseUrl != base || idx == list.indexOf(api) }
+        savedApis.clear()
+        savedApis.addAll(cleaned)
+        settings.savedApis = cleaned
+        useSavedApi(api)
+        return null
+    }
+
+    fun hasKeyFor(api: com.arin.data.SavedApi) = settings.keyFor(api.baseUrl).isNotBlank()
 
     /** The saved API in use right now, if any. */
     fun currentSavedApi(): com.arin.data.SavedApi? =

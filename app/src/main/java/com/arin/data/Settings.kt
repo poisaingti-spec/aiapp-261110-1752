@@ -149,10 +149,20 @@ class Settings(context: Context) {
 
     fun key(provider: Provider): String = keys.getString(slot(provider), "").orEmpty()
 
+    /** Key and model for a saved API's address, without switching to it. */
+    fun keyFor(baseUrl: String): String = keys.getString("Custom@$baseUrl", "").orEmpty()
+
+    fun setKeyFor(baseUrl: String, key: String) = keys.edit().putString("Custom@$baseUrl", key.trim()).apply()
+
+    fun setModelFor(baseUrl: String, model: String) = prefs.edit()
+        .putString("custom_model@$baseUrl", model.trim())
+        .apply { if (model.isNotBlank()) putString("model_Custom@$baseUrl", model.trim()) }
+        .apply()
+
     fun setKey(provider: Provider, value: String) = keys.edit().putString(slot(provider), value.trim()).apply()
 }
 
 
 /** A custom API the person saved, to switch to with one tap. */
 @kotlinx.serialization.Serializable
-data class SavedApi(val name: String, val baseUrl: String, val format: String = "OpenAI")
+data class SavedApi(val name: String, val baseUrl: String, val format: String = "OpenAI", val model: String = "")
