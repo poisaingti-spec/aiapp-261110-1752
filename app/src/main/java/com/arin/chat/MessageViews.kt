@@ -95,7 +95,7 @@ fun ArinMessage(
     isLast: Boolean,
     onRetry: () -> Unit,
     onSummary: (() -> Unit)? = null,
-    onConfirmBuild: (() -> Unit)? = null,
+    onConfirmBuild: ((BuildTarget) -> Unit)? = null,
 ) {
     val clipboard = LocalClipboardManager.current
     Row(Modifier.fillMaxWidth()) {
@@ -131,8 +131,12 @@ fun ArinMessage(
                 if (message.sources.isNotEmpty()) Sources(message.sources)
             }
             if (onConfirmBuild != null && message.pendingBuild.isNotBlank()) {
-                androidx.compose.material3.Button(onClick = onConfirmBuild, modifier = Modifier.padding(top = 8.dp)) {
-                    Text(if (message.pendingBuild.startsWith("update\u0000")) "Update Arin now" else "Build now")
+                if (message.pendingBuild.startsWith("update\u0000")) {
+                    androidx.compose.material3.Button(onClick = { onConfirmBuild(BuildTarget.CHAT) }, modifier = Modifier.padding(top = 8.dp)) {
+                        Text("Update Arin now")
+                    }
+                } else {
+                    BuildWhere(onConfirmBuild)
                 }
             }
             Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -402,3 +406,18 @@ private fun BuildNowLine(onOpen: () -> Unit) {
 
 private fun Modifier.androidx_background(c: androidx.compose.ui.graphics.Color) =
     this.background(c, androidx.compose.foundation.shape.CircleShape)
+
+/** The build-location chooser shown under a prepared build: pick where to build it. */
+@OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
+@Composable
+private fun BuildWhere(onPick: (BuildTarget) -> Unit) {
+    Column(Modifier.padding(top = 8.dp)) {
+        Text("Where should I build it?", style = MaterialTheme.typography.labelLarge)
+        androidx.compose.foundation.layout.FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            androidx.compose.material3.Button(onClick = { onPick(BuildTarget.CHAT) }) { Text("In chat") }
+            androidx.compose.material3.OutlinedButton(onClick = { onPick(BuildTarget.BUILD_TAB) }) { Text("Build tab") }
+            androidx.compose.material3.OutlinedButton(onClick = { onPick(BuildTarget.PHONE) }) { Text("On phone") }
+            androidx.compose.material3.OutlinedButton(onClick = { onPick(BuildTarget.AUTO) }) { Text("Let Arin decide") }
+        }
+    }
+}

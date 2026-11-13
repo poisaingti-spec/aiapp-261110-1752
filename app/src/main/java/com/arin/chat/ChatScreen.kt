@@ -411,7 +411,7 @@ private fun Conversation(vm: ChatViewModel, onEdit: (Int) -> Unit) {
                     // Build progress in chat: a Summary of every step, like Build mode keeps.
                     onSummary = if (m.text.startsWith("🛠️")) ({ summaryOpen = true }) else null,
                     // Only the newest reply can be built from, so an old plan never starts by accident.
-                    onConfirmBuild = if (i == vm.messages.lastIndex && !vm.streaming) ({ vm.confirmBuild(m) }) else null,
+                    onConfirmBuild = if (i == vm.messages.lastIndex && !vm.streaming) ({ t: com.arin.chat.BuildTarget -> vm.confirmBuildAt(m, t) }) else null,
                 )
             }
             if (vm.streaming) {
@@ -587,6 +587,7 @@ private fun ChatMenu(vm: ChatViewModel) {
     val clipboard = androidx.compose.ui.platform.LocalClipboardManager.current
     var open by remember { mutableStateOf(false) }
     var info by remember { mutableStateOf(false) }
+    var confirmClearAll by remember { mutableStateOf(false) }
     Box {
         IconButton(onClick = { open = true }) {
             Icon(Icons.Filled.MoreVert, contentDescription = "Chat options")
@@ -613,7 +614,25 @@ private fun ChatMenu(vm: ChatViewModel) {
                 vm.notice = "Chat copied"
             })
             DropdownMenuItem(text = { Text("Chat info") }, onClick = { open = false; info = true })
+            androidx.compose.material3.HorizontalDivider()
+            DropdownMenuItem(
+                text = { Text("Clear all chats", color = MaterialTheme.colorScheme.error) },
+                onClick = { open = false; confirmClearAll = true },
+            )
         }
+    }
+    if (confirmClearAll) {
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { confirmClearAll = false },
+            title = { Text("Clear all chats?") },
+            text = { Text("This deletes every chat and project on this phone. It can't be undone.") },
+            confirmButton = {
+                androidx.compose.material3.TextButton(onClick = { vm.deleteAll(); vm.notice = "All chats cleared"; confirmClearAll = false }) {
+                    Text("Clear all", color = MaterialTheme.colorScheme.error)
+                }
+            },
+            dismissButton = { androidx.compose.material3.TextButton(onClick = { confirmClearAll = false }) { Text("Cancel") } },
+        )
     }
     if (info) {
         val s = remember(vm.messages.size) { com.arin.data.ChatExport.stats(vm.messages.toList()) }

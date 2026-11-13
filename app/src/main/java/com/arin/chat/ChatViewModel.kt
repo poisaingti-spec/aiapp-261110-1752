@@ -38,6 +38,9 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 /** Everything the chat, the chats list, projects and Settings share. One instance for the whole app. */
+/** Where a build runs. */
+enum class BuildTarget { BUILD_TAB, CHAT, PHONE, AUTO }
+
 class ChatViewModel(app: Application) : AndroidViewModel(app) {
     private val store = ChatStore(app)
     private val projectStore = ProjectStore(app)
@@ -652,11 +655,17 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     var openBuild by mutableStateOf(false)
 
     /** Starts building an app from chat; returns a problem to show, or null when it started. */
-    fun startBuild(name: String, description: String): String? {
+    fun startBuild(name: String, description: String, target: BuildTarget = BuildTarget.CHAT): String? {
         val token = githubToken()
         val app = getApplication<Application>()
+        val phoneReady = com.arin.terminal.Linux.androidBuildReady(app)
+        // Where to build: the phone (built-in Linux), or GitHub's cloud shown in the chat or the Build tab. Auto picks one.
+        val onPhone = target == BuildTarget.PHONE || (target == BuildTarget.AUTO && phoneReady && token.isBlank())
+        val inBuildTab = target == BuildTarget.BUILD_TAB
         return when {
-            token.isBlank() && !com.arin.terminal.Linux.androidBuildReady(app) ->
+            target == BuildTarget.PHONE && !phoneReady ->
+                "To build on the phone, install the Android build tools in Settings → Linux first."
+            !onPhone && token.isBlank() && !phoneReady ->
                 "To build apps, sign in with GitHub in Settings → GitHub, or install the Android build tools in Settings → Linux to build on this phone. Then ask again."
             com.arin.builder.BuildRunner.running -> "A build is already running. Open Build mode to see it."
             provider.needsKey && settings.key(provider).isBlank() -> "Add your ${provider.label} key in Settings."
@@ -688,23 +697,25 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                         // The whole conversation goes to the builder, so nothing that was discussed gets lost.
                         requirements = buildRequirements(description),
                         requirementsComplete = true,
+                        localOnly = onPhone,
                     ),
                 )
-                followBuildInChat(if (same) "Working on $appName again" else "Building $appName")
+                if (inBuildTab) openBuild = true
+                else followBuildInChat((if (same) "Working on $appName again" else "Building $appName") + if (onPhone) " on this phone" else "")
                 null
             }
         }
     }
 
     /** The person tapped "Build now" (or "Update Arin now") under a reply that prepared a build. */
-    fun confirmBuild(message: Message) {
+    fun confirmBuildAt(message: Message, target: BuildTarget) {
         val (name, spec) = message.pendingBuild.split('\u0000', limit = 2).let { it[0] to it.getOrElse(1) { "" } }
         if (spec.isBlank()) return
+        val problem = if (name == "update") startSelfUpdate(spec) else startBuild(name, spec, target)
+        if (problem != null) { notice = problem; return }
         val i = messages.indexOfFirst { it.id == message.id }
-        if (i >= 0) messages[i] = messages[i].copy(pendingBuild = "", text = messages[i].text.substringBefore("\n\n_Nothing is being built yet."))
+        if (i >= 0) messages[i] = messages[i].copy(pendingBuild = "", text = messages[i].text.substringBefore("\n\n_Where should I build"))
         persist()
-        val problem = if (name == "update") startSelfUpdate(spec) else startBuild(name, spec)
-        problem?.let { notice = it }
     }
 
     /**
@@ -1347,31 +1358,14 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 // (Launched separately: this block also runs after Stop, when this coroutine is cancelled.)
                 // It starts only when the person said so ("build", "make the APK", or "try again" after a build).
                 val saidAll = listOf(userSaid) + ran.filter { it.kind == "steer" }.map { it.command }
-                val buildAsked = if (failure == null) Prompt.buildRequest(answer) else null
+                val buildAsked = if (failure == null && !stopped) Prompt.buildRequest(answer) else null
                 var buildNote = ""
-                when {
-                    buildAsked != null && saidAll.any { Prompt.saysBuild(it, hasChatBuild) } -> {
-                        val (name, description) = buildAsked
-                        ArinApp.scope.launch(kotlinx.coroutines.Dispatchers.Main) {
-                            startBuild(name, description)?.let { notice = it }
-                        }
-                    }
-                    buildAsked != null -> {
-                        // Not ordered: keep the specification and let the person start it with a button.
-                        pendingBuild = buildAsked.first + "\u0000" + buildAsked.second
-                        buildNote = "\n\n_Nothing is being built yet. Tap **Build now** below, or say **build**, when you want it built with everything we've discussed._"
-                    }
-                    // Said "build", was asked again for the tag, and the reply still only talks about building: start it anyway.
-                    failure == null && !stopped && buildNudges > 0 && saidAll.any { Prompt.ordersBuild(it) } &&
-                        Prompt.selfUpdate(answer) == null && !com.arin.builder.BuildRunner.running &&
-                        ran.none { it.kind != "steer" } && !Prompt.clean(answer).trimEnd().endsWith("?") &&
-                        Regex("(?i)\\b(build|apk|spec)").containsMatchIn(answer) -> {
-                        val spec = Prompt.clean(answer).take(6_000)
-                        val appTitle = title.takeIf { it != "New chat" }.orEmpty().take(30)
-                        ArinApp.scope.launch(kotlinx.coroutines.Dispatchers.Main) {
-                            startBuild(appTitle, spec.ifBlank { "Build the app discussed in this conversation." })?.let { notice = it }
-                        }
-                    }
+                if (buildAsked != null) {
+                    // A build is prepared, but nothing starts until the person picks where to build it.
+                    pendingBuild = buildAsked.first + "\u0000" + buildAsked.second
+                    buildNote = if (saidAll.any { Prompt.saysBuild(it, hasChatBuild) })
+                        "\n\n_Where should I build it? Pick below — nothing builds until you choose._"
+                    else "\n\n_Where should I build it? Pick below when you're ready._"
                 }
                 // Pictures and videos: found by searches, plus any the model linked in its text, plus ones it drew.
                 foundMedia += com.arin.media.MediaSearch.linked(answer).filter { l -> foundMedia.none { it.url == l.url } }

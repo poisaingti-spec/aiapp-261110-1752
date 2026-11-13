@@ -34,6 +34,8 @@ data class BuildRequest(
     /** Arin's source: owner/repo and branch. */
     val selfRepo: String = "",
     val selfBranch: String = "",
+    /** Force the build to run on the phone (built-in Linux), never GitHub. */
+    val localOnly: Boolean = false,
     /**
      * Everything that was asked for, in full (e.g. the whole chat about the app). Blank: [description] is all there is.
      */
@@ -149,7 +151,7 @@ class BuildAgent(
     private val phoneCan = !self && context != null && LocalBuild.available(context)
 
     /** No GitHub for this build: compile, fix and hand over the APK on the phone. */
-    private var localOnly = req.project?.owner == LOCAL_OWNER
+    private var localOnly = req.project?.owner == LOCAL_OWNER || (req.localOnly && !self)
 
     private fun localRepo(name: String) = GitHubClient.Repo(LOCAL_OWNER, name, "main", "")
 
