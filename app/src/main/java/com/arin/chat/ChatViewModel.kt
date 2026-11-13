@@ -102,6 +102,51 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     var webSearch by mutableStateOf(settings.webSearch)
         private set
     var memoryOn by mutableStateOf(settings.memoryOn)
+
+    /** Custom instructions (Settings): about the person, and how to answer. */
+    var aboutYou by mutableStateOf(settings.aboutYou)
+        private set
+    var howToAnswer by mutableStateOf(settings.howToAnswer)
+        private set
+    var replyStyle by mutableStateOf(settings.replyStyle)
+        private set
+
+    fun saveCustomInstructions(about: String, how: String) {
+        aboutYou = about.trim()
+        howToAnswer = how.trim()
+        settings.aboutYou = aboutYou
+        settings.howToAnswer = howToAnswer
+        notice = "Custom instructions saved"
+    }
+
+    fun chooseStyle(style: String) {
+        replyStyle = style
+        settings.replyStyle = style
+    }
+
+    /** Deep research: many searches and page reads, then a report with sources. */
+    var deepResearch by mutableStateOf(false)
+        private set
+
+    fun toggleDeepResearch(on: Boolean) {
+        deepResearch = on
+        if (on) notice = "Deep research is on: Arin searches and reads many pages, then writes a report."
+    }
+
+    /** A temporary chat isn't saved, doesn't use memory and doesn't appear in the list. */
+    var temporary by mutableStateOf(false)
+        private set
+
+    /** Whether the open chat is pinned to the top of the list. */
+    private var chatPinned = false
+
+    fun togglePin(id: String, pinned: Boolean) {
+        if (id == chatId) chatPinned = pinned
+        viewModelScope.launch(Dispatchers.IO) {
+            store.setPinned(id, pinned)
+            withContext(Dispatchers.Main) { refreshChats() }
+        }
+    }
         private set
     var terminalOn by mutableStateOf(settings.terminalOn)
         private set
@@ -634,12 +679,49 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                         allowOtherSites = true,
                         project = if (same) current else null,
                         resume = same && lastFailed && retryWords.containsMatchIn(description.take(80)),
+                        // The whole conversation goes to the builder, so nothing that was discussed gets lost.
+                        requirements = buildRequirements(description),
+                        requirementsComplete = true,
                     ),
                 )
                 followBuildInChat(if (same) "Working on $appName again" else "Building $appName")
                 null
             }
         }
+    }
+
+    /**
+     * Everything the app must do, for the builder: the specification written when the person said "build", plus the
+     * conversation itself (what they asked for and what Arin proposed), so details the specification skipped still get built.
+     */
+    private fun buildRequirements(spec: String): String {
+        val talk = messages.filter { m ->
+            !m.failed && m.text.isNotBlank() &&
+                !(m.text.startsWith("🛠️") || m.text.startsWith("✅ **") || m.text.startsWith("⚠️ **The build"))
+        }
+        // Newest first within a budget, so a very long chat keeps what was said last; then back in order.
+        fun pick(fromUser: Boolean, each: Int, total: Int): List<Message> {
+            var left = total
+            return talk.filter { it.fromUser == fromUser }.asReversed().takeWhile { m ->
+                (left > 0).also { left -= minOf(m.text.length, each) }
+            }
+        }
+        val keep = (pick(true, 4_000, 18_000) + pick(false, 2_500, 12_000)).map { it.id }.toSet()
+        return buildString {
+            appendLine("SPECIFICATION (written when the person said \"build\"):")
+            appendLine(spec.trim())
+            appendLine()
+            appendLine("THE CONVERSATION ABOUT THIS APP, in order. Everything the person asked for, and everything Arin proposed that the")
+            appendLine("person didn't reject, must be in the app, including details the specification above left out. Where two messages")
+            appendLine("conflict, the later one wins. Ignore parts that are not about this app.")
+            var n = 0
+            talk.filter { it.id in keep }.forEach { m ->
+                n++
+                val files = m.attachments.takeIf { it.isNotEmpty() }?.joinToString { it.name }?.let { " [attached: $it]" }.orEmpty()
+                if (m.fromUser) appendLine("[$n] PERSON: " + m.text.trim().take(4_000) + files)
+                else appendLine("[$n] ARIN: " + m.text.trim().take(2_500))
+            }
+        }.trim()
     }
 
     /**
@@ -904,10 +986,14 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         val project = chatProject
         val useTerminal = terminalOn
         val servers = mcpServers.filter { it.enabled }
-        val memoryList = if (memoryOn) memories.toList() else emptyList()
-        val memoryFlag = memoryOn
-        val searchFlag = webSearch
-        val useSearch = webSearch
+        val memoryFlag = memoryOn && !temporary
+        val memoryList = if (memoryFlag) memories.toList() else emptyList()
+        val deep = deepResearch
+        val searchFlag = webSearch || deep
+        val useSearch = webSearch || deep
+        // What the person said this turn: only an order to build ("build", "make the APK") lets a build start.
+        val userSaid = history.lastOrNull { it.fromUser }?.text.orEmpty()
+        val hasChatBuild = history.any { !it.fromUser && (it.text.startsWith("🛠️") || it.text.startsWith("⚠️ **The build")) }
         val app = getApplication<Application>()
         streaming = true
         liveText = ""
@@ -924,6 +1010,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             val foundMedia = mutableListOf<com.arin.data.MediaItem>()
             var webSteps = 0
             var nudges = 0
+            var buildNudges = 0
+            var stopped = false
             var failStreak = 0
             liveCommands.clear()
             var failure: String? = null
@@ -939,6 +1027,10 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                     searchFlag, memoryFlag, memoryList, project, useTerminal, com.arin.mcp.Mcp.promptSection(),
                     terminalInfo = com.arin.terminal.Shell.describe(app),
                     pastChats = if (memoryFlag) withContext(Dispatchers.IO) { runCatching { store.recentTitles(chatId) }.getOrDefault("") } else "",
+                    aboutPerson = aboutYou,
+                    howToAnswer = howToAnswer,
+                    style = replyStyle,
+                    deepResearch = deep,
                 ) + latestBuildInfo()
                 var recalls = 0
                 var searches = 0
@@ -1120,13 +1212,33 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                     }
                     val working = ran.any { it.kind != "steer" && !it.command.startsWith("recall: ") }
                     val q = when {
+                        deep && searches < Prompt.MAX_DEEP_SEARCHES -> Prompt.searchQueryAnywhere(full)
                         (useSearch || useTerminal) && working && searches < Prompt.MAX_TASK_SEARCHES -> Prompt.searchQueryAnywhere(full)
                         useSearch && searches < Prompt.MAX_SEARCHES -> Prompt.searchQuery(full)
                         else -> null
                     }
                     if (q == null) {
+                        val saidNow = listOf(userSaid) + ran.filter { it.kind == "steer" }.map { it.command }
+                        val mayBuild = saidNow.any { Prompt.saysBuild(it, hasChatBuild) }
+                        // The person said "build" but the reply has no <build> tag: ask for it once.
+                        if (buildNudges < 1 && !working && saidNow.any { Prompt.ordersBuild(it) } &&
+                            Prompt.buildRequest(full) == null && Prompt.selfUpdate(full) == null &&
+                            !com.arin.builder.BuildRunner.running && !Prompt.clean(full).trimEnd().endsWith("?")
+                        ) {
+                            buildNudges++
+                            turns += Turn(false, full)
+                            turns += Turn(
+                                true,
+                                "The person told you to build, but your reply had no <build> tag, so nothing started. If this is about " +
+                                    "an Android app, send it now: <build name=\"App name\">the complete numbered specification of " +
+                                    "EVERYTHING discussed in this conversation</build>, with at most one short sentence before it. " +
+                                    "If they meant something else, just answer them.",
+                            )
+                            liveText = ""
+                            continue
+                        }
                         // Announced a build or update ("Build spec going out now:") but left out the tag? Ask for it.
-                        if (nudges < 3 && Prompt.promisedBuildWithoutTag(full)) {
+                        if (nudges < 3 && Prompt.promisedBuildWithoutTag(full) && (mayBuild || full.takeLast(300).contains("updat", true))) {
                             nudges++
                             turns += Turn(false, full)
                             turns += Turn(
@@ -1164,12 +1276,13 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 }
                 if (Prompt.clean(answer).isBlank() && ran.isEmpty()) failure = "The model sent an empty reply. Tap Retry, or pick another model."
             } catch (e: CancellationException) {
+                stopped = true
                 answer = liveText // Stop pressed: keep whatever arrived.
             } catch (e: Throwable) {
                 failure = e.message ?: "Something went wrong."
             } finally {
                 val seconds = if (thinkStart > 0) ((System.currentTimeMillis() - thinkStart) / 1000).toInt() else 0
-                if (memoryOn) Prompt.memories(answer).forEach { remember(it) }
+                if (memoryFlag) Prompt.memories(answer).forEach { remember(it) }
                 // The model asked to change Arin itself: start a self-update build.
                 if (failure == null) Prompt.selfUpdate(answer)?.let { change ->
                     ArinApp.scope.launch(kotlinx.coroutines.Dispatchers.Main) {
@@ -1178,14 +1291,35 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 }
                 // The model asked to build an app: start Build mode.
                 // (Launched separately: this block also runs after Stop, when this coroutine is cancelled.)
-                if (failure == null) Prompt.buildRequest(answer)?.let { (name, description) ->
-                    ArinApp.scope.launch(kotlinx.coroutines.Dispatchers.Main) {
-                        startBuild(name, description)?.let { notice = it }
+                // It starts only when the person said so ("build", "make the APK", or "try again" after a build).
+                val saidAll = listOf(userSaid) + ran.filter { it.kind == "steer" }.map { it.command }
+                val buildAsked = if (failure == null) Prompt.buildRequest(answer) else null
+                var buildNote = ""
+                when {
+                    buildAsked != null && saidAll.any { Prompt.saysBuild(it, hasChatBuild) } -> {
+                        val (name, description) = buildAsked
+                        ArinApp.scope.launch(kotlinx.coroutines.Dispatchers.Main) {
+                            startBuild(name, description)?.let { notice = it }
+                        }
+                    }
+                    buildAsked != null -> buildNote =
+                        "\n\n_I haven't started building. Say **build** when you're ready, and I'll build it with everything we've discussed._"
+                    // Said "build", was asked again for the tag, and the reply still only talks about building: start it anyway.
+                    failure == null && !stopped && buildNudges > 0 && saidAll.any { Prompt.ordersBuild(it) } &&
+                        Prompt.selfUpdate(answer) == null && !com.arin.builder.BuildRunner.running &&
+                        ran.none { it.kind != "steer" } && !Prompt.clean(answer).trimEnd().endsWith("?") &&
+                        Regex("(?i)\\b(build|apk|spec)").containsMatchIn(answer) -> {
+                        val spec = Prompt.clean(answer).take(6_000)
+                        val appTitle = title.takeIf { it != "New chat" }.orEmpty().take(30)
+                        ArinApp.scope.launch(kotlinx.coroutines.Dispatchers.Main) {
+                            startBuild(appTitle, spec.ifBlank { "Build the app discussed in this conversation." })?.let { notice = it }
+                        }
                     }
                 }
-                // Pictures and videos: found by searches, plus any the model linked in its text.
+                // Pictures and videos: found by searches, plus any the model linked in its text, plus ones it drew.
                 foundMedia += com.arin.media.MediaSearch.linked(answer).filter { l -> foundMedia.none { it.url == l.url } }
-                val shown = com.arin.media.MediaSearch.withoutImages(Prompt.clean(answer))
+                foundMedia += Prompt.drawings(answer).filter { d -> foundMedia.none { it.url == d.url } }
+                val shown = com.arin.media.MediaSearch.withoutImages(Prompt.clean(answer)) + buildNote
                 val msg = if (failure != null && shown.isBlank()) {
                     Message(fromUser = false, text = failure!!, failed = true)
                 } else {
@@ -1236,9 +1370,9 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private fun persist() {
-        if (messages.isEmpty()) return
+        if (messages.isEmpty() || temporary) return
         val id = chatId ?: java.util.UUID.randomUUID().toString().also { chatId = it }
-        val chat = Chat(id = id, title = title, updated = System.currentTimeMillis(), messages = messages.toList(), projectId = chatProject?.id)
+        val chat = Chat(id = id, title = title, updated = System.currentTimeMillis(), messages = messages.toList(), projectId = chatProject?.id, pinned = chatPinned)
         ArinApp.scope.launch(Dispatchers.IO) {
             store.save(chat)
             withContext(Dispatchers.Main) { refreshChats() }
@@ -1276,8 +1410,11 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     // ---------------- Chats list ----------------
 
     /** Start a new chat, optionally inside [project]. */
-    fun newChat(project: Project? = null) {
+    fun newChat(project: Project? = null, temporary: Boolean = false) {
         if (streaming) stop()
+        this.temporary = temporary
+        chatPinned = false
+        if (temporary) notice = "Temporary chat: it isn't saved and doesn't use memory."
         chatId = null
         title = "New chat"
         chatProject = project
@@ -1295,6 +1432,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 notice = "That chat couldn't be opened."
                 return@launch
             }
+            temporary = false
+            chatPinned = chat.pinned
             chatId = chat.id
             title = chat.title
             chatProject = chat.projectId?.let { pid -> projects.firstOrNull { it.id == pid } }

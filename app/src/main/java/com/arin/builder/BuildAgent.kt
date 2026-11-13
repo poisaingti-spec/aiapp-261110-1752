@@ -34,6 +34,12 @@ data class BuildRequest(
     /** Arin's source: owner/repo and branch. */
     val selfRepo: String = "",
     val selfBranch: String = "",
+    /**
+     * Everything that was asked for, in full (e.g. the whole chat about the app). Blank: [description] is all there is.
+     */
+    val requirements: String = "",
+    /** [requirements] already covers earlier requests too (a chat), so it replaces what the project has saved. */
+    val requirementsComplete: Boolean = false,
 )
 
 data class BuildResult(
@@ -97,6 +103,26 @@ class BuildAgent(
     /** Big uploaded files waiting to be committed straight from storage. */
     private val pendingDisk = linkedMapOf<String, java.io.File>()
     private var depsChanged = false
+
+    /** Everything the app must do: the first specification plus every change asked for since, so nothing gets lost. */
+    private val requirements: String = kotlin.run {
+        val now = req.requirements.ifBlank { req.description }.trim()
+        val before = (req.project?.requirements?.ifBlank { null } ?: req.project?.description).orEmpty().trim()
+        val all = when {
+            req.selfUpdate || req.project?.selfUpdate == true -> now
+            req.requirementsComplete || before.isEmpty() -> now.ifBlank { before }
+            req.resume || now.isEmpty() || before.contains(now) -> before
+            else -> before + "\n\nCHANGE ASKED FOR LATER (do this too; it wins where it conflicts with the above):\n" + now
+        }
+        if (all.length > 36_000) all.take(12_000) + "\n[…]\n" + all.takeLast(24_000) else all
+    }
+
+    /** How many times the finished code is checked against the requirements before building. */
+    private val reviewRounds: Int = when (req.effort) {
+        Effort.LOW -> 0
+        Effort.MAX -> 2
+        else -> 1
+    }
 
     private val maxFixRounds: Int = when (req.effort) {
         Effort.LOW -> 1
@@ -240,6 +266,10 @@ class BuildAgent(
                 step(BuildEvent.Kind.STEP, "No files came back. Asking ${req.provider.label} again for the code (try $retries of 2)")
                 notes = apply(ask(firstPrompt() + assets + formatReminder(), req.attachments))
             }
+            if (files.isNotEmpty()) {
+                notes = finishWriting(notes)
+                notes = reviewAgainstRequirements(notes)
+            }
             if (files.isEmpty()) {
                 return BuildResult(
                     false,
@@ -261,6 +291,10 @@ class BuildAgent(
             notes = apply(ask(changePrompt() + assets, req.attachments))
             if (pendingFiles.isEmpty() && !depsChanged) {
                 return BuildResult(false, "The model didn't change any files. Try describing the change differently.", repo.url, existing.lastApkUrl, log = modelReplyLog())
+            }
+            if (!imported) {
+                notes = finishWriting(notes)
+                notes = reviewAgainstRequirements(notes)
             }
         }
         saveProject(repo, null)
@@ -286,8 +320,10 @@ class BuildAgent(
             sha = resumeSha
           } else {
             if (depsChanged) {
-                pendingFiles["app/build.gradle.kts"] =
-                    ProjectTemplate.files(appName, packageName, deps.toList()).getValue("app/build.gradle.kts").toByteArray()
+                val gradle = ProjectTemplate.files(appName, packageName, deps.toList())
+                pendingFiles["app/build.gradle.kts"] = gradle.getValue("app/build.gradle.kts").toByteArray()
+                // The top-level file changes too when a code generator (KSP, for Room) is added.
+                pendingFiles["build.gradle.kts"] = gradle.getValue("build.gradle.kts").toByteArray()
                 depsChanged = false
             }
             // Make sure GitHub always has the build instructions (harmless if unchanged).
@@ -470,6 +506,7 @@ class BuildAgent(
                 branch = repo.branch,
                 repoUrl = repo.url,
                 description = req.project?.description ?: req.description.ifBlank { "Uploaded project" },
+                requirements = requirements,
                 files = files.toMap(),
                 deps = deps.toList(),
                 lastApkUrl = apk ?: req.project?.lastApkUrl,
@@ -602,10 +639,97 @@ class BuildAgent(
         Keep it to a few files (one MainActivity.kt with all the screens is fine) so the whole answer fits.
     """.trimIndent()
 
-    private fun firstPrompt() = """
-        Build this Android app: ${req.description}
-        App name: $appName
-    """.trimIndent()
+    private fun firstPrompt() = buildString {
+        appendLine("Build this Android app. Implement EVERY point below in full: every feature, screen, option and detail that was")
+        appendLine("asked for or agreed. Nothing may be left out, simplified away, faked with sample data, or left as a TODO or placeholder.")
+        appendLine()
+        appendLine("=== REQUIREMENTS ===")
+        appendLine(requirements)
+        appendLine("=== END REQUIREMENTS ===")
+        appendLine()
+        appendLine("App name: $appName")
+        appendLine()
+        append(sizeRule)
+    }
+
+    private val sizeRule = "If the whole app doesn't fit in one reply, write as many COMPLETE files as fit (the most important first) and end " +
+        "with the line === MORE === ; you will be asked to continue. When every file is written, end with the line === DONE === ."
+
+    /** The file that was being written when a reply got cut off, if any. */
+    private fun cutOffFile(reply: String): String? {
+        if (!parse(reply).truncated) return null
+        return reply.lines().lastOrNull { fileStart.containsMatchIn(it.trim()) }?.let { fileStart.find(it.trim())?.groupValues?.get(1)?.trim('`', ' ') }
+    }
+
+    /** Big apps don't fit in one reply: keep asking for the rest until the model says it's done. */
+    private suspend fun finishWriting(notesIn: List<String>): List<String> {
+        var notes = notesIn
+        var rounds = 0
+        val maxRounds = if (req.effort == Effort.LOW) 2 else 8
+        while (rounds < maxRounds && (moreLine.containsMatchIn(lastReply) || parse(lastReply).truncated)) {
+            rounds++
+            val cut = cutOffFile(lastReply)
+            step(BuildEvent.Kind.STEP, "It's a big app: writing the next part (${files.size} files so far)")
+            val before = files.size to pendingFiles.size
+            notes = apply(ask(buildString {
+                appendLine("You are part-way through writing this Android app.")
+                appendLine()
+                appendLine("=== REQUIREMENTS ===")
+                appendLine(requirements)
+                appendLine("=== END REQUIREMENTS ===")
+                appendLine()
+                appendLine("Files written so far (complete; don't send them again unless you change them):")
+                appendFiles()
+                if (cut != null) {
+                    appendLine()
+                    appendLine("Your last reply was cut off in the middle of $cut, so that file was NOT saved. Write it again in full (split it into smaller files if it's long).")
+                }
+                appendLine()
+                appendLine("Now write the remaining files, so that every requirement is implemented and everything that is used exists (classes, functions, screens, resources).")
+                append(sizeRule)
+            }))
+            // Nothing new came back: stop asking.
+            if (before == (files.size to pendingFiles.size) && cutOffFile(lastReply) == null) break
+        }
+        return notes
+    }
+
+    /** Checks the written app against the requirements, one by one, and has the model add whatever is missing. */
+    private suspend fun reviewAgainstRequirements(notesIn: List<String>): List<String> {
+        var notes = notesIn
+        repeat(reviewRounds) { round ->
+            step(BuildEvent.Kind.STEP, if (round == 0) "Checking that everything you asked for is in the app" else "Checking once more that nothing is missing")
+            val reply = ask(buildString {
+                appendLine("Review this Android app against its requirements before it is built.")
+                appendLine()
+                appendLine("=== REQUIREMENTS ===")
+                appendLine(requirements)
+                appendLine("=== END REQUIREMENTS ===")
+                appendLine()
+                appendLine("Current files:")
+                appendFiles()
+                appendLine()
+                appendLine("Go through the requirements one at a time and look for:")
+                appendLine("- anything asked for that is missing or only partly done;")
+                appendLine("- placeholders, TODOs, empty click handlers, buttons that do nothing, sample data where real behaviour was asked for;")
+                appendLine("- screens that can't be reached, settings that aren't saved, data that is lost when the app restarts (if it should be kept);")
+                appendLine("- code that won't compile: missing imports, classes, functions or resources, wrong API names, missing manifest permissions.")
+                appendLine()
+                appendLine("If you find anything, reply with every file to add or change, in full, in the usual format; start each with an")
+                appendLine("=== ABOUT: line saying in plain English which requirement it completes or what it fixes. $sizeRule")
+                append("If every requirement is fully implemented and the code is correct, reply with exactly: === COMPLETE ===")
+            })
+            val changedBefore = pendingFiles.size to files.hashCode()
+            if (!reply.contains("=== FILE:") && parse(reply).files.isEmpty()) {
+                step(BuildEvent.Kind.DONE, "Checked: everything you asked for is in the app")
+                return notes
+            }
+            notes = apply(reply)
+            notes = finishWriting(notes)
+            if (changedBefore == (pendingFiles.size to files.hashCode())) return notes
+        }
+        return notes
+    }
 
     /** Files most likely to matter first: ones named in [hint] (errors or the request), then build files, then sources. */
     private fun prioritized(hint: String): List<Map.Entry<String, String>> {
@@ -623,7 +747,7 @@ class BuildAgent(
 
     private fun StringBuilder.appendFiles(hint: String = "") {
         // Offline models have a much smaller memory for text.
-        var budget = if (self) 160_000 else 60_000
+        var budget = if (self) 160_000 else 130_000
         prioritized(hint).forEach { (path, content) ->
             if (budget <= 0) return@forEach
             val c = content.take(budget)
@@ -648,9 +772,17 @@ class BuildAgent(
         appendLine("Current files:")
         appendFiles(req.description)
         appendLine()
+        if (!self && !imported && requirements.isNotBlank() && requirements != req.description) {
+            appendLine("Everything this app must do (keep all of it working, and add anything from this list that is still missing):")
+            appendLine("=== REQUIREMENTS ===")
+            appendLine(requirements)
+            appendLine("=== END REQUIREMENTS ===")
+            appendLine()
+        }
         appendLine("Make this change: ${req.description}")
         appendLine()
         appendLine("Reply with every file you change or add, in full, in the same format. Files you don't send stay as they are.")
+        if (!self) appendLine(sizeRule)
         appendLine("To delete a file, send it with the single line: DELETE")
     }
 
@@ -666,8 +798,8 @@ class BuildAgent(
 
     private fun fixPrompt(errors: String, notes: List<String>, web: String = "") = buildString {
         appendLine("The app below failed to build. Fix it.")
-        appendLine("App request: ${req.project?.description ?: req.description}")
-        if (req.project != null) appendLine("Latest change requested: ${req.description}")
+        appendLine("What the app must do (keep every feature; never fix an error by removing what was asked for):")
+        appendLine(if (self) req.description else requirements.take(14_000))
         appendLine()
         appendLine("Build errors:")
         appendLine(errors)
@@ -707,15 +839,34 @@ class BuildAgent(
             }
         }
         if (imported && parsed.deps.isNotEmpty()) notes += "Add libraries by editing the module's build.gradle(.kts) directly."
-        if (!imported) parsed.deps.forEach { d ->
+        if (!imported) parsed.deps.forEach { raw ->
+            val d = raw.trim().removePrefix("ksp:").removePrefix("ksp ").removePrefix("implementation ").trim().trim('"', '(', ')')
+            // Code generators (Room's compiler) are added through KSP, with its Gradle plugin.
+            val generator = raw.trim().startsWith("ksp") || ProjectTemplate.kspArtifacts.any { d.contains(":$it") }
             val resolved = resolveDependency(d)
             if (resolved == null) {
                 notes += "Dependency $d was not found on Maven; use a different library."
-            } else if (resolved !in deps) {
-                deps.removeAll { it.substringBeforeLast(':') == resolved.substringBeforeLast(':') }
-                deps += resolved
+                return@forEach
+            }
+            val entry = if (generator) "ksp:$resolved" else resolved
+            if (entry !in deps) {
+                deps.removeAll { it.removePrefix("ksp:").substringBeforeLast(':') == resolved.substringBeforeLast(':') }
+                deps += entry
                 depsChanged = true
                 step(BuildEvent.Kind.LIBRARY, "Added library $resolved")
+            }
+            if (generator && deps.none { it.startsWith("plugin:com.google.devtools.ksp:") }) {
+                val ksp = resolveDependency("com.google.devtools.ksp:symbol-processing-gradle-plugin:latest")?.substringAfterLast(':')
+                    ?.takeIf { v -> v.none { it.isLetter() } } // a finished release, not a beta or RC
+                deps += "plugin:com.google.devtools.ksp:" + (ksp ?: ProjectTemplate.KSP)
+                depsChanged = true
+            }
+            if (resolved.startsWith("androidx.room:room-compiler:")) {
+                val runtime = "androidx.room:room-runtime:" + resolved.substringAfterLast(':')
+                if (deps.none { it.substringBeforeLast(':') == "androidx.room:room-runtime" }) {
+                    deps += runtime
+                    depsChanged = true
+                }
             }
         }
         parsed.downloads.forEach { (url, path) -> download(url, path)?.let { notes += it } }
@@ -851,6 +1002,7 @@ class BuildAgent(
         private const val MAX_WEB_STEPS = 3
         private val fileStart = Regex("^=+\\s*FILE:\\s*(.+?)\\s*=*\\s*$")
         private val fileEnd = Regex("^=+\\s*END FILE\\s*=*\\s*$")
+        private val moreLine = Regex("(?m)^=+\\s*MORE\\s*=+\\s*$")
         private val aboutLine = Regex("^=+\\s*ABOUT:\\s*(.+?)\\s*=*\\s*$")
 
         private val codeish = Regex("""[{};=<>()\[\]]|\b(fun|val|var|import|class|return|@Composable)\b""")

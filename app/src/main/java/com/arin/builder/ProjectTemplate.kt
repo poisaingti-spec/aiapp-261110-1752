@@ -23,6 +23,16 @@ object ProjectTemplate {
     const val NAVIGATION = "2.10.2"
     const val COROUTINES = "1.10.2"
     const val SERIALIZATION = "1.10.0"
+    /** KSP (for Room and other code generators); the newest release is looked up when a build needs it. */
+    const val KSP = "2.3.13"
+
+    /** Libraries that generate code and so must be added with ksp(...) instead of implementation(...). */
+    val kspArtifacts = listOf("room-compiler")
+
+    private fun kspDeps(extraDeps: List<String>) = extraDeps.filter { it.startsWith("ksp:") }.map { it.removePrefix("ksp:") }
+    private fun kspVersion(extraDeps: List<String>) =
+        extraDeps.firstOrNull { it.startsWith("plugin:com.google.devtools.ksp:") }?.substringAfterLast(':') ?: KSP
+    private fun plainDeps(extraDeps: List<String>) = extraDeps.filter { !it.startsWith("ksp:") && !it.startsWith("plugin:") }
 
     /** Files the app writes; the model is not allowed to replace these. */
     fun files(appName: String, packageName: String, extraDeps: List<String>): Map<String, String> = mapOf(
@@ -52,6 +62,7 @@ object ProjectTemplate {
                 id("org.jetbrains.kotlin.android") version "$KOTLIN" apply false
                 id("org.jetbrains.kotlin.plugin.compose") version "$KOTLIN" apply false
                 id("org.jetbrains.kotlin.plugin.serialization") version "$KOTLIN" apply false
+                ${if (kspDeps(extraDeps).isNotEmpty()) "id(\"com.google.devtools.ksp\") version \"${kspVersion(extraDeps)}\" apply false" else ""}
             }
         """.trimIndent(),
         "gradle.properties" to """
@@ -65,6 +76,7 @@ object ProjectTemplate {
                 id("com.android.application")
                 id("org.jetbrains.kotlin.plugin.compose")
                 id("org.jetbrains.kotlin.plugin.serialization")
+                ${if (kspDeps(extraDeps).isNotEmpty()) "id(\"com.google.devtools.ksp\")" else ""}
             }
 
             android {
@@ -119,7 +131,7 @@ object ProjectTemplate {
                 implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:$COROUTINES")
                 implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:$SERIALIZATION")
                 implementation("com.squareup.okhttp3:okhttp:4.12.0")
-            ${extraDeps.joinToString("\n") { "    implementation(\"$it\")" }}
+            ${(plainDeps(extraDeps).map { "    implementation(\"$it\")" } + kspDeps(extraDeps).map { "    ksp(\"$it\")" }).joinToString("\n")}
             }
         """.trimIndent(),
         ".gitignore" to "build/\n.gradle/\n.kotlin/\nlocal.properties\n*.iml\n.idea/\n.DS_Store\ncaptures/\n.cxx/\n",
@@ -312,6 +324,9 @@ object ProjectTemplate {
         notes). Use this when you're unsure how a library or API works. Then write the files.
     """.trimIndent()
 
+    private const val SIZE_RULE = "If the whole app doesn't fit in one reply, write as many COMPLETE files as fit and end with the line " +
+        "=== MORE === ; you'll be asked to continue. When every file is written, end with the line === DONE === ."
+
     /** Rules given to the model. Kept short so small offline models can follow them. */
     fun systemPrompt(packageName: String): String = """
         You are an expert Android developer. You write complete, working Android apps in Kotlin with Jetpack Compose and Material 3.
@@ -331,7 +346,23 @@ object ProjectTemplate {
         - Write every file in full. No placeholders, no "..." and no TODOs.
         - Only use the libraries listed above unless you add a line: === DEPENDENCY: group:artifact:version === (use "latest" as the version if unsure).
         - To get a file from the internet (image, font, sound, JSON), add a line: === DOWNLOAD: https://url -> app/src/main/res/raw/name.ext === (res/raw, res/drawable, res/font or assets only; file names lowercase with underscores).
-        - Keep it simple and correct: prefer one or a few files. Every import must exist.
+        - Size the code to the app. A small tool: one or a few files. A bigger app: organise it properly, one screen per file, in
+          packages such as ui/ (screens, components, theme), data/ (storage, network), model/ and viewmodel/. Every import must exist.
+        - Build real apps, not demos: ViewModel + StateFlow for state, navigation-compose between screens, a Material 3 theme with
+          light and dark colours, loading / empty / error states, input validation, and data that survives restarting the app when
+          it should (DataStore for settings, Room or JSON files for records). Ask for runtime permissions before using them and
+          declare them in AndroidManifest.xml. Never leave TODOs, empty click handlers or fake sample data in place of a feature.
+        - Libraries you may add with a DEPENDENCY line (use "latest"): androidx.room:room-compiler (database; Arin adds room-runtime
+          and the code generator setup for you, use @Entity/@Dao/@Database with suspend functions and Flow),
+          androidx.datastore:datastore-preferences, io.coil-kt.coil3:coil-compose and io.coil-kt.coil3:coil-network-okhttp (images
+          from the internet), com.squareup.retrofit2:retrofit with com.squareup.retrofit2:converter-kotlinx-serialization (web APIs),
+          androidx.work:work-runtime-ktx (background work), androidx.media3:media3-exoplayer and androidx.media3:media3-ui (audio
+          and video), androidx.camera:camera-camera2, camera-lifecycle and camera-view (camera), com.google.android.gms:play-services-location
+          (location), com.google.accompanist:accompanist-permissions, androidx.biometric:biometric, androidx.glance:glance-appwidget
+          (home-screen widgets), com.google.mlkit libraries (on-device text recognition, barcode scanning, translation),
+          org.osmdroid:osmdroid-android (maps without an API key). Don't use Hilt, Dagger, kapt, Glide or Firebase: pass
+          dependencies by hand (a small AppContainer object) instead.
+        - $SIZE_RULE
         - If you write AndroidManifest.xml, keep MainActivity as the launcher activity.
         - Right before each file, write ONE line explaining it in plain English for someone who doesn't code (no code words), e.g.
           === ABOUT: The main screen: shows your notes in a list with a + button to add a new one ===

@@ -50,4 +50,6 @@ data class Project(
     val round: Int = 0,
     /** This project is Arin itself (self-update). */
     val selfUpdate: Boolean = false,
+    /** Everything the app must do: the full specification, plus every change asked for since. */
+    val requirements: String = "",
 )

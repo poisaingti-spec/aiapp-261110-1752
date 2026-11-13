@@ -10,6 +10,9 @@ import java.util.Locale
 object Prompt {
     const val MAX_SEARCHES = 3
 
+    /** Searches one reply may run in Deep research mode. */
+    const val MAX_DEEP_SEARCHES = 12
+
     /** Commands one reply may run in the terminal before it has to answer. */
     const val MAX_COMMANDS = 25
 
@@ -56,6 +59,44 @@ object Prompt {
         })
             ?.let { it.groupValues[1].trim() to it.groupValues[2].trim().removeSuffix("```").trim() }
             ?.takeIf { it.second.isNotBlank() }
+
+    private val notYet = Regex(
+        """(?i)\b(don'?t|do not|not yet|no need to|never|without|before (you |we )?(build|start)|later|wait)\b[^.!?\n]{0,40}\b(build|compile|apk|start)""",
+    )
+    private val retryWord = Regex("""(?i)\b(try again|retry|again|fix (it|this|the)|continue|resume|keep going|carry on|rebuild)\b""")
+    private val asksQuestion = Regex("""(?i)^\W*(why|how|what|when|where|who|which|can|could|is|are|was|does|do|did|will|would|should)\b""")
+    private val politeOrder = Regex("""(?i)\b(can|could|will|would) you (please |now |just )*(re)?(build|compile)\b""")
+    private val buildOrder = Regex(
+        """(?i)(^|[.!,;:\n]\s*)((ok(ay)?|yes|yep|now|please|so|then|great|good|fine|perfect|just)\W+)*(re)?(build|compile)""" +
+            """(\s+(it|now|this|that|the|an?|me|my|apk|app|everything|all|please)\b|\s*[.!]*\s*$)""" +
+            """|\b(build|compile|make|generate|create) (it|now|the app|everything)\b|\bstart (the )?build""" +
+            """|\b(build|make|generate|create|give me|get me|compile)( it| this| that)?( in| into| to| as)?( the| an| a)? apk\b""",
+    )
+
+    /** True when [text] is an order to build now ("build", "ok build it", "make the APK"), not talk or a question about building. */
+    fun ordersBuild(text: String): Boolean {
+        val t = text.trim()
+        if (notYet.containsMatchIn(t)) return false
+        if (politeOrder.containsMatchIn(t)) return true
+        if (t.endsWith("?") || asksQuestion.containsMatchIn(t)) return false
+        // In a long message the order has to be at the start or the end, not somewhere in a description.
+        return if (t.length > 600) buildOrder.containsMatchIn(t.take(200)) || buildOrder.containsMatchIn(t.takeLast(200))
+        else buildOrder.containsMatchIn(t)
+    }
+
+    /** True when the person's latest message lets Arin build: an order to build, or "try again" after a build in this chat. */
+    fun saysBuild(text: String, hasChatBuild: Boolean): Boolean =
+        ordersBuild(text) || (hasChatBuild && retryWord.containsMatchIn(text) && !notYet.containsMatchIn(text))
+
+    private val drawTag = Regex("""<draw>\s*(.{3,600}?)\s*</draw>""", RegexOption.DOT_MATCHES_ALL)
+
+    /** Pictures the reply asks Arin to create (made by a free image service from the description). */
+    fun drawings(reply: String): List<com.arin.data.MediaItem> = drawTag.findAll(reply).take(2).map { m ->
+        val prompt = m.groupValues[1].replace(Regex("\\s+"), " ").trim()
+        val url = "https://image.pollinations.ai/prompt/" + java.net.URLEncoder.encode(prompt, "UTF-8").replace("+", "%20") +
+            "?width=1024&height=1024&nologo=true&seed=" + (prompt.hashCode() and 0x7fffffff)
+        com.arin.data.MediaItem(video = false, url = url, thumb = url, title = prompt.take(120), source = url)
+    }.toList()
 
     private val promisedAction = Regex(
         """(?i)\b(build|apk|compile|update arin|updating arin|spec|kicking off|starting|going out|launching|relaunching)\b""",
@@ -115,12 +156,40 @@ object Prompt {
         tools: String = "",
         terminalInfo: String = "",
         pastChats: String = "",
+        aboutPerson: String = "",
+        howToAnswer: String = "",
+        style: String = "",
+        deepResearch: Boolean = false,
     ): String = buildString {
         append("You are Arin, a helpful, friendly assistant in an Android app. Answer clearly and concisely. ")
         runCatching { com.arin.ArinApp.versionLabel(com.arin.ArinApp.instance) }.getOrNull()
             ?.let { append("This is Arin version ").append(it).append(". ") }
         append("Use Markdown when it helps: short headings, lists, and fenced code blocks with a language.\n")
         append("Today is ").append(SimpleDateFormat("EEEE d MMMM yyyy", Locale.ENGLISH).format(Date())).append(".\n\n")
+
+        if (aboutPerson.isNotBlank() || howToAnswer.isNotBlank()) {
+            append("Custom instructions from the person (always follow them):\n")
+            if (aboutPerson.isNotBlank()) append("About them: ").append(aboutPerson.trim().take(1500)).append('\n')
+            if (howToAnswer.isNotBlank()) append("How to answer: ").append(howToAnswer.trim().take(1500)).append('\n')
+            append('\n')
+        }
+        when (style) {
+            "Concise" -> append("Reply style: concise. Short, direct answers; no preamble; lists only when they help.\n\n")
+            "Detailed" -> append("Reply style: detailed. Explain step by step, with reasons and examples, as a patient teacher would.\n\n")
+            "Formal" -> append("Reply style: formal. Clear, polished, professional wording.\n\n")
+        }
+        append("Pictures you create: when the person asks you to draw, generate, create or imagine a picture (not find a real photo), ")
+        append("write <draw>a detailed description of the picture in English: subject, setting, style, lighting, colours</draw> ")
+        append("in your reply. Arin creates the picture and shows it under your reply; add one short sentence about it. ")
+        append("At most two per reply. For real things that exist (a person, a place, a product), use <images> instead.\n\n")
+
+        if (deepResearch) {
+            append("Deep research mode is ON for this question. Work like a careful researcher: plan what you need to find out, ")
+            append("run up to $MAX_DEEP_SEARCHES different searches (one <search> per reply, each from a different angle), open the ")
+            append("most useful pages with <fetch>https://…</fetch> to read them properly, compare what the sources say and note ")
+            append("where they disagree. Then write a structured report: a short answer first, then sections with headings, key ")
+            append("facts and figures with their dates, and a Sources list naming each source. Say what you could not confirm.\n\n")
+        }
 
         append("Artifacts: when you write a complete web page, interactive demo, SVG image, standalone document or ")
         append("program the person will want to keep, put the whole thing in ONE fenced block (```html, ```svg, ")
@@ -173,18 +242,27 @@ object Prompt {
         append("(searching the web and downloading files or libraries as needed), builds a new version on GitHub, fixes build ")
         append("errors, and offers to install the update. Agree on the change first if it's unclear.\n\n")
 
-        append("Building Android apps: Arin can turn a description into a complete Android app (Kotlin, Jetpack Compose, ")
-        append("Material 3), put the source on the person's GitHub and compile it into an APK with GitHub Actions, fixing ")
-        append("build errors automatically. When the person asks you to make, build or compile an app or APK, first agree ")
-        append("on what it should do (ask briefly only if it's really unclear), then end your reply with ")
-        append("<build name=\"App name\">a complete, detailed description: screens, features, data, look</build>. ")
-        append("The build then runs right here in this chat: its steps show live and the APK and source zip links are posted ")
-        append("here when done. To change, fix or retry the app built in this chat (\"try again\", \"add dark mode\"), send ")
+        append("Building Android apps: Arin can turn a conversation into a complete Android app (Kotlin, Jetpack Compose, ")
+        append("Material 3; also large apps with many screens, a database, networking, camera, media, background work), put ")
+        append("the source on the person's GitHub and compile it into an APK, fixing build errors automatically.\n")
+        append("RULE 1, build only on command: talking about an app is NOT a request to build it. While the person describes, ")
+        append("adds or changes what they want, discuss it: confirm what you understood, suggest improvements, ask about what is ")
+        append("unclear, and keep track of every point. Do NOT send a <build> tag until the person tells you to build (\"build\", ")
+        append("\"build it\", \"make the APK\", \"compile it\", or \"try again\" after a failed build). If they haven't, end with ")
+        append("one short line that they can say \"build\" when they're ready. The app ignores a <build> tag sent without that command.\n")
+        append("RULE 2, build everything: when the person says build, don't ask more questions. End your reply with ")
+        append("<build name=\"App name\">the COMPLETE specification</build>. Go back through the WHOLE conversation and write down ")
+        append("every single thing that was asked for or agreed, as a numbered list: every screen, feature, button, option, text, ")
+        append("colour, behaviour, data to keep, permission and special case, including small details mentioned only once and ")
+        append("corrections made later (the latest version of each point wins). Leave nothing out and don't summarise: a point ")
+        append("missing from this list is a feature missing from the app. Arin also passes the conversation itself to the builder.\n")
+        append("The build then runs right here in this chat: its steps show live, in plain English, and the APK and source zip links ")
+        append("are posted here when done. To change, fix or retry the app built in this chat (\"try again\", \"add dark mode\"), send ")
         append("<build name=\"the same app name\">what to change, or \"try again\"</build>: it continues the same app and GitHub ")
         append("repository instead of starting over. For an uploaded Android Studio project (.zip), use Build mode's Upload. ")
         append("The build setup is already done and tested (Android Gradle plugin, Kotlin, Compose, Gradle, signing, GitHub ")
-        append("workflow): don't plan or discuss versions, Gradle files or CI, just describe the app. Put the <build> tag in the ")
-        append("same reply right away; never say a build is starting without including the tag. ")
+        append("workflow): don't plan or discuss versions, Gradle files or CI, just describe the app. ")
+        append("Never say a build is starting without including the tag. ")
         append("Don't paste whole app sources in chat when they asked for an APK.\n\n")
 
         if (tools.isNotBlank()) append(tools)
@@ -281,8 +359,9 @@ object Prompt {
             .replace(buildTag, "").replace(openTail("build"), "")
             .replace(updateTag, "").replace(openTail("update_arin"), "")
             .replace(recallTag, "").replace(Regex("""<recall>[^<]*$"""), "")
+            .replace(drawTag, "").replace(Regex("""<draw>[^<]*$"""), "")
             .replace(imagesTag, "").replace(videosTag, "").replace(fetchTag, "").replace(downloadTag, "")
             .replace(Regex("""<(images|videos|fetch|download)\b[\s\S]*$"""), "")
-            .replace(Regex("""</?(run|tool|build|update_arin|images|videos|fetch|download|recall)\b[^>]*>"""), "")
+            .replace(Regex("""</?(run|tool|build|update_arin|images|videos|fetch|download|recall|draw)\b[^>]*>"""), "")
             .trimEnd()
 }

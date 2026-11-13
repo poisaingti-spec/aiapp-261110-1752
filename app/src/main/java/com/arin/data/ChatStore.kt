@@ -91,11 +91,13 @@ data class Chat(
     val updated: Long = System.currentTimeMillis(),
     val messages: List<Message> = emptyList(),
     val projectId: String? = null,
+    /** Kept at the top of the chats list. */
+    val pinned: Boolean = false,
 )
 
 /** What the chats list needs, without loading every message. */
 @Serializable
-data class ChatSummary(val id: String, val title: String, val updated: Long, val projectId: String? = null)
+data class ChatSummary(val id: String, val title: String, val updated: Long, val projectId: String? = null, val pinned: Boolean = false)
 
 /** Keeps each chat as a JSON file in the app's private storage, plus a small index for the list. */
 class ChatStore(private val context: Context) {
@@ -106,7 +108,7 @@ class ChatStore(private val context: Context) {
     @Synchronized
     fun list(): List<ChatSummary> {
         val stored = runCatching { json.decodeFromString<List<ChatSummary>>(indexFile.readText()) }.getOrNull()
-        return (stored ?: rebuildIndex()).sortedByDescending { it.updated }
+        return (stored ?: rebuildIndex()).sortedWith(compareByDescending<ChatSummary> { it.pinned }.thenByDescending { it.updated })
     }
 
     fun load(id: String): Chat? = runCatching { json.decodeFromString<Chat>(File(dir, "$id.json").readText()) }.getOrNull()
@@ -115,13 +117,19 @@ class ChatStore(private val context: Context) {
     fun save(chat: Chat) {
         writeAtomically(File(dir, "${chat.id}.json"), json.encodeToString(chat))
         val rest = list().filterNot { it.id == chat.id }
-        writeIndex(rest + ChatSummary(chat.id, chat.title, chat.updated, chat.projectId))
+        writeIndex(rest + ChatSummary(chat.id, chat.title, chat.updated, chat.projectId, chat.pinned))
     }
 
     @Synchronized
     fun rename(id: String, title: String) {
         val chat = load(id) ?: return
         save(chat.copy(title = title))
+    }
+
+    @Synchronized
+    fun setPinned(id: String, pinned: Boolean) {
+        val chat = load(id) ?: return
+        save(chat.copy(pinned = pinned))
     }
 
     @Synchronized
@@ -207,7 +215,7 @@ class ChatStore(private val context: Context) {
     private fun rebuildIndex(): List<ChatSummary> {
         val all = dir.listFiles { f -> f.name.endsWith(".json") && f != indexFile }.orEmpty()
             .mapNotNull { f -> runCatching { json.decodeFromString<Chat>(f.readText()) }.getOrNull() }
-            .map { ChatSummary(it.id, it.title, it.updated, it.projectId) }
+            .map { ChatSummary(it.id, it.title, it.updated, it.projectId, it.pinned) }
         writeIndex(all)
         return all
     }

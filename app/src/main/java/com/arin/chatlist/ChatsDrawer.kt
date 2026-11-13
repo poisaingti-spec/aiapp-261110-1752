@@ -140,6 +140,7 @@ fun ChatsDrawer(
                             onRename = { renaming = c },
                             onMove = { moving = c },
                             onDelete = { deleting = c },
+                            onPin = { vm.togglePin(c.id, !c.pinned) },
                         )
                     }
                 }
@@ -207,7 +208,15 @@ private fun DrawerRow(icon: @Composable () -> Unit, label: String, onClick: () -
 }
 
 @Composable
-private fun ChatRow(c: ChatSummary, selected: Boolean, onOpen: () -> Unit, onRename: () -> Unit, onMove: () -> Unit, onDelete: () -> Unit) {
+private fun ChatRow(
+    c: ChatSummary,
+    selected: Boolean,
+    onOpen: () -> Unit,
+    onRename: () -> Unit,
+    onMove: () -> Unit,
+    onDelete: () -> Unit,
+    onPin: () -> Unit = {},
+) {
     var menu by remember { mutableStateOf(false) }
     Row(
         Modifier.fillMaxWidth()
@@ -220,13 +229,14 @@ private fun ChatRow(c: ChatSummary, selected: Boolean, onOpen: () -> Unit, onRen
             .padding(horizontal = 16.dp, vertical = 11.dp),
     ) {
         Text(
-            c.title,
+            (if (c.pinned) "📌 " else "") + c.title,
             style = MaterialTheme.typography.bodyLarge,
             color = if (selected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurface,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
         )
         DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+            DropdownMenuItem(text = { Text(if (c.pinned) "Unpin" else "Pin to top") }, onClick = { menu = false; onPin() })
             DropdownMenuItem(text = { Text("Rename") }, onClick = { menu = false; onRename() })
             DropdownMenuItem(text = { Text("Move to project") }, onClick = { menu = false; onMove() })
             DropdownMenuItem(text = { Text("Delete") }, onClick = { menu = false; onDelete() })

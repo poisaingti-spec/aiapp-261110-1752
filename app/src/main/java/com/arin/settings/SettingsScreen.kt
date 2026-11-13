@@ -112,6 +112,14 @@ fun SettingsScreen(vm: ChatViewModel, onBack: () -> Unit) {
                 )
             }
 
+            FoldSection(
+                "Custom instructions",
+                if (vm.aboutYou.isNotBlank() || vm.howToAnswer.isNotBlank() || vm.replyStyle != "Normal") "On · used in every chat"
+                else "Tell Arin about you and how you want answers",
+            ) {
+                CustomInstructionsSettings(vm)
+            }
+
             Section("Memory") {
                 Toggle(
                     "Remember things about me",
@@ -578,6 +586,42 @@ private fun ToolsSettings(vm: ChatViewModel) {
     } else {
         OutlinedButton(onClick = { adding = true }) { Text("Add MCP server") }
     }
+}
+
+/** Reply style, plus two notes Arin reads before every answer. */
+@OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
+@Composable
+private fun CustomInstructionsSettings(vm: ChatViewModel) {
+    var about by remember { mutableStateOf(vm.aboutYou) }
+    var how by remember { mutableStateOf(vm.howToAnswer) }
+    Text("Reply style", style = MaterialTheme.typography.labelLarge)
+    androidx.compose.foundation.layout.FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        listOf("Normal", "Concise", "Detailed", "Formal").forEach { s ->
+            FilterChip(selected = vm.replyStyle == s, onClick = { vm.chooseStyle(s) }, label = { Text(s) })
+        }
+    }
+    OutlinedTextField(
+        value = about,
+        onValueChange = { about = it.take(1500) },
+        label = { Text("About you") },
+        placeholder = { Text("Your work, what you're building, what you already know…") },
+        minLines = 2,
+        maxLines = 6,
+        modifier = Modifier.fillMaxWidth(),
+    )
+    OutlinedTextField(
+        value = how,
+        onValueChange = { how = it.take(1500) },
+        label = { Text("How Arin should answer") },
+        placeholder = { Text("Simple words, short answers, always give steps…") },
+        minLines = 2,
+        maxLines = 6,
+        modifier = Modifier.fillMaxWidth(),
+    )
+    TextButton(
+        enabled = about.trim() != vm.aboutYou || how.trim() != vm.howToAnswer,
+        onClick = { vm.saveCustomInstructions(about, how) },
+    ) { Text("Save") }
 }
 
 /** Your own service: base URL (typed or a preset), request format, key and model id. */

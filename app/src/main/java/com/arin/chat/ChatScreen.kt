@@ -101,6 +101,22 @@ fun ChatScreen(
     val pickFiles = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { vm.attach(it) }
     val pickPhotos = rememberLauncherForActivityResult(ActivityResultContracts.PickMultipleVisualMedia(6)) { vm.attach(it) }
     val context = androidx.compose.ui.platform.LocalContext.current
+    // Camera: the photo is written to a file Arin shares with the camera app, then attached.
+    var cameraUri by remember { mutableStateOf<android.net.Uri?>(null) }
+    val takePhoto = rememberLauncherForActivityResult(ActivityResultContracts.TakePicture()) { saved ->
+        val uri = cameraUri
+        if (saved && uri != null) vm.attach(listOf(uri))
+        cameraUri = null
+    }
+    fun openCamera() {
+        runCatching {
+            val dir = java.io.File(context.cacheDir, "exports").apply { mkdirs() }
+            val file = java.io.File(dir, "photo-${System.currentTimeMillis()}.jpg")
+            val uri = androidx.core.content.FileProvider.getUriForFile(context, context.packageName + ".files", file)
+            cameraUri = uri
+            takePhoto.launch(uri)
+        }.onFailure { vm.notice = "Couldn't open the camera." }
+    }
     var voiceOpen by rememberSaveable { mutableStateOf(false) }
     val micPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         if (granted) voiceOpen = true else vm.notice = "Voice mode needs microphone permission."
@@ -203,6 +219,7 @@ fun ChatScreen(
                         pickPhotos.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
                     },
                     onFiles = { pickFiles.launch(arrayOf("*/*")) },
+                    onCamera = { openCamera() },
                     onCancelEdit = { vm.cancelEdit(); input = "" },
                 )
             },
@@ -245,7 +262,7 @@ private fun TopBar(vm: ChatViewModel, onMenu: () -> Unit, onNew: () -> Unit, onP
                             )
                         }
                         Text(
-                            vm.title.takeIf { vm.messages.isNotEmpty() } ?: "Arin",
+                            if (vm.temporary) "Temporary chat (not saved)" else vm.title.takeIf { vm.messages.isNotEmpty() } ?: "Arin",
                             style = MaterialTheme.typography.titleSmall,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
@@ -383,6 +400,7 @@ private fun Composer(
     onVoice: () -> Unit,
     onPhotos: () -> Unit,
     onFiles: () -> Unit,
+    onCamera: () -> Unit = {},
     onCancelEdit: () -> Unit,
 ) {
     var attachMenu by remember { mutableStateOf(false) }
@@ -443,12 +461,17 @@ private fun Composer(
                 Box {
                     IconButton(onClick = { attachMenu = true }) { Icon(Icons.Filled.Add, contentDescription = "Attach") }
                     DropdownMenu(expanded = attachMenu, onDismissRequest = { attachMenu = false }) {
+                        DropdownMenuItem(text = { Text("Camera") }, onClick = { attachMenu = false; onCamera() })
                         DropdownMenuItem(text = { Text("Photos") }, onClick = { attachMenu = false; onPhotos() })
                         DropdownMenuItem(text = { Text("Files (any type)") }, onClick = { attachMenu = false; onFiles() })
                         androidx.compose.material3.HorizontalDivider()
                         DropdownMenuItem(
                             text = { Text((if (vm.webSearch) "✓ " else "") + "Web search") },
                             onClick = { vm.toggleWebSearch(!vm.webSearch); attachMenu = false },
+                        )
+                        DropdownMenuItem(
+                            text = { Text((if (vm.deepResearch) "✓ " else "") + "Deep research") },
+                            onClick = { vm.toggleDeepResearch(!vm.deepResearch); attachMenu = false },
                         )
                     }
                 }
@@ -519,6 +542,10 @@ private fun ChatMenu(vm: ChatViewModel) {
             Icon(Icons.Filled.MoreVert, contentDescription = "Chat options")
         }
         DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+            DropdownMenuItem(text = { Text("New temporary chat") }, onClick = {
+                open = false
+                vm.newChat(temporary = true)
+            })
             DropdownMenuItem(text = { Text("Export as Markdown") }, onClick = {
                 open = false
                 runCatching { com.arin.data.ChatExport.shareMarkdown(context, vm.title, vm.messages.toList()) }

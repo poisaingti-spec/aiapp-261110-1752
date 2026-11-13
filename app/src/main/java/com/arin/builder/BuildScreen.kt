@@ -498,6 +498,11 @@ private fun BuildComposer(chat: ChatViewModel, vm: BuildViewModel, onOpenSetting
                                 allowOtherSites = allowOther,
                                 project = project,
                                 attachments = attached.toList(),
+                                // Everything asked for so far in this Build chat counts, not only this message.
+                                requirements = if (project == null) {
+                                    (BuildRunner.timeline.filterIsInstance<TimelineItem.User>().map { it.text.trim() } + text.trim())
+                                        .filter { it.isNotBlank() && !resumeWords.containsMatchIn(it) }.distinct().joinToString("\n\n")
+                                } else "",
                             ),
                         )
                         text = ""

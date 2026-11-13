@@ -121,7 +121,17 @@ fun ArinMessage(message: Message, showThinking: Boolean, isLast: Boolean, onRetr
             }
             Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                 if (!message.failed) {
+                    val context = LocalContext.current
                     TextButton(onClick = { clipboard.setText(AnnotatedString(message.text)) }) { Text("Copy") }
+                    TextButton(onClick = { com.arin.voice.ReadAloud.toggle(context, message.id, message.text) }) {
+                        Text(if (com.arin.voice.ReadAloud.speakingId == message.id) "Stop" else "Listen")
+                    }
+                    TextButton(onClick = {
+                        runCatching {
+                            val send = Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, message.text)
+                            context.startActivity(Intent.createChooser(send, "Share reply").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                        }
+                    }) { Text("Share") }
                 }
                 if (isLast) TextButton(onClick = onRetry) { Text("Retry") }
             }

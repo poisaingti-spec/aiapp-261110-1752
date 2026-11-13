@@ -99,6 +99,20 @@ class Settings(context: Context) {
         get() = prefs.getBoolean("terminal_ask", true)
         set(value) = prefs.edit().putBoolean("terminal_ask", value).apply()
 
+    /** Custom instructions: who the person is, and how they want answers. */
+    var aboutYou: String
+        get() = prefs.getString("about_you", "") ?: ""
+        set(value) = prefs.edit().putString("about_you", value).apply()
+
+    var howToAnswer: String
+        get() = prefs.getString("how_to_answer", "") ?: ""
+        set(value) = prefs.edit().putString("how_to_answer", value).apply()
+
+    /** Normal, Concise, Detailed or Formal. */
+    var replyStyle: String
+        get() = prefs.getString("reply_style", "Normal") ?: "Normal"
+        set(value) = prefs.edit().putString("reply_style", value).apply()
+
     var memoryOn: Boolean
         get() = prefs.getBoolean("memory_on", true)
         set(value) = prefs.edit().putBoolean("memory_on", value).apply()
