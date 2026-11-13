@@ -88,11 +88,15 @@ object Prompt {
     fun saysBuild(text: String, hasChatBuild: Boolean): Boolean =
         ordersBuild(text) || (hasChatBuild && retryWord.containsMatchIn(text) && !notYet.containsMatchIn(text))
 
-    private val drawTag = Regex("""<draw>\s*(.{3,600}?)\s*</draw>""", RegexOption.DOT_MATCHES_ALL)
+    // Closed, or left open at the end of the reply (long descriptions sometimes lose the closing tag).
+    private val drawTag = Regex("""<draw>\s*(.{3,6000}?)\s*(?:</draw>|$)""", RegexOption.DOT_MATCHES_ALL)
 
     /** Pictures the reply asks Arin to create (made by a free image service from the description). */
     fun drawings(reply: String): List<com.arin.data.MediaItem> = drawTag.findAll(reply).take(2).map { m ->
-        val prompt = m.groupValues[1].replace(Regex("\\s+"), " ").trim()
+        // The picture service takes the description in a web address, so keep it to a sensible length.
+        val prompt = m.groupValues[1].replace(Regex("\\s+"), " ").trim().let { d ->
+            if (d.length <= 700) d else d.take(700).substringBeforeLast(". ", d.take(700)).trim()
+        }
         val url = "https://image.pollinations.ai/prompt/" + java.net.URLEncoder.encode(prompt, "UTF-8").replace("+", "%20") +
             "?width=1024&height=1024&nologo=true&seed=" + (prompt.hashCode() and 0x7fffffff)
         com.arin.data.MediaItem(video = false, url = url, thumb = url, title = prompt.take(120), source = url)
@@ -188,6 +192,9 @@ object Prompt {
         append("Pictures you create: when the person asks you to draw, generate, create or imagine a picture (not find a real photo), ")
         append("write <draw>a detailed description of the picture in English: subject, setting, style, lighting, colours</draw> ")
         append("in your reply. Arin creates the picture and shows it under your reply; add one short sentence about it. ")
+        append("Draw at once: when they ask for a picture, don't ask questions first and don't ask for confirmation; choose any ")
+        append("missing details yourself and send the <draw> tag in that same reply (they can ask for changes after seeing it). ")
+        append("Keep the description under 90 words, and always close the tag with </draw>. ")
         append("At most two per reply. For real things that exist (a person, a place, a product), use <images> instead.\n\n")
 
         if (deepResearch) {
@@ -370,7 +377,7 @@ object Prompt {
             .replace(buildTag, "").replace(openTail("build"), "")
             .replace(updateTag, "").replace(openTail("update_arin"), "")
             .replace(recallTag, "").replace(Regex("""<recall>[^<]*$"""), "")
-            .replace(drawTag, "").replace(Regex("""<draw>[^<]*$"""), "")
+            .replace(drawTag, "")
             .replace(imagesTag, "").replace(videosTag, "").replace(fetchTag, "").replace(downloadTag, "")
             .replace(Regex("""<(images|videos|fetch|download)\b[\s\S]*$"""), "")
             .replace(Regex("""</?(run|tool|build|update_arin|images|videos|fetch|download|recall|draw)\b[^>]*>"""), "")
