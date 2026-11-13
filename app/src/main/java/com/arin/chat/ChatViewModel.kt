@@ -1067,23 +1067,50 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                         }
                     }
                     val text = StringBuilder()
+                    var streamRetries = 0
                     val interrupted = try {
-                        Llm.stream(p, key, m, system, turns).collect { d ->
-                        if (steerPending) throw SteerInterrupt()
-                        when (d) {
-                            is Delta.Text -> {
-                                text.append(d.text)
-                                val now = text.toString()
-                                // Hold back what may be a search request; show everything else as it arrives.
-                                liveText = if (useSearch && searches < Prompt.MAX_SEARCHES && Prompt.maybeSearch(now)) "" else Prompt.clean(now)
-                            }
-                            is Delta.Thinking -> {
-                                if (thinkStart == 0L) thinkStart = System.currentTimeMillis()
-                                thinking.append(d.text)
-                                liveThinking = thinking.toString()
+                        while (true) {
+                            // After a cut-off reply, send back what came so far and ask the model to carry on, so a
+                            // retry continues from where it stopped instead of starting over.
+                            val streamTurns = if (text.isEmpty()) turns
+                                else turns + Turn(false, text.toString()) +
+                                    Turn(true, "Your reply above was cut off mid-way. Continue it from exactly where it stopped. Do not repeat anything already written and do not start over — just carry straight on.")
+                            try {
+                                Llm.stream(p, key, m, system, streamTurns).collect { d ->
+                                    if (steerPending) throw SteerInterrupt()
+                                    when (d) {
+                                        is Delta.Text -> {
+                                            text.append(d.text)
+                                            val now = text.toString()
+                                            // Hold back what may be a search request; show everything else as it arrives.
+                                            liveText = if (useSearch && searches < Prompt.MAX_SEARCHES && Prompt.maybeSearch(now)) "" else Prompt.clean(now)
+                                        }
+                                        is Delta.Thinking -> {
+                                            if (thinkStart == 0L) thinkStart = System.currentTimeMillis()
+                                            thinking.append(d.text)
+                                            liveThinking = thinking.toString()
+                                        }
+                                    }
+                                }
+                                break
+                            } catch (e: SteerInterrupt) {
+                                throw e
+                            } catch (e: CancellationException) {
+                                throw e
+                            } catch (e: Throwable) {
+                                // Free models sometimes send an incomplete or invalid reply the gateway drops: retry a
+                                // couple of times, continuing from the partial text so nothing already written is lost.
+                                if (streamRetries < 2 && Prompt.isRetryable(e.message)) {
+                                    streamRetries++
+                                    status = if (text.isEmpty()) "The model hiccuped — retrying…"
+                                        else "The model's reply cut off — continuing from where it stopped…"
+                                    kotlinx.coroutines.delay(800)
+                                    status = null
+                                    continue
+                                }
+                                throw e
                             }
                         }
-                    }
                         false
                     } catch (e: SteerInterrupt) {
                         true

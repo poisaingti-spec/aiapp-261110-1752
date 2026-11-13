@@ -42,6 +42,17 @@ object Prompt {
         downloadTag.find(reply)?.let { it.groupValues[1].trim() to it.groupValues[2].trim() }
 
     /** A change to Arin itself the reply asks for. */
+    private val retryableError = Regex(
+        """(?i)incomplete|invalid response|discard|truncat|malformed|empty (response|reply)|no response|unexpected end|connection reset|reset by peer|disconnect|stream (closed|ended)|read timeout|timed out|bad gateway|502|503|504|overloaded|upstream""",
+    )
+    private val notRetryable = Regex(
+        """(?i)key was rejected|not available to this account|isn'?t available|check it in settings|pick another model|add your|require|link an? .*github""",
+    )
+
+    /** True for an error worth retrying on its own: a dropped or incomplete reply, or a passing server hiccup. */
+    fun isRetryable(message: String?): Boolean =
+        message != null && retryableError.containsMatchIn(message) && !notRetryable.containsMatchIn(message)
+
     fun selfUpdate(reply: String): String? = updateTag.find(reply)?.groupValues?.get(1)?.trim()?.takeIf { it.isNotBlank() }
 
     private val buildTag = Regex("""<build(?:\s+name\s*=\s*["']([^"']{1,60})["'])?\s*>(.+?)</build>""", RegexOption.DOT_MATCHES_ALL)
