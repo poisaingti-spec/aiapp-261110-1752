@@ -17,6 +17,16 @@ jobs:
       - uses: gradle/actions/setup-gradle@v5
         with:
           gradle-version: "9.9.0"
+      - name: Resolve library versions (as the phone does)
+        run: |
+          rel() { M=$(curl -s "$1/maven-metadata.xml"); V=$(echo "$M" | grep -o '<release>[^<]*' | cut -d'>' -f2); [ -n "$V" ] || V=$(echo "$M" | grep -o '<latest>[^<]*' | cut -d'>' -f2); [ -n "$V" ] || V=$(echo "$M" | grep -o '<version>[^<]*' | tail -1 | cut -d'>' -f2); echo "$V"; }
+          KSP=$(rel https://repo1.maven.org/maven2/com/google/devtools/ksp/symbol-processing-gradle-plugin)
+          ROOM=$(rel https://dl.google.com/dl/android/maven2/androidx/room/room-compiler)
+          COIL=$(rel https://repo1.maven.org/maven2/io/coil-kt/coil3/coil-compose)
+          DS=$(rel https://dl.google.com/dl/android/maven2/androidx/datastore/datastore-preferences)
+          echo "::notice::KSP=$KSP ROOM=$ROOM COIL=$COIL DS=$DS"
+          sed -i "s/@KSP@/$KSP/" build.gradle.kts
+          sed -i "s/@ROOM@/$ROOM/g; s/@COIL@/$COIL/; s/@DS@/$DS/" app/build.gradle.kts
       - name: Signing key and Gradle wrapper (created once, then reused)
         run: |
           CHANGED=""
