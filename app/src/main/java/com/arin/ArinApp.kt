@@ -18,6 +18,7 @@ class ArinApp : Application() {
         super.onCreate()
         instance = this
         CrashLog.install(this)
+        CrashLog.checkExitReasons(this)
         val nm = getSystemService(NotificationManager::class.java)
         nm.createNotificationChannel(
             NotificationChannel(CHANNEL_REPLIES, "Replies", NotificationManager.IMPORTANCE_DEFAULT).apply {

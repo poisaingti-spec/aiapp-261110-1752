@@ -29,6 +29,37 @@ object CrashLog {
         }
     }
 
+    /**
+     * Android 11+ remembers why the app last stopped. A freeze ("isn't responding"), running out of memory or a crash in
+     * native code leave no Java error behind, so read them here when Arin starts and add them to Logs.
+     */
+    fun checkExitReasons(context: Context) {
+        if (Build.VERSION.SDK_INT < 30) return
+        runCatching {
+            val prefs = context.getSharedPreferences("crashlog", Context.MODE_PRIVATE)
+            val seen = prefs.getLong("seen_exit", 0L)
+            val am = context.getSystemService(android.app.ActivityManager::class.java)
+            val reasons = am.getHistoricalProcessExitReasons(context.packageName, 0, 5).filter { it.timestamp > seen }
+            var newest = seen
+            for (r in reasons.sortedBy { it.timestamp }) {
+                newest = maxOf(newest, r.timestamp)
+                val kind = when (r.reason) {
+                    android.app.ApplicationExitInfo.REASON_ANR -> "Freeze (not responding)"
+                    android.app.ApplicationExitInfo.REASON_CRASH_NATIVE -> "Native crash"
+                    android.app.ApplicationExitInfo.REASON_LOW_MEMORY -> "Out of memory"
+                    android.app.ApplicationExitInfo.REASON_EXCESSIVE_RESOURCE_USAGE -> "Too much battery or CPU"
+                    android.app.ApplicationExitInfo.REASON_CRASH -> null // already logged with its full error
+                    else -> null
+                } ?: continue
+                val trace = runCatching { r.traceInputStream?.bufferedReader()?.use { it.readText().take(10_000) } }.getOrNull().orEmpty()
+                val details = "When: ${java.util.Date(r.timestamp)}\nDescription: ${r.description ?: "-"}\nMemory used: ${r.pss / 1024} MB\n\n$trace"
+                save(context, "Crash", "$kind: ${r.description ?: ""}".take(160), header(context) + "\n" + details)
+                if (!lastCrash(context).exists()) lastCrash(context).writeText("$kind\n$details".take(6_000))
+            }
+            prefs.edit().putLong("seen_exit", newest).apply()
+        }
+    }
+
     private fun header(context: Context) =
         "Arin ${ArinApp.versionLabel(context)} · Android ${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT}) · ${Build.MANUFACTURER} ${Build.MODEL}"
 

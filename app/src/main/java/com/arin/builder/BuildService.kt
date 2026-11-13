@@ -49,7 +49,9 @@ class BuildService : Service() {
 
         BuildRunner.running = true
         job = scope.launch {
-            val result = try {
+            // The agent parses big model replies and project files: keep that work off the main thread,
+            // or the screen freezes and Android closes the app ("isn't responding").
+            val result = try { kotlinx.coroutines.withContext(Dispatchers.Default) {
                 BuildAgent(
                     request,
                     context = this@BuildService,
@@ -84,7 +86,7 @@ class BuildService : Service() {
                         }
                     },
                 ).run()
-            } catch (e: CancellationException) {
+            } } catch (e: CancellationException) {
                 BuildResult(false, "Stopped.")
             } catch (e: Throwable) {
                 com.arin.CrashLog.record(this@BuildService, e, "build")

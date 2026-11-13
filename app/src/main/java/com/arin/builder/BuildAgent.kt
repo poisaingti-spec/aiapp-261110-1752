@@ -136,6 +136,8 @@ class BuildAgent(
     /** The model's last answer, kept so a failure report can show what it sent. */
     private var lastReply = ""
 
+    private var lastThinkingNote = 0L
+
     /** Parts written so far, numbered for the plain-English progress. */
     private var part = 0
 
@@ -579,11 +581,16 @@ class BuildAgent(
                 if (raw.startsWith(THOUGHT)) {
                     // Show what the model is thinking, live, under the current step.
                     thinking.append(raw.substring(1))
-                    onProgress(-1f, "Thinking: " + proseOnly(thinking.toString()).takeLast(160))
+                    // Only the newest part is shown, so only look at the end (the whole text grows with every word).
+                    val now = System.currentTimeMillis()
+                    if (now - lastThinkingNote > 400) {
+                        lastThinkingNote = now
+                        onProgress(-1f, "Thinking: " + proseOnly(thinking.takeLast(1_200).toString()).takeLast(160))
+                    }
                     return@collect
                 }
                 if (thinking.isNotEmpty()) {
-                    step(BuildEvent.Kind.THINKING, "Planned it: " + proseOnly(thinking.toString()).trim().take(160) + "…")
+                    step(BuildEvent.Kind.THINKING, "Planned it: " + proseOnly(thinking.take(3_000).toString()).trim().take(160) + "…")
                     thinking.clear()
                     onProgress(null, "")
                 }
