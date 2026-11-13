@@ -102,6 +102,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     var webSearch by mutableStateOf(settings.webSearch)
         private set
     var memoryOn by mutableStateOf(settings.memoryOn)
+        private set
 
     /** Custom instructions (Settings): about the person, and how to answer. */
     var aboutYou by mutableStateOf(settings.aboutYou)
@@ -147,7 +148,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             withContext(Dispatchers.Main) { refreshChats() }
         }
     }
-        private set
+
     var terminalOn by mutableStateOf(settings.terminalOn)
         private set
     var terminalAsk by mutableStateOf(settings.terminalAsk)
