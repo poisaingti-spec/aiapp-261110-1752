@@ -1001,10 +1001,12 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         val m = model
         val key = settings.key(p)
         val project = chatProject
-        val useTerminal = terminalOn
+        // REA is active in the chat named "Reverse engineering", or wherever it's switched on from the ⋮ menu.
+        val reaChat = reaActive()
+        val useTerminal = terminalOn || reaChat
         // REA (reverse engineering) is allowed only in the chat named "Reverse engineering"; other chats run normal.
-        val reChat = isReverseEngineeringChat()
-        val servers = mcpServers.filter { it.enabled && (reChat || it.name != com.arin.mcp.Mcp.REA.name) }
+        val servers = mcpServers.filter { it.enabled && (reaChat || it.name != com.arin.mcp.Mcp.REA.name) } +
+            (if (reaChat && mcpServers.none { it.name == com.arin.mcp.Mcp.REA.name && it.enabled }) listOf(com.arin.mcp.Mcp.REA) else emptyList())
         val activeNames = servers.map { it.name }.toSet()
         val memoryFlag = memoryOn && !temporary
         val memoryList = if (memoryFlag) memories.toList() else emptyList()
@@ -1428,7 +1430,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     private fun persist() {
         if (messages.isEmpty() || temporary) return
         val id = chatId ?: java.util.UUID.randomUUID().toString().also { chatId = it }
-        val chat = Chat(id = id, title = title, updated = System.currentTimeMillis(), messages = messages.toList(), projectId = chatProject?.id, pinned = chatPinned)
+        val chat = Chat(id = id, title = title, updated = System.currentTimeMillis(), messages = messages.toList(), projectId = chatProject?.id, pinned = chatPinned, reaOn = reaOn)
         ArinApp.scope.launch(Dispatchers.IO) {
             store.save(chat)
             withContext(Dispatchers.Main) { refreshChats() }
@@ -1469,6 +1471,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     fun newChat(project: Project? = null, temporary: Boolean = false) {
         if (streaming) stop()
         this.temporary = temporary
+        reaOn = false
         chatPinned = false
         if (temporary) notice = "Temporary chat: it isn't saved and doesn't use memory."
         chatId = null
@@ -1495,6 +1498,30 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     /** True when the open chat is the reverse-engineering chat (the only one that may use REA). */
     private fun isReverseEngineeringChat() = title.equals(REVERSE_ENG_TITLE, ignoreCase = true)
 
+    /** REA turned on for THIS chat from the ⋮ menu (the "Reverse engineering" chat always has it on). */
+    var reaOn by mutableStateOf(false)
+        private set
+
+    /** Whether REA is active in the open chat (its name, or the per-chat switch). */
+    fun reaActive() = isReverseEngineeringChat() || reaOn
+
+    fun toggleRea(on: Boolean) {
+        reaOn = on
+        if (on) {
+            if (!terminalOn) { terminalOn = true; settings.terminalOn = true }
+            notice = when {
+                !com.arin.terminal.Linux.installed(getApplication()) ->
+                    "REA is on for this chat. Install Linux and REA in Settings → Linux first, then it will work here."
+                com.arin.mcp.Mcp.status(com.arin.mcp.Mcp.REA.name) == null ->
+                    "REA is on for this chat. It starts on your next message (first start takes a few seconds)."
+                else -> "REA is on for this chat: all its tools are available here."
+            }
+        } else {
+            notice = "REA is off for this chat."
+        }
+        persist()
+    }
+
     fun open(id: String) {
         if (id == chatId) return
         if (streaming) stop()
@@ -1504,6 +1531,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 return@launch
             }
             temporary = false
+            reaOn = chat.reaOn
             chatPinned = chat.pinned
             chatId = chat.id
             title = chat.title

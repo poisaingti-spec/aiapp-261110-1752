@@ -592,6 +592,12 @@ private fun ChatMenu(vm: ChatViewModel) {
             Icon(Icons.Filled.MoreVert, contentDescription = "Chat options")
         }
         DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+            // Turn REA (reverse engineering) on or off for this chat, so its tools work only where you want them.
+            DropdownMenuItem(
+                text = { Text(if (vm.reaActive()) "✓ Reverse engineering (REA) on" else "Activate reverse engineering (REA)") },
+                onClick = { open = false; vm.toggleRea(!vm.reaActive()) },
+            )
+            androidx.compose.material3.HorizontalDivider()
             DropdownMenuItem(text = { Text("New temporary chat") }, onClick = {
                 open = false
                 vm.newChat(temporary = true)

@@ -95,6 +95,8 @@ data class Chat(
     val projectId: String? = null,
     /** Kept at the top of the chats list. */
     val pinned: Boolean = false,
+    /** REA (reverse engineering) turned on for this chat. */
+    val reaOn: Boolean = false,
 )
 
 /** What the chats list needs, without loading every message. */
