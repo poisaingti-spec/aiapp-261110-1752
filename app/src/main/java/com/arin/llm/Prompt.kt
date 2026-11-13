@@ -73,22 +73,39 @@ object Prompt {
             """|\b(build|make|generate|create|give me|get me|compile)( it| this| that)?( in| into| to| as)?( the| an| a)? apk\b""",
     )
 
-    /** True when [text] is an order to build now ("build", "ok build it", "make the APK"), not talk or a question about building. */
+    private val strictBuild = Regex(
+        """^((ok|okay|yes|yeah|yep|now|please|so|then|go|go ahead|alright|fine|great|good|perfect|just|done|thanks|thank you|and)\s+)*""" +
+            """((re)?build|compile|start( the)? build(ing)?|make( the| an)? apk|generate( the| an)? apk|create( the| an)? apk|give me( the| an)? apk)""" +
+            """(\s+(it|now|this|that|the|an?|my|app|apk|the app|the apk|everything|all|please|now please|it now|it please|"""+
+            """with everything|everything now|for me|again))*$""",
+    )
+    private val strictRetry = Regex("""^((ok|okay|yes|now|please|so)\s+)*(try again|retry|rebuild|build again|try the build again|resume|continue( the)? build)(\s+(now|please|it))*$""")
+    private val strictUpdate = Regex("""^((ok|okay|yes|now|please|so|go ahead)\s+)*(update( arin| the app| yourself| it)?|apply( the)? update|install( the)? update)(\s+(now|please|it))*$""")
+
+    /** The person's message reduced to words: lower case, no punctuation or emoji. */
+    private fun plainWords(text: String) = text.lowercase().replace(Regex("""[^a-z0-9\s]"""), " ").replace(Regex("""\s+"""), " ").trim()
+
+    /**
+     * True only for a short, plain order to build ("build", "build now", "ok build it", "make the APK").
+     * Anything else (a description, a question, "I want to build an app…", "add a login screen") is talk, not an order.
+     */
     fun ordersBuild(text: String): Boolean {
-        val t = text.trim()
-        if (notYet.containsMatchIn(t)) return false
-        if (politeOrder.containsMatchIn(t)) return true
-        if (t.endsWith("?") || asksQuestion.containsMatchIn(t)) return false
-        // In a long message the order has to be at the start or the end, not somewhere in a description.
-        return if (t.length > 600) buildOrder.containsMatchIn(t.take(200)) || buildOrder.containsMatchIn(t.takeLast(200))
-        else buildOrder.containsMatchIn(t)
+        val w = plainWords(text)
+        return w.isNotEmpty() && w.split(' ').size <= 8 && !text.trim().endsWith("?") && strictBuild.matches(w)
     }
 
-    /** True when the person's latest message lets Arin build: an order to build, or "try again" after a build in this chat. */
-    fun saysBuild(text: String, hasChatBuild: Boolean): Boolean =
-        ordersBuild(text) || (hasChatBuild && retryWord.containsMatchIn(text) && !notYet.containsMatchIn(text))
+    /** True when the person's latest message lets a build start: an order to build, or "try again" after a build in this chat. */
+    fun saysBuild(text: String, hasChatBuild: Boolean): Boolean {
+        val w = plainWords(text)
+        return ordersBuild(text) || (hasChatBuild && w.split(' ').size <= 6 && strictRetry.matches(w))
+    }
 
-    // Closed, or left open at the end of the reply (long descriptions sometimes lose the closing tag).
+    /** True for a short, plain order to update Arin itself ("update", "update arin now"), or to build. */
+    fun ordersUpdate(text: String): Boolean {
+        val w = plainWords(text)
+        return ordersBuild(text) || (w.split(' ').size <= 6 && strictUpdate.matches(w))
+    }
+
     private val drawTag = Regex("""<draw>\s*(.{3,6000}?)\s*(?:</draw>|$)""", RegexOption.DOT_MATCHES_ALL)
 
     /** Pictures the reply asks Arin to create (made by a free image service from the description). */

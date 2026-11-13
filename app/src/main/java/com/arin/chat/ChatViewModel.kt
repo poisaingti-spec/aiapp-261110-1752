@@ -696,6 +696,17 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /** The person tapped "Build now" (or "Update Arin now") under a reply that prepared a build. */
+    fun confirmBuild(message: Message) {
+        val (name, spec) = message.pendingBuild.split('\u0000', limit = 2).let { it[0] to it.getOrElse(1) { "" } }
+        if (spec.isBlank()) return
+        val i = messages.indexOfFirst { it.id == message.id }
+        if (i >= 0) messages[i] = messages[i].copy(pendingBuild = "", text = messages[i].text.substringBefore("\n\n_Nothing is being built yet."))
+        persist()
+        val problem = if (name == "update") startSelfUpdate(spec) else startBuild(name, spec)
+        problem?.let { notice = it }
+    }
+
     /**
      * Everything the app must do, for the builder: the specification written when the person said "build", plus the
      * conversation itself (what they asked for and what Arin proposed), so details the specification skipped still get built.
@@ -1291,10 +1302,14 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 val seconds = if (thinkStart > 0) ((System.currentTimeMillis() - thinkStart) / 1000).toInt() else 0
                 if (memoryFlag) Prompt.memories(answer).forEach { remember(it) }
                 // The model asked to change Arin itself: start a self-update build.
-                if (failure == null) Prompt.selfUpdate(answer)?.let { change ->
-                    ArinApp.scope.launch(kotlinx.coroutines.Dispatchers.Main) {
-                        startSelfUpdate(change)?.let { notice = it }
-                    }
+                // Updating Arin itself: only on the person's order, otherwise offer an "Update Arin now" button.
+                var pendingBuild = ""
+                if (failure == null && !stopped) Prompt.selfUpdate(answer)?.let { change ->
+                    if (listOf(userSaid).any { Prompt.ordersUpdate(it) }) {
+                        ArinApp.scope.launch(kotlinx.coroutines.Dispatchers.Main) {
+                            startSelfUpdate(change)?.let { notice = it }
+                        }
+                    } else pendingBuild = "update\u0000$change"
                 }
                 // The model asked to build an app: start Build mode.
                 // (Launched separately: this block also runs after Stop, when this coroutine is cancelled.)
@@ -1309,8 +1324,11 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                             startBuild(name, description)?.let { notice = it }
                         }
                     }
-                    buildAsked != null -> buildNote =
-                        "\n\n_I haven't started building. Say **build** when you're ready, and I'll build it with everything we've discussed._"
+                    buildAsked != null -> {
+                        // Not ordered: keep the specification and let the person start it with a button.
+                        pendingBuild = buildAsked.first + "\u0000" + buildAsked.second
+                        buildNote = "\n\n_Nothing is being built yet. Tap **Build now** below, or say **build**, when you want it built with everything we've discussed._"
+                    }
                     // Said "build", was asked again for the tag, and the reply still only talks about building: start it anyway.
                     failure == null && !stopped && buildNudges > 0 && saidAll.any { Prompt.ordersBuild(it) } &&
                         Prompt.selfUpdate(answer) == null && !com.arin.builder.BuildRunner.running &&
@@ -1339,6 +1357,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                         sources = sources,
                         commands = ran.toList(),
                         media = foundMedia.toList(),
+                        pendingBuild = pendingBuild,
                     )
                 }
                 messages += msg

@@ -57,6 +57,8 @@ data class Message(
     val commands: List<CommandRun> = emptyList(),
     /** Pictures and videos shown with the reply. */
     val media: List<MediaItem> = emptyList(),
+    /** A build the model prepared but the person hasn't ordered yet: "name\u0000specification" (or "update\u0000change"). */
+    val pendingBuild: String = "",
 )
 
 @Serializable

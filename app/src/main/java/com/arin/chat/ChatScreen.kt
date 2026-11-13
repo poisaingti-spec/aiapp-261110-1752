@@ -410,6 +410,8 @@ private fun Conversation(vm: ChatViewModel, onEdit: (Int) -> Unit) {
                     m, vm.showThinking, isLast = i == vm.messages.lastIndex && !vm.streaming, onRetry = vm::retry,
                     // Build progress in chat: a Summary of every step, like Build mode keeps.
                     onSummary = if (m.text.startsWith("🛠️")) ({ summaryOpen = true }) else null,
+                    // Only the newest reply can be built from, so an old plan never starts by accident.
+                    onConfirmBuild = if (i == vm.messages.lastIndex && !vm.streaming) ({ vm.confirmBuild(m) }) else null,
                 )
             }
             if (vm.streaming) {

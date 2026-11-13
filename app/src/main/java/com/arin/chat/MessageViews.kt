@@ -89,7 +89,14 @@ fun UserMessage(message: Message, onEdit: (() -> Unit)?) {
 
 /** Arin's reply: full width under the Arin mark, with Copy and (for the last reply) Retry. */
 @Composable
-fun ArinMessage(message: Message, showThinking: Boolean, isLast: Boolean, onRetry: () -> Unit, onSummary: (() -> Unit)? = null) {
+fun ArinMessage(
+    message: Message,
+    showThinking: Boolean,
+    isLast: Boolean,
+    onRetry: () -> Unit,
+    onSummary: (() -> Unit)? = null,
+    onConfirmBuild: (() -> Unit)? = null,
+) {
     val clipboard = LocalClipboardManager.current
     Row(Modifier.fillMaxWidth()) {
         ArinMark(size = 22.dp, modifier = Modifier.padding(top = 2.dp))
@@ -122,6 +129,11 @@ fun ArinMessage(message: Message, showThinking: Boolean, isLast: Boolean, onRetr
                     com.arin.media.MediaRow(message.media)
                 }
                 if (message.sources.isNotEmpty()) Sources(message.sources)
+            }
+            if (onConfirmBuild != null && message.pendingBuild.isNotBlank()) {
+                androidx.compose.material3.Button(onClick = onConfirmBuild, modifier = Modifier.padding(top = 8.dp)) {
+                    Text(if (message.pendingBuild.startsWith("update\u0000")) "Update Arin now" else "Build now")
+                }
             }
             Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                 if (onSummary != null) TextButton(onClick = onSummary) { Text("Summary") }
