@@ -141,6 +141,9 @@ fun BuildScreen(chat: ChatViewModel, vm: BuildViewModel, onBack: () -> Unit, onO
                     IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back") }
                 },
                 actions = {
+                    var summary by remember { mutableStateOf(false) }
+                    if (vm.timeline.isNotEmpty()) TextButton(onClick = { summary = true }) { Text("Summary") }
+                    if (summary) BuildSummarySheet(onClose = { summary = false })
                     TextButton(onClick = { showProjects = true }) { Text("Projects") }
                     if (project != null) {
                         TextButton(onClick = { showFiles = true }) { Text("Files") }

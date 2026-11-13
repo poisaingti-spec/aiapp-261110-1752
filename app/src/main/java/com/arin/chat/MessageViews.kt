@@ -88,7 +88,7 @@ fun UserMessage(message: Message, onEdit: (() -> Unit)?) {
 
 /** Arin's reply: full width under the Arin mark, with Copy and (for the last reply) Retry. */
 @Composable
-fun ArinMessage(message: Message, showThinking: Boolean, isLast: Boolean, onRetry: () -> Unit) {
+fun ArinMessage(message: Message, showThinking: Boolean, isLast: Boolean, onRetry: () -> Unit, onSummary: (() -> Unit)? = null) {
     val clipboard = LocalClipboardManager.current
     Row(Modifier.fillMaxWidth()) {
         ArinMark(size = 22.dp, modifier = Modifier.padding(top = 2.dp))
@@ -120,6 +120,7 @@ fun ArinMessage(message: Message, showThinking: Boolean, isLast: Boolean, onRetr
                 if (message.sources.isNotEmpty()) Sources(message.sources)
             }
             Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                if (onSummary != null) TextButton(onClick = onSummary) { Text("Summary") }
                 if (!message.failed) {
                     val context = LocalContext.current
                     TextButton(onClick = { clipboard.setText(AnnotatedString(message.text)) }) { Text("Copy") }

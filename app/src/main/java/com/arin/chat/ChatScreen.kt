@@ -355,6 +355,8 @@ private fun Conversation(vm: ChatViewModel, onEdit: (Int) -> Unit) {
     val list = rememberLazyListState()
     val scope = androidx.compose.runtime.rememberCoroutineScope()
     val count = vm.messages.size + if (vm.streaming) 1 else 0
+    var summaryOpen by remember { mutableStateOf(false) }
+    if (summaryOpen) com.arin.builder.BuildSummarySheet(onClose = { summaryOpen = false })
     // Follow the newest text (to the very bottom) until the person scrolls up; the ↓ button turns it back on.
     var follow by remember { mutableStateOf(true) }
     val dragged by list.interactionSource.collectIsDraggedAsState()
@@ -388,7 +390,11 @@ private fun Conversation(vm: ChatViewModel, onEdit: (Int) -> Unit) {
         ) {
             itemsIndexed(vm.messages, key = { _, m -> m.id }) { i, m ->
                 if (m.fromUser) UserMessage(m, onEdit = if (vm.streaming) null else ({ onEdit(i) }))
-                else ArinMessage(m, vm.showThinking, isLast = i == vm.messages.lastIndex && !vm.streaming, onRetry = vm::retry)
+                else ArinMessage(
+                    m, vm.showThinking, isLast = i == vm.messages.lastIndex && !vm.streaming, onRetry = vm::retry,
+                    // Build progress in chat: a Summary of every step, like Build mode keeps.
+                    onSummary = if (m.text.startsWith("🛠️")) ({ summaryOpen = true }) else null,
+                )
             }
             if (vm.streaming) {
                 item(key = "live") { LiveReply(vm.liveText, vm.liveThinking, vm.showThinking, vm.status, vm.liveCommands.toList()) }
