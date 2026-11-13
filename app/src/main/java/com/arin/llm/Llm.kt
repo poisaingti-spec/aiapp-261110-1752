@@ -65,7 +65,14 @@ object Llm {
         if (provider == Provider.Custom) {
             // Keep the typed model id at the top even when the service lists others.
             val manual = CustomApi.manualModel
-            if (manual.isNotBlank() && found.none { it.id == manual }) return listOf(ModelOption(manual, manual)) + found
+            // Models this service is known for but doesn't always list (e.g. ones that need access turned on).
+            val known = CustomApi.presetFor()?.models.orEmpty()
+                .filter { (_, id) -> found.none { it.id == id } }
+                .map { (label, id) -> ModelOption(id, label) }
+            val typed = if (manual.isNotBlank() && found.none { it.id == manual } && known.none { it.id == manual }) {
+                listOf(ModelOption(manual, manual))
+            } else emptyList()
+            if (typed.isNotEmpty() || known.isNotEmpty()) return typed + known + found
         }
         return found.ifEmpty { fallback }
     }
