@@ -107,6 +107,9 @@ fun ArinMessage(message: Message, showThinking: Boolean, isLast: Boolean, onRetr
                 ) {
                     Text(message.text, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(12.dp))
                 }
+            } else if (onSummary != null && com.arin.builder.BuildRunner.running && !message.text.contains("— steps**")) {
+                // A build in progress: one line with the current step; tap it for the full Summary.
+                BuildNowLine(onSummary)
             } else {
                 SelectionContainer { MarkdownText(message.text) }
                 val artifacts = remember(message.text) { Artifacts.find(message.text) }
@@ -345,3 +348,41 @@ fun FileChip(file: Attachment, onRemove: (() -> Unit)?) {
         }
     }
 }
+
+
+/** The build's current step on one line, with moving dots, opening the Summary when tapped. */
+@Composable
+private fun BuildNowLine(onOpen: () -> Unit) {
+    val step = (com.arin.builder.BuildRunner.timeline.lastOrNull { it is com.arin.builder.TimelineItem.Event }
+        as? com.arin.builder.TimelineItem.Event)?.event?.text?.lines()?.firstOrNull()?.take(120) ?: "Starting the build"
+    val accent = androidx.compose.ui.graphics.Color(0xFFD97757)
+    val t = androidx.compose.animation.core.rememberInfiniteTransition(label = "dots")
+    val phase by t.animateFloat(
+        0f, 4f,
+        androidx.compose.animation.core.infiniteRepeatable(androidx.compose.animation.core.tween(1200, easing = androidx.compose.animation.core.LinearEasing)),
+        label = "phase",
+    )
+    Row(
+        Modifier.fillMaxWidth().clickable(onClick = onOpen).padding(vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        // Four dots in a square; the lit one goes round.
+        androidx.compose.foundation.layout.Box(Modifier.size(18.dp)) {
+            listOf(0 to 0, 1 to 0, 1 to 1, 0 to 1).forEachIndexed { i, (cx, cy) ->
+                val on = phase.toInt() % 4 == i
+                androidx.compose.foundation.layout.Box(
+                    Modifier
+                        .padding(start = (cx * 10).dp, top = (cy * 10).dp)
+                        .size(if (on) 7.dp else 5.dp)
+                        .androidx_background(accent.copy(alpha = if (on) 1f else 0.45f)),
+                )
+            }
+        }
+        Spacer(Modifier.width(12.dp))
+        Text(step, style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.weight(1f, fill = false), maxLines = 2)
+        Text("  ›", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    }
+}
+
+private fun Modifier.androidx_background(c: androidx.compose.ui.graphics.Color) =
+    this.background(c, androidx.compose.foundation.shape.CircleShape)
