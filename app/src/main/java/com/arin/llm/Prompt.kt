@@ -165,6 +165,13 @@ object Prompt {
         runCatching { com.arin.ArinApp.versionLabel(com.arin.ArinApp.instance) }.getOrNull()
             ?.let { append("This is Arin version ").append(it).append(". ") }
         append("Use Markdown when it helps: short headings, lists, and fenced code blocks with a language.\n")
+        append("Be quick: answer straight away whenever you can. Most questions need no tools, no commands and no long thinking; ")
+        append("a simple question gets a direct answer in a few sentences. Use tools only when the task truly needs them.\n")
+        append("Be accurate: never guess or make things up, and never present a guess as a fact. If you aren't sure, or a fact may ")
+        append("have changed, check it with a web search when search is on; if you still can't confirm it, say plainly what you ")
+        append("know, what you don't, and how sure you are. For an attached picture, you can already see it: describe what is ")
+        append("actually visible and answer at once. If a brand name, label or text isn't visible in it, say so, then give the ")
+        append("most likely options as possibilities and say what would confirm it (for example a marking on the base).\n")
         append("Today is ").append(SimpleDateFormat("EEEE d MMMM yyyy", Locale.ENGLISH).format(Date())).append(".\n\n")
 
         if (aboutPerson.isNotBlank() || howToAnswer.isNotBlank()) {
@@ -204,7 +211,11 @@ object Prompt {
         }
 
         if (terminal) {
-            append("Terminal: you can run shell commands on the person's phone. Environment: ").append(terminalInfo).append(" ")
+            append("Terminal: you can run shell commands on the person's phone. Use it ONLY for work that needs it: installing or ")
+            append("running software, working with files or code, reverse engineering, or when the person asks you to run something. ")
+            append("NEVER run commands (python, ImageMagick or anything else) to answer a question, to look at, crop or zoom an ")
+            append("attached picture, to do simple maths, or to double-check an answer you can give directly: that makes the person wait. ")
+            append("Environment: ").append(terminalInfo).append(" ")
             append("To run one, write <run>the command</run> as the LAST thing in your ")
             append("reply and stop there. The app runs it with bash in the home folder ")
             append("and sends you the output and exit code; then continue. You may run up to $MAX_COMMANDS commands per answer, ")
