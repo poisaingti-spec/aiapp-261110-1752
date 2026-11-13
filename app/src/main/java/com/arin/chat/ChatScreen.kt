@@ -178,6 +178,30 @@ fun ChatScreen(
         )
     }
 
+    vm.crashReport?.let { report ->
+        val clip = androidx.compose.ui.platform.LocalClipboardManager.current
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { vm.dismissCrash() },
+            title = { Text("Arin closed unexpectedly last time") },
+            text = {
+                Column(Modifier.heightIn(max = 360.dp).verticalScroll(androidx.compose.foundation.rememberScrollState())) {
+                    Text(
+                        "Copy this report and send it to get the crash fixed.\n\n" + report.take(3_000),
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+            },
+            confirmButton = {
+                androidx.compose.material3.TextButton(onClick = {
+                    clip.setText(androidx.compose.ui.text.AnnotatedString(report))
+                    vm.notice = "Crash report copied"
+                    vm.dismissCrash()
+                }) { Text("Copy report") }
+            },
+            dismissButton = { androidx.compose.material3.TextButton(onClick = { vm.dismissCrash() }) { Text("Close") } },
+        )
+    }
+
     LaunchedEffect(vm.notice) {
         val n = vm.notice ?: return@LaunchedEffect
         snackbar.showSnackbar(n)

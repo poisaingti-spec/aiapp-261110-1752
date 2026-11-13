@@ -23,7 +23,10 @@ import java.io.IOException
 
 /** Runs Build Mode in the background with a notification, so closing the app doesn't stop a build. */
 class BuildService : Service() {
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main + com.arin.CrashLog.handler { this })
+
+    /** Progress updates arrive for every word the model writes; the notification only needs a few a second. */
+    private var lastProgressNote = 0L
     private var job: Job? = null
     private var wakeLock: android.os.PowerManager.WakeLock? = null
 
@@ -52,29 +55,40 @@ class BuildService : Service() {
                     context = this@BuildService,
                     emit = { event ->
                         scope.launch {
-                            BuildRunner.timeline += TimelineItem.Event(event)
-                            BuildRunner.save(this@BuildService)
-                            notify(PROGRESS_ID, progressNotification(event.text))
+                            runCatching {
+                                BuildRunner.timeline += TimelineItem.Event(event.copy(text = event.text.take(6_000)))
+                                BuildRunner.save(this@BuildService)
+                                notify(PROGRESS_ID, progressNotification(event.text.take(200)))
+                            }.onFailure { com.arin.CrashLog.record(this@BuildService, it, "build step") }
                         }
                     },
                     onProject = { p ->
                         scope.launch {
-                            BuildRunner.project = p
-                            BuildRunner.save(this@BuildService)
+                            runCatching {
+                                BuildRunner.project = p
+                                BuildRunner.save(this@BuildService)
+                            }.onFailure { com.arin.CrashLog.record(this@BuildService, it, "saving the build") }
                         }
                     },
                     onProgress = { value, text ->
-                        scope.launch {
-                            BuildRunner.progress = value
-                            BuildRunner.progressText = text
-                            if (value != null) notify(PROGRESS_ID, progressNotification(text.ifBlank { "Working…" }, value))
+                        val now = System.currentTimeMillis()
+                        if (value == null || now - lastProgressNote > 300) {
+                            lastProgressNote = now
+                            scope.launch {
+                                runCatching {
+                                    BuildRunner.progress = value
+                                    BuildRunner.progressText = text.take(300)
+                                    if (value != null) notify(PROGRESS_ID, progressNotification(text.take(200).ifBlank { "Working…" }, value))
+                                }
+                            }
                         }
                     },
                 ).run()
             } catch (e: CancellationException) {
                 BuildResult(false, "Stopped.")
             } catch (e: Throwable) {
-                BuildResult(false, friendly(e))
+                com.arin.CrashLog.record(this@BuildService, e, "build")
+                BuildResult(false, friendly(e), log = e.stackTraceToString().take(2_000))
             }
             BuildRunner.timeline += TimelineItem.Result(result.success, result.message, result.apkUrl, result.repoUrl)
             if (!result.success && result.log.isNotBlank()) {

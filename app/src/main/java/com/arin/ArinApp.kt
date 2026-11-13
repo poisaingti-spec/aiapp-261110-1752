@@ -17,6 +17,7 @@ class ArinApp : Application() {
     override fun onCreate() {
         super.onCreate()
         instance = this
+        CrashLog.install(this)
         val nm = getSystemService(NotificationManager::class.java)
         nm.createNotificationChannel(
             NotificationChannel(CHANNEL_REPLIES, "Replies", NotificationManager.IMPORTANCE_DEFAULT).apply {
@@ -46,7 +47,8 @@ class ArinApp : Application() {
         lateinit var instance: ArinApp
             private set
 
-        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+        /** App-wide work; an error in one job is written to the crash log instead of closing the app. */
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate + CrashLog.handler { if (::instance.isInitialized) instance else null })
 
         /** The installed version, e.g. "0.9.0 (21)", read from the APK so it is always right. */
         fun versionLabel(context: android.content.Context): String = runCatching {

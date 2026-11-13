@@ -75,6 +75,11 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         private set
     var notice by mutableStateOf<String?>(null)
 
+    /** Details of the last crash, shown once when Arin opens again. */
+    var crashReport by mutableStateOf(com.arin.CrashLog.takeReport(app))
+
+    fun dismissCrash() { crashReport = null }
+
     /** Set when a reply finishes; voice mode reads it aloud. */
     var lastFinished by mutableStateOf<Message?>(null)
         private set

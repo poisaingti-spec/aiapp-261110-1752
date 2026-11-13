@@ -89,7 +89,10 @@ object BuildRunner {
         prefs(context).getString("current", null)?.let { open(context, it) }
     }
 
-    private val io = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.IO)
+    private val io = kotlinx.coroutines.CoroutineScope(
+        kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.IO +
+            com.arin.CrashLog.handler { runCatching { com.arin.ArinApp.instance }.getOrNull() },
+    )
     private var pendingSave: kotlinx.coroutines.Job? = null
 
     /** Saves soon (batched, off the main thread) so frequent progress updates don't make the app stutter. */
@@ -117,8 +120,19 @@ object BuildRunner {
         write(context, snapshot)
     }
 
+    /** One save at a time, so two never write the same file at once. */
+    private val writeLock = Any()
+
     private fun write(context: Context, s: SavedProject) {
         if (s.timeline.isEmpty() && s.project == null) return
+        // Keep saved builds a sensible size: very long event texts (logs) are cut.
+        val small = s.copy(timeline = s.timeline.takeLast(1_500).map { t ->
+            if (t is TimelineItem.Event && t.event.text.length > 4_000) TimelineItem.Event(t.event.copy(text = t.event.text.take(4_000))) else t
+        })
+        synchronized(writeLock) { writeFile(context, small) }
+    }
+
+    private fun writeFile(context: Context, s: SavedProject) {
         runCatching {
             val f = File(dir(context), "${s.id}.json")
             val tmp = File(dir(context), "${s.id}.tmp")
