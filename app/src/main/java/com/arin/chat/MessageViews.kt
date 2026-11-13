@@ -2,6 +2,7 @@ package com.arin.chat
 
 import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.background
+import androidx.compose.animation.core.animateFloat
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -358,8 +359,11 @@ private fun BuildNowLine(onOpen: () -> Unit) {
     val accent = androidx.compose.ui.graphics.Color(0xFFD97757)
     val t = androidx.compose.animation.core.rememberInfiniteTransition(label = "dots")
     val phase by t.animateFloat(
-        0f, 4f,
-        androidx.compose.animation.core.infiniteRepeatable(androidx.compose.animation.core.tween(1200, easing = androidx.compose.animation.core.LinearEasing)),
+        initialValue = 0f,
+        targetValue = 4f,
+        animationSpec = androidx.compose.animation.core.infiniteRepeatable<Float>(
+            androidx.compose.animation.core.tween<Float>(1200, easing = androidx.compose.animation.core.LinearEasing),
+        ),
         label = "phase",
     )
     Row(
