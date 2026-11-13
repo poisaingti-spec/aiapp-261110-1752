@@ -22,7 +22,7 @@ object GitHubLogin {
      */
     const val DEFAULT_CLIENT_ID = "Ov23li27PSK4KPEitrSN"
 
-    const val SCOPES = "public_repo workflow"
+    const val SCOPES = "public_repo workflow codespace"
 
     data class DeviceCode(val deviceCode: String, val userCode: String, val verificationUri: String, val interval: Int, val expiresIn: Int)
 

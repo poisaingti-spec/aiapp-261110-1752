@@ -36,6 +36,8 @@ data class BuildRequest(
     val selfBranch: String = "",
     /** Force the build to run on the phone (built-in Linux), never GitHub. */
     val localOnly: Boolean = false,
+    /** Build in the cloud and also open a GitHub Codespace on the project; the APK is saved straight to the phone. */
+    val codespace: Boolean = false,
     /**
      * Everything that was asked for, in full (e.g. the whole chat about the app). Blank: [description] is all there is.
      */
@@ -59,6 +61,10 @@ data class BuildResult(
     val phoneSourceZip: String? = null,
     /** The phone-built APK in Arin's storage, ready for Android's installer. */
     val phoneInstallPath: String? = null,
+    /** The Codespace opened for this project, if any. */
+    val codespaceUrl: String? = null,
+    /** Save the APK to the phone automatically (used for codespace builds). */
+    val autoDownloadApk: Boolean = false,
 )
 
 /**
@@ -139,6 +145,9 @@ class BuildAgent(
     private var lastReply = ""
 
     private var lastThinkingNote = 0L
+
+    /** The Codespace opened for this build, if any. */
+    private var codespaceUrl: String? = null
 
     /** Parts written so far, numbered for the plain-English progress. */
     private var part = 0
@@ -285,6 +294,12 @@ class BuildAgent(
             val repoName = "$slug-" + SimpleDateFormat("yyMMdd-HHmm", Locale.US).format(Date())
             repo = createRepoOrLocal(repoName, "Built by Arin: ${req.description}")
             ProjectTemplate.files(appName, packageName, deps.toList()).forEach { (p, c) -> pendingFiles[p] = c.toByteArray() }
+            if (req.codespace && !localOnly) {
+                // Make an opened codespace ready to build Android, and open one now (if the sign-in allows it).
+                pendingFiles[".devcontainer/devcontainer.json"] = ProjectTemplate.devcontainer.toByteArray()
+                step(BuildEvent.Kind.STEP, "Opening a GitHub Codespace on the project")
+                codespaceUrl = gh.createCodespace(repo) ?: gh.codespaceLink(repo)
+            }
             if ("app/src/main/AndroidManifest.xml" !in files) {
                 pendingFiles["app/src/main/AndroidManifest.xml"] = ProjectTemplate.defaultManifest(appName).toByteArray()
             }
@@ -466,6 +481,8 @@ class BuildAgent(
                     repo.url,
                     apk,
                     phoneApk = phoneApk,
+                    codespaceUrl = codespaceUrl,
+                    autoDownloadApk = req.codespace,
                 )
             }
 

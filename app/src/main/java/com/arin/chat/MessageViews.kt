@@ -417,6 +417,7 @@ private fun BuildWhere(onPick: (BuildTarget) -> Unit) {
             androidx.compose.material3.Button(onClick = { onPick(BuildTarget.CHAT) }) { Text("In chat") }
             androidx.compose.material3.OutlinedButton(onClick = { onPick(BuildTarget.BUILD_TAB) }) { Text("Build tab") }
             androidx.compose.material3.OutlinedButton(onClick = { onPick(BuildTarget.PHONE) }) { Text("On phone") }
+            androidx.compose.material3.OutlinedButton(onClick = { onPick(BuildTarget.CODESPACE) }) { Text("Codespace") }
             androidx.compose.material3.OutlinedButton(onClick = { onPick(BuildTarget.AUTO) }) { Text("Let Arin decide") }
         }
     }

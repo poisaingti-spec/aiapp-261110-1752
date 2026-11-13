@@ -230,6 +230,22 @@ object ProjectTemplate {
     /** Workflow added to uploaded projects; uses the project's own Gradle wrapper when it has one. */
     const val IMPORT_WORKFLOW_FILE = "arin-build.yml"
 
+    /**
+     * Devcontainer for a GitHub Codespace: a Java image with the Android SDK set up on create, so opening the
+     * codespace gives a ready Android build environment. Build with:  ./gradlew assembleDebug
+     */
+    val devcontainer = """
+        {
+          "name": "Android build",
+          "image": "mcr.microsoft.com/devcontainers/java:21",
+          "features": {
+            "ghcr.io/devcontainers/features/android-sdk:1": {}
+          },
+          "onCreateCommand": "chmod +x gradlew || true",
+          "customizations": { "vscode": { "extensions": ["redhat.java", "vscjava.vscode-gradle"] } }
+        }
+    """.trimIndent()
+
     val importWorkflow = """
         name: Arin build
         on:

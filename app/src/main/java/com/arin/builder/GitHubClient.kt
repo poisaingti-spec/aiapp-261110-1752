@@ -326,6 +326,20 @@ class GitHubClient(private val token: String) {
         return out.toSortedMap()
     }
 
+    /** The page where the person can open a codespace on this repo (no API needed). */
+    fun codespaceLink(repo: Repo): String = "https://codespaces.new/${repo.owner}/${repo.name}"
+
+    /**
+     * Creates a GitHub Codespace on the repo and returns its web URL, or null if it couldn't (the sign-in may
+     * lack the codespace scope, or Codespaces isn't enabled). Best-effort: a failure is not fatal to the build.
+     */
+    suspend fun createCodespace(repo: Repo): String? = runCatching {
+        val body = buildJsonObject { put("ref", repo.branch) }
+        val r = call("POST", "/repos/${repo.owner}/${repo.name}/codespaces", body)
+        ((r as? JsonObject)?.get("web_url") as? JsonPrimitive)?.contentOrNull
+            ?: ((r as? JsonObject)?.get("html_url") as? JsonPrimitive)?.contentOrNull
+    }.getOrNull()
+
     suspend fun latestApkUrl(repo: Repo): String? {
         val rel = runCatching { call("GET", "/repos/${repo.owner}/${repo.name}/releases/latest") }.getOrNull() ?: return null
         val assets = (rel as? JsonObject)?.get("assets") as? JsonArray ?: return null

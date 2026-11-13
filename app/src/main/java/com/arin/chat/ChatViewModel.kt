@@ -39,7 +39,7 @@ import kotlinx.coroutines.withContext
 
 /** Everything the chat, the chats list, projects and Settings share. One instance for the whole app. */
 /** Where a build runs. */
-enum class BuildTarget { BUILD_TAB, CHAT, PHONE, AUTO }
+enum class BuildTarget { BUILD_TAB, CHAT, PHONE, AUTO, CODESPACE }
 
 class ChatViewModel(app: Application) : AndroidViewModel(app) {
     private val store = ChatStore(app)
@@ -589,6 +589,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             append("- **Source code (zip):** [Download source zip]($zip)\n  $zip\n")
             append("- **GitHub repository:** [Open on GitHub](${com.arin.builder.BuildRunner.repoPage(project)})\n")
             result.phoneApk?.let { append("- **Also compiled on this phone:** `$it`\n") }
+            result.codespaceUrl?.let { append("- **Codespace:** [Open the Codespace]($it)\n") }
             append(if (project.selfUpdate) "\nTap the APK link (or Install in Build mode) to update Arin." else "\nTap the APK link to download and install it.")
         } else {
             buildString {
@@ -614,6 +615,19 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         postToBuildChat(Message(fromUser = false, text = text), progressId, steps)
         if (result.success) result.phoneInstallPath?.let { path ->
             runCatching { com.arin.builder.ApkInstaller.install(getApplication(), java.io.File(path)) }
+        }
+        // Codespace (and cloud) builds: save the APK straight to the phone, so you never fight a file manager.
+        if (result.success && result.autoDownloadApk) result.apkUrl?.let { url ->
+            val app = getApplication<Application>()
+            ArinApp.scope.launch {
+                runCatching { com.arin.builder.ApkInstaller.download(app, url) {} }
+                    .onSuccess {
+                        postToBuildChat(Message(fromUser = false, text =
+                            "⬇️ **$name saved to your phone** in Download/Arin (`${it.name}`). Opening the installer…"), null, "")
+                        runCatching { com.arin.builder.ApkInstaller.install(app, it) }
+                    }
+                    .onFailure { notice = "Built, but couldn't auto-save the APK: ${it.message}. Tap the APK link above." }
+            }
         }
     }
 
@@ -662,9 +676,12 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         // Where to build: the phone (built-in Linux), or GitHub's cloud shown in the chat or the Build tab. Auto picks one.
         val onPhone = target == BuildTarget.PHONE || (target == BuildTarget.AUTO && phoneReady && token.isBlank())
         val inBuildTab = target == BuildTarget.BUILD_TAB
+        val inCodespace = target == BuildTarget.CODESPACE
         return when {
             target == BuildTarget.PHONE && !phoneReady ->
                 "To build on the phone, install the Android build tools in Settings → Linux first."
+            inCodespace && token.isBlank() ->
+                "To build in a Codespace, sign in with GitHub in Settings → GitHub first."
             !onPhone && token.isBlank() && !phoneReady ->
                 "To build apps, sign in with GitHub in Settings → GitHub, or install the Android build tools in Settings → Linux to build on this phone. Then ask again."
             com.arin.builder.BuildRunner.running -> "A build is already running. Open Build mode to see it."
@@ -698,10 +715,12 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                         requirements = buildRequirements(description),
                         requirementsComplete = true,
                         localOnly = onPhone,
+                        codespace = inCodespace,
                     ),
                 )
                 if (inBuildTab) openBuild = true
-                else followBuildInChat((if (same) "Working on $appName again" else "Building $appName") + if (onPhone) " on this phone" else "")
+                else followBuildInChat((if (same) "Working on $appName again" else "Building $appName") +
+                    when { onPhone -> " on this phone"; inCodespace -> " in a Codespace"; else -> "" })
                 null
             }
         }
