@@ -147,9 +147,28 @@ object Prompt {
 
     /** A tool call in a reply: name and its JSON (or, for find_tools, the keywords). */
     fun toolCall(reply: String): Pair<String, String>? =
-        toolTag.find(reply)?.let { it.groupValues[1].trim() to it.groupValues[2].trim() }
+        toolTag.find(reply)?.let { it.groupValues[1].trim() to it.groupValues[2].trim() } ?: invokedTool(reply)
 
     private val runTag = Regex("""<run>\s*(.+?)\s*</run>""", RegexOption.DOT_MATCHES_ALL)
+
+    // Some models (free DeepSeek among them) emit tool calls in a function-call wire format as plain text, e.g.
+    // <|DSML| invoke name="run">the command</|DSML| parameter>. Read those too, so the command still runs.
+    private val invokeTag = Regex(
+        """invoke\s+name\s*=\s*["']([A-Za-z_][\w.-]*)["']\s*>([\s\S]*?)(?=</\s*\|?[^>]*?(?:parameter|invoke|function|calls)[^>]*>|\z)""",
+        RegexOption.IGNORE_CASE,
+    )
+    private val dsmlTag = Regex("""</?\s*\|?\s*(DSML|channel|message|function|tool_call|tool_calls|invoke|parameter|calls|antml:[\w-]+)\b[^>]*>""", RegexOption.IGNORE_CASE)
+    private val dsmlOpen = Regex("""<\|[^>]*$""")
+
+    /** A run command written in the function-call format, if any (used when <run> wasn't found). */
+    private fun invokedRun(reply: String): String? =
+        invokeTag.findAll(reply).firstOrNull { it.groupValues[1].equals("run", true) || it.groupValues[1].equals("bash", true) || it.groupValues[1].equals("shell", true) }
+            ?.groupValues?.get(2)?.trim()?.takeIf { it.isNotEmpty() }
+
+    /** A tool call written in the function-call format, if any. */
+    private fun invokedTool(reply: String): Pair<String, String>? =
+        invokeTag.findAll(reply).firstOrNull { it.groupValues[1].lowercase() !in setOf("run", "bash", "shell") }
+            ?.let { it.groupValues[1].trim() to it.groupValues[2].trim() }
 
     private val searchTag = Regex("""^\s*<search>(.{1,200}?)</search>""", RegexOption.DOT_MATCHES_ALL)
 
@@ -379,7 +398,8 @@ object Prompt {
     }
 
     /** The command the reply asks to run, if any. */
-    fun command(reply: String): String? = runTag.find(reply)?.groupValues?.get(1)?.trim()?.takeIf { it.isNotEmpty() }
+    fun command(reply: String): String? =
+        runTag.find(reply)?.groupValues?.get(1)?.trim()?.takeIf { it.isNotEmpty() } ?: invokedRun(reply)
 
     /** The reply with tool tags taken out, for showing and saving. */
     private val inlineCode = Regex("""`[^`\n]*<[^`\n]*`""")
@@ -412,5 +432,6 @@ object Prompt {
             .replace(imagesTag, "").replace(videosTag, "").replace(fetchTag, "").replace(downloadTag, "")
             .replace(Regex("""<(images|videos|fetch|download)\b[\s\S]*$"""), "")
             .replace(Regex("""</?(run|tool|build|update_arin|images|videos|fetch|download|recall|draw)\b[^>]*>"""), "")
+            .replace(invokeTag, "").replace(dsmlTag, "").replace(dsmlOpen, "")
             .trimEnd()
 }
