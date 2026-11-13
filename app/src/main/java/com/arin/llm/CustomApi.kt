@@ -14,11 +14,26 @@ enum class ApiFormat(val label: String) {
  */
 object CustomApi {
 
-    data class Preset(val name: String, val baseUrl: String, val format: ApiFormat, val keyPage: String)
+    data class Preset(
+        val name: String,
+        val baseUrl: String,
+        val format: ApiFormat,
+        val keyPage: String,
+        /** Models to offer with one tap: label to model id. */
+        val models: List<Pair<String, String>> = emptyList(),
+    )
 
     val presets = listOf(
         Preset("Token Harbor", "https://tokenharbor.ai/v1", ApiFormat.OpenAI, "tokenharbor.ai/dashboard/api-keys"),
         Preset("OpenRouter", "https://openrouter.ai/api/v1", ApiFormat.OpenAI, "openrouter.ai/keys"),
+        // Lists free DeepSeek V4.1 Flash models, including an abliterated (uncensored) build with no safety filtering.
+        Preset(
+            "OrcaRouter", "https://api.orcarouter.ai/v1", ApiFormat.OpenAI, "orcarouter.ai",
+            models = listOf(
+                "DeepSeek V4.1 Flash (free)" to "deepseek/deepseek-v4.1-flash-free",
+                "DeepSeek V4.1 Flash uncensored (free)" to "orca/orcacyber-flash-1.0-free",
+            ),
+        ),
         Preset("DeepSeek", "https://api.deepseek.com/v1", ApiFormat.OpenAI, "platform.deepseek.com/api_keys"),
         Preset("Groq", "https://api.groq.com/openai/v1", ApiFormat.OpenAI, "console.groq.com/keys"),
         Preset("Together", "https://api.together.xyz/v1", ApiFormat.OpenAI, "api.together.ai/settings/api-keys"),

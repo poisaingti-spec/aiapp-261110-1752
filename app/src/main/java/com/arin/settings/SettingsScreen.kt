@@ -683,6 +683,18 @@ private fun CustomApiSettings(vm: ChatViewModel) {
         singleLine = true,
         modifier = Modifier.fillMaxWidth(),
     )
+    // Models this service is known for: one tap fills in and saves the id.
+    com.arin.llm.CustomApi.presetFor(base)?.models?.takeIf { it.isNotEmpty() }?.let { list ->
+        androidx.compose.foundation.layout.FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            list.forEach { (label, id) ->
+                FilterChip(
+                    selected = vm.customModel == id,
+                    onClick = { modelText = id; vm.saveCustomModel(id); modelNote = "Saved" },
+                    label = { Text(label) },
+                )
+            }
+        }
+    }
     Row(verticalAlignment = Alignment.CenterVertically) {
         TextButton(onClick = { vm.saveCustomModel(modelText); modelNote = "Saved" }) { Text("Save model") }
         modelNote?.let { Text(it, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary) }
