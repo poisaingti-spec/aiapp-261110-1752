@@ -13,7 +13,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.produceState
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -30,8 +30,9 @@ import kotlinx.coroutines.withContext
 /** Loads a stored photo off the main thread, shrunk to about [maxSide] pixels. */
 @Composable
 private fun rememberBitmap(path: String, maxSide: Int): Bitmap? {
-    val bitmap by produceState<Bitmap?>(null, path, maxSide) {
-        value = withContext(Dispatchers.IO) {
+    var bitmap by androidx.compose.runtime.remember(path, maxSide) { androidx.compose.runtime.mutableStateOf<Bitmap?>(null) }
+    androidx.compose.runtime.LaunchedEffect(path, maxSide) {
+        bitmap = withContext(Dispatchers.IO) {
             runCatching {
                 val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
                 BitmapFactory.decodeFile(path, bounds)

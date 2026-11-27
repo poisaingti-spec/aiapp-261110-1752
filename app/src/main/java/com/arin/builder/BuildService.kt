@@ -59,51 +59,196 @@ class BuildService : Service() {
         }
         val appName = request.project?.appName ?: request.appName
         session.running = true
-        jobs[session.id] = scope.launch {
+        jobs[session.id] = scope.launch(com.arin.selffix.TabScope("build:" + session.id)) {
             // The agent parses big model replies and project files: keep that work off the main thread,
             // or the screen freezes and Android closes the app ("isn't responding").
-            val result = try { kotlinx.coroutines.withContext(Dispatchers.Default) {
-                BuildAgent(
-                    request,
-                    context = this@BuildService,
-                    emit = { event ->
-                        scope.launch {
-                            runCatching {
-                                session.timeline += TimelineItem.Event(event.copy(text = event.text.take(6_000)))
-                                BuildRunner.save(this@BuildService, session)
-                                notify(PROGRESS_ID, progressNotification(prefix(appName) + event.text.take(200)))
-                            }.onFailure { com.arin.CrashLog.record(this@BuildService, it, "build step") }
-                        }
-                    },
-                    onProject = { p ->
-                        scope.launch {
-                            runCatching {
-                                session.project = p
-                                BuildRunner.save(this@BuildService, session)
-                            }.onFailure { com.arin.CrashLog.record(this@BuildService, it, "saving the build") }
-                        }
-                    },
-                    onProgress = { value, text ->
-                        val now = System.currentTimeMillis()
-                        if (value == null || now - lastProgressNote > 300) {
-                            lastProgressNote = now
+            // ARIN-PROTECTED: never give up — when an attempt fails, research the error on the internet and try another
+            // method (resume, start fresh, the phone…), exactly the same request, until it is done. Stop ends it.
+            var attemptReq: BuildRequest = request
+            var attempt = 0
+            var waitingFor: String? = null
+            var lastAdvice = ""
+            var lastErrorSig = ""
+            var sameErrorRuns = 0
+            fun errKey(t: String) = t.lowercase().replace(Regex("[0-9]+"), "").replace(Regex("\\s+"), " ").take(300)
+            var result: BuildResult
+            while (true) {
+                result = try { kotlinx.coroutines.withContext(Dispatchers.Default) {
+                    BuildAgent(
+                        attemptReq,
+                        context = this@BuildService,
+                        takeSteering = { generateSequence { session.steering.poll() }.toList() },
+                        hasSteering = { session.steering.isNotEmpty() },
+                        emit = { event ->
+                            com.arin.selffix.Activity.log(if (request.selfUpdate || request.project?.selfUpdate == true) "arin-update" else "build",
+                                (if (event.kind == BuildEvent.Kind.ERROR) "⚠️ " else "") + event.text)
                             scope.launch {
                                 runCatching {
-                                    session.progress = value
-                                    session.progressText = text.take(300)
-                                    if (value != null) notify(PROGRESS_ID, progressNotification(prefix(appName) + text.take(200).ifBlank { "Working…" }, value))
+                                    session.timeline += TimelineItem.Event(event.copy(text = event.text.take(6_000)))
+                                    BuildRunner.save(this@BuildService, session)
+                                    notify(PROGRESS_ID, progressNotification(prefix(appName) + event.text.take(200)))
+                                }.onFailure { com.arin.CrashLog.record(this@BuildService, it, "build step") }
+                            }
+                        },
+                        onProject = { p ->
+                            scope.launch {
+                                runCatching {
+                                    session.project = p
+                                    BuildRunner.save(this@BuildService, session)
+                                }.onFailure { com.arin.CrashLog.record(this@BuildService, it, "saving the build") }
+                            }
+                        },
+                        onProgress = { value, text ->
+                            val now = System.currentTimeMillis()
+                            if (value == null || now - lastProgressNote > 300) {
+                                lastProgressNote = now
+                                scope.launch {
+                                    runCatching {
+                                        session.progress = value
+                                        session.progressText = text.take(300)
+                                        if (value != null) notify(PROGRESS_ID, progressNotification(prefix(appName) + text.take(200).ifBlank { "Working…" }, value))
+                                    }
                                 }
                             }
-                        }
+                        },
+                    ).run()
+                } } catch (e: CancellationException) {
+                    BuildResult(false, "Stopped.")
+                } catch (e: Throwable) {
+                    com.arin.CrashLog.record(this@BuildService, e, "build")
+                    BuildResult(false, friendly(e), log = e.stackTraceToString().take(2_000))
+                }
+                // Directions sent after the agent's last step: carry on with them instead of stopping.
+                if (result.success && session.steering.isNotEmpty()) {
+                    val more = generateSequence { session.steering.poll() }.toList().joinToString("\n")
+                    session.timeline += TimelineItem.Event(BuildEvent(BuildEvent.Kind.STEP, "Carrying on with your direction: ${more.take(160)}"))
+                    val codeOnly = result.message.startsWith(BuildAgent.CODE_READY)
+                    attemptReq = if (codeOnly) request.copy(
+                        // The code wasn't built yet: write it again with the direction included (nothing else changes).
+                        description = request.description + "\n\nTHE OWNER'S DIRECTIONS ADDED WHILE WORKING:\n" + more,
+                        project = null, resume = false,
+                    ) else request.copy(
+                        description = more, project = session.project ?: request.project, resume = false, stopAfterWriting = false,
+                        requirements = "", retryHint = "",
+                    )
+                    continue
+                }
+                if (result.success || result.message == "Stopped." || !com.arin.selffix.AutoFix.UNTIL_FIXED) break
+                attempt++
+                val errText = result.message + "\n" + result.log.take(2_000)
+                // Unlimited tries (changed with the owner's permission): pause and ask when the SAME error has failed 5
+                // times in a row. "Retry" carries on from where it stopped.
+                val sig = com.arin.selffix.CreditSaver.signature(errText).ifBlank { errKey(errText) }
+                sameErrorRuns = if (sig == lastErrorSig) sameErrorRuns + 1 else 1
+                lastErrorSig = sig
+                if (sameErrorRuns >= 5) {
+                    result = BuildResult(false, "⏸ Paused: the same error failed 5 times in a row, so Arin stopped to save your " +
+                        "credit. Tap Retry to keep trying (it carries on from here), or tell it what to change.\n\n" +
+                        com.arin.selffix.CreditSaver.trimErrors(errText, 12), result.repoUrl)
+                    break
+                }
+                // The same error as last time while waiting for the person: just check again quietly (no new research).
+                val sameAsBefore = waitingFor != null && errKey(errText) == waitingFor
+                val advice = if (sameAsBefore) lastAdvice else runCatching {
+                    com.arin.selffix.ErrorDoctor.diagnose(
+                        this@BuildService,
+                        if (request.selfUpdate || request.project?.selfUpdate == true) "the Arin Update tab, updating Arin" else "Build mode, building an app",
+                        errText,
+                        com.arin.selffix.ErrorDoctor.Brain(request.provider, request.apiKey, request.model, request.endpoint()),
+                    ) { s -> session.timeline += TimelineItem.Event(BuildEvent(BuildEvent.Kind.WEB, s)) }
+                }.getOrNull().orEmpty()
+                // ARIN-PROTECTED: ai-helper during builds — with the helper on, a failed attempt also gets its solution.
+                val helperFix = if (sameAsBefore || com.arin.selffix.CreditSaver.on(this@BuildService) || !com.arin.selffix.ClaudeHelper.enabled(this@BuildService, request.helperTab.ifBlank { if (request.selfUpdate) "arin-update" else "build" }) ||
+                    com.arin.selffix.ClaudeHelper.route(this@BuildService) == null) "" else runCatching {
+                    com.arin.selffix.ClaudeHelper.ask(
+                        context = this@BuildService,
+                        // Only the error and the research — never the person's request or files (helper-sees-only-the-boss).
+                        question = "A build of an Android app failed (attempt $attempt). I am the building model (the boss) and ask you for the solution: " +
+                            "the real cause and exactly what to change.\n\nError:\n" + errText.take(4_000) + "\n\nResearched on the internet:\n" + advice.take(3_000) +
+                            "\n\nWrite to the model.",
+                        source = request.helperTab.ifBlank { if (request.selfUpdate) "arin-update" else "build" },
+                    ) { s -> session.timeline += TimelineItem.Event(BuildEvent(BuildEvent.Kind.THINKING, s)) }
+                }.getOrNull().orEmpty().takeIf { !it.contains("couldn't be reached") && !it.contains("isn't connected") && !it.contains("switched off") }.orEmpty()
+                if (helperFix.isNotBlank()) session.timeline += TimelineItem.Event(BuildEvent(BuildEvent.Kind.THINKING,
+                    "🟣 The AI helper gave the solution; the model applies it in the next attempt"))
+                val needsApproval = result.message.startsWith(com.arin.selffix.SelfUpdateRules.NEEDS_APPROVAL)
+                val needsYou = needsApproval || Regex("""(?i)by itself\??\**\s*:?\s*\**\s*no\b""").containsMatchIn(advice)
+                if (!sameAsBefore) {
+                    if (needsApproval) session.timeline += TimelineItem.Event(BuildEvent(BuildEvent.Kind.STEP, result.message))
+                    if (advice.isNotBlank()) session.timeline += TimelineItem.Event(BuildEvent(BuildEvent.Kind.STEP, "🔎 How to fix (researched on the internet):\n$advice"))
+                }
+                // ARIN-PROTECTED: ask-before-building — the owner's strict rule (only the owner can change it): Arin never starts
+                // a build by itself. A failed build stops here with the researched fix and ASKS; it builds again only when the
+                // owner says so ("try again" / Retry).
+                if (true) {
+                    result = result.copy(message = result.message +
+                        (if (advice.isNotBlank()) "\n\n🔎 How to fix (researched on the internet):\n" + advice.take(1_500) else "") +
+                        (if (helperFix.isNotBlank()) "\n\n🟣 The helper's solution is ready to apply." else "") +
+                        "\n\n❓ Should I build again with this fix? Say \"try again\" (or tap Retry). I won't start a new build by myself.")
+                    break
+                }
+                // Short waits: 10 s while waiting for the person, otherwise 10–30 s between other methods.
+                val waitS = if (needsYou) 10L else minOf(10L * attempt, 30L)
+                if (!sameAsBefore) session.timeline += TimelineItem.Event(BuildEvent(BuildEvent.Kind.ERROR,
+                    if (needsYou) "Waiting for you: please do the steps shown. Arin checks again every 10 seconds and carries on by itself (press Stop to end)."
+                    else "Trying again with another method (attempt ${attempt + 1}) in $waitS s. Press Stop to end."))
+                waitingFor = if (needsYou) errKey(errText) else null
+                lastAdvice = advice
+                try { kotlinx.coroutines.delay(waitS * 1000) } catch (e: CancellationException) { result = BuildResult(false, "Stopped."); break }
+                // Same request, same model and API (never switched); fresh keys in case the person just fixed them.
+                val st = com.arin.data.Settings(this@BuildService)
+                val proj = session.project
+                // Resume from where it stopped (everything done so far is saved), never from the beginning.
+                val resume = proj != null && (proj.lastSha != null || proj.pendingPaths.isNotEmpty() || proj.files.isNotEmpty())
+                attemptReq = request.copy(
+                    apiKey = st.key(request.provider).ifBlank { request.apiKey },
+                    githubToken = st.secret("GITHUB").ifBlank { request.githubToken },
+                    selfRepo = if (request.selfUpdate) st.secret("SELF_REPO").ifBlank { request.selfRepo } else request.selfRepo,
+                    selfBranch = if (request.selfUpdate) st.secret("SELF_BRANCH").ifBlank { request.selfBranch } else request.selfBranch,
+                    project = when {
+                        request.selfUpdate && !resume -> request.project
+                        proj != null -> if (resume) proj else proj.copy(round = 0, pendingPaths = emptyList())
+                        else -> request.project
                     },
-                ).run()
-            } } catch (e: CancellationException) {
-                BuildResult(false, "Stopped.")
-            } catch (e: Throwable) {
-                com.arin.CrashLog.record(this@BuildService, e, "build")
-                BuildResult(false, friendly(e), log = e.stackTraceToString().take(2_000))
+                    resume = resume,
+                    retryHint = (request.retryHint + "\n\nAttempt $attempt failed: " + errText.take(1_500) + "\nResearched fix:\n" + advice.take(3_000) +
+                        (if (helperFix.isNotBlank()) "\nThe AI helper's solution (apply it):\n" + helperFix.take(3_000) else "")).takeLast(8_000),
+                )
             }
-            session.timeline += TimelineItem.Result(result.success, result.message, result.apkUrl, result.repoUrl)
+            // After every build: the APK and the source code go to a free file site (one after another until one works),
+            // the direct links are given, and both are downloaded to the phone (Download/Arin).
+            if (result.success && !result.message.startsWith(BuildAgent.CODE_READY) && (result.apkUrl != null || result.phoneInstallPath != null)) {
+                runCatching {
+                    val ctx = this@BuildService
+                    val say: (String) -> Unit = { t -> session.timeline += TimelineItem.Event(BuildEvent(BuildEvent.Kind.WEB, t)) }
+                    val proj = session.project
+                    val safe = (proj?.appName ?: request.appName).replace(Regex("[^A-Za-z0-9._-]+"), "-").trim('-').ifEmpty { "app" }
+                    say("Getting the APK and the source code ready to share")
+                    val apk = result.phoneInstallPath?.let { java.io.File(it) }?.takeIf { it.exists() }
+                        ?: result.apkUrl?.let { com.arin.selffix.FileShare.fetch(ctx, it, "$safe.apk") }
+                    val src = if (proj != null && proj.owner != BuildAgent.LOCAL_OWNER) {
+                        com.arin.selffix.FileShare.repoZip(ctx, attemptReq.githubToken, proj.owner, proj.repo, proj.lastSha ?: proj.branch, safe)
+                    } else proj?.let { p ->
+                        // Built only on the phone: zip the project's source.
+                        java.io.File(java.io.File(ctx.cacheDir, "share").apply { mkdirs() }, "$safe-source.zip").also { z ->
+                            java.util.zip.ZipOutputStream(z.outputStream()).use { zip ->
+                                p.files.forEach { (path, text) -> zip.putNextEntry(java.util.zip.ZipEntry("$safe/$path")); zip.write(text.toByteArray()); zip.closeEntry() }
+                            }
+                        }
+                    }
+                    val lines = mutableListOf<String>()
+                    apk?.let { f -> com.arin.selffix.FileShare.upload(f, "APK", say)?.let { s ->
+                        lines += "• APK: ${s.url} (${s.host}, ${s.keeps})"; com.arin.selffix.FileShare.downloadToPhone(ctx, s.url, "$safe.apk") } }
+                    src?.let { f -> com.arin.selffix.FileShare.upload(f, "source code", say)?.let { s ->
+                        lines += "• Source code: ${s.url} (${s.host}, ${s.keeps})"; com.arin.selffix.FileShare.downloadToPhone(ctx, s.url, "$safe-source.zip") } }
+                    if (lines.isNotEmpty()) {
+                        val text = "📥 Direct downloads (also downloading to your phone now, into Download/Arin):\n" + lines.joinToString("\n")
+                        say(text)
+                        result = result.copy(message = result.message + "\n\n" + text)
+                    } else say("Every free file site failed right now; the GitHub link above still works.")
+                }
+            }
+            session.timeline += TimelineItem.Result(result.success, result.message, result.apkUrl, result.repoUrl, result.explanation)
             if (!result.success && result.message != "Stopped.") {
                 com.arin.CrashLog.note(this@BuildService, "Build failed", "$appName: ${result.message}", result.log)
             }
@@ -220,6 +365,7 @@ class BuildService : Service() {
             if (session.running) return
             BuildRunner.sessions[session.id] = session
             session.pending = request
+            session.lastRequest = request
             session.timeline += TimelineItem.User(request.description)
             session.running = true
             BuildRunner.save(context, session)

@@ -80,7 +80,10 @@ fun MovieMakerScreen(vm: ChatViewModel, onBack: () -> Unit) {
                 Text("Movie Maker", style = MaterialTheme.typography.titleLarge, color = colors.onBackground)
                 // Which model is directing — the one picked in chat, shown like the chat header.
                 Text("Director: ${vm.movieDirectorLabel}", style = MaterialTheme.typography.labelMedium, color = colors.primary)
+                com.arin.selffix.ModelSwitcher(vm) // switch the director's API or model (only when you tap)
             }
+            androidx.compose.foundation.layout.Spacer(Modifier.weight(1f))
+            com.arin.selffix.AiHelperButton(vm) // ARIN-PROTECTED: ai-helper in every tab
         }
         Column(
             Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 16.dp, vertical = 8.dp),
@@ -103,6 +106,11 @@ fun MovieMakerScreen(vm: ChatViewModel, onBack: () -> Unit) {
                 colors = fieldColors,
                 modifier = Modifier.fillMaxWidth().heightIn(min = 160.dp, max = 320.dp),
             )
+            com.arin.selffix.ActivityBar("movie") // what Arin is doing (helper help marked 🟣)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                com.arin.selffix.AttachButton(onUris = { vm.movieAttach(it) }, onProblem = { vm.notice = it })
+                Text("Attach a script, photos, videos or any file", style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
+            }
             Button(onClick = { vm.makeMovie(script) }, enabled = !vm.movieBusy && script.isNotBlank()) {
                 Text(if (vm.movieBusy) "Working…" else "Make movie")
             }

@@ -47,7 +47,7 @@ import com.arin.data.Project
 fun ProjectsScreen(vm: ChatViewModel, onBack: () -> Unit, onOpen: (Project) -> Unit) {
     var creating by remember { mutableStateOf(false) }
     Column(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding()) {
-        Header("Projects", onBack)
+        Header("Projects", onBack) { com.arin.selffix.ModelSwitcher(vm); com.arin.selffix.AiHelperButton(vm) } // ARIN-PROTECTED: ai-helper in every tab
         Text(
             "A project keeps related chats together, with instructions and files that every chat in it can use.",
             style = MaterialTheme.typography.bodyMedium,
@@ -116,7 +116,7 @@ fun ProjectScreen(vm: ChatViewModel, projectId: String, onBack: () -> Unit, onOp
     val project = vm.projects.firstOrNull { it.id == projectId }
     if (project == null) {
         Column(Modifier.fillMaxSize().statusBarsPadding()) {
-            Header("Project", onBack)
+            Header("Project", onBack) { com.arin.selffix.AiHelperButtonHere() } // ARIN-PROTECTED: ai-helper in every tab
             Text("This project no longer exists.", modifier = Modifier.padding(20.dp))
         }
         return
@@ -130,6 +130,8 @@ fun ProjectScreen(vm: ChatViewModel, projectId: String, onBack: () -> Unit, onOp
         Header(project.name, onBack) {
             TextButton(onClick = { renaming = true }) { Text("Rename") }
             TextButton(onClick = { deleting = true }) { Text("Delete") }
+            com.arin.selffix.ModelSwitcher(vm)
+            com.arin.selffix.AiHelperButton(vm) // ARIN-PROTECTED: ai-helper in every tab
         }
         LazyColumn(
             Modifier.weight(1f),
@@ -169,7 +171,10 @@ fun ProjectScreen(vm: ChatViewModel, projectId: String, onBack: () -> Unit, onOp
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                     project.files.forEach { f -> FileChip(f, onRemove = { vm.removeProjectFile(project, f) }) }
-                    OutlinedButton(onClick = { pick.launch(arrayOf("*/*")) }) { Text("Add files") }
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        OutlinedButton(onClick = { pick.launch(arrayOf("*/*")) }) { Text("Add files") }
+                        com.arin.selffix.AttachButton(onUris = { vm.addProjectFiles(project, it) }, onProblem = { vm.notice = it })
+                    }
                 }
             }
             item {

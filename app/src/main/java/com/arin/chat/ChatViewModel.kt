@@ -73,20 +73,114 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
      * has its own, so several chats can think, code and run commands at the same time; switching chats doesn't stop them.
      */
     inner class Run(val chat: String, val chatTitle: String, val base: List<Message>) {
+        /** This task's own retry limits (never shared with another chat's run). */
+        val retries = com.arin.terminal.RetryGuard()
         var liveText by mutableStateOf("")
         var liveThinking by mutableStateOf("")
-        var status by mutableStateOf<String?>(null)
+        /** Which model is working right now ("DeepSeek", "GPT-6 Luna", "Claude"). */
+        var who by mutableStateOf("")
+        /** The person is talking with the AI helper: after the model reads the message and drafts, the helper helps it. */
+        var consultHelper = false
+        /** The person asked for the helper's help this time ("Talk to"): only then is the boss's draft checked by it. */
+        var askedHelper = false
+        private var statusNow by mutableStateOf<String?>(null)
+        /** What the reply is doing right now; every step also goes into the tab's "What Arin is doing" summary. */
+        var status: String?
+            get() = statusNow
+            set(v) { statusNow = v; if (v != null) com.arin.selffix.Activity.log("chat", v) }
         val liveCommands = mutableStateListOf<com.arin.data.CommandRun>()
         val steering = mutableStateListOf<String>()
         @Volatile var steerPending = false
+        @Volatile var steerNow = false
         var job: Job? = null
         var checkpointJob: Job? = null
+        /** Captured once at the start; this reply's background steps read their identity from here, not from the screen. */
+        var ctx: com.arin.selffix.RunContext? = null
+        /** The owner's objective and requirement ledger for this reply, and the Boss's chosen approach. */
+        var ledger: com.arin.selffix.Orchestrator.Ledger? = null
+        var plan: com.arin.selffix.Orchestrator.Plan? = null
+        val tried = mutableSetOf<com.arin.selffix.Orchestrator.Approach>()
+    }
+
+    private val orchestratorStats by lazy { com.arin.selffix.Orchestrator.Stats(java.io.File(getApplication<Application>().filesDir, "orchestrator/stats.tsv")) }
+    private fun taskFile(chat: String) = java.io.File(getApplication<Application>().filesDir, "orchestrator/tasks/" + chat.replace(Regex("[^A-Za-z0-9_-]"), "_") + ".txt")
+    private val runLog by lazy { java.io.File(getApplication<Application>().filesDir, "orchestrator/runs.log") }
+
+    /**
+     * The Boss's planning checkpoint for a new reply: the owner's exact objective as an immutable record with a requirement
+     * ledger, a diagnosis, the first approach and its budget. A "Resume" restores the interrupted task's record instead.
+     */
+    private fun planRun(run: Run, userSaid: String, projectId: String, p: String, m: String, app: Application) {
+        val runId = java.util.UUID.randomUUID().toString().take(8)
+        val workerOn = com.arin.selffix.Worker.on(app)
+        val resumed = if (userSaid.startsWith("Resume the task from exactly where it stopped"))
+            com.arin.selffix.Orchestrator.loadCheckpoint(taskFile(run.chat))?.takeIf { it.progress != "finished" } else null
+        val ledger = resumed?.ledger ?: com.arin.selffix.Orchestrator.Ledger(com.arin.selffix.Orchestrator.record(runId, run.chat, projectId, userSaid))
+        val d = com.arin.selffix.Orchestrator.diagnose(ledger.task.original, ledger.requirements.size)
+        val hasMap = projectFolder(run.chat)?.let { f -> listOf("build.gradle", "build.gradle.kts", "settings.gradle.kts", "settings.gradle", "src", "app").any { java.io.File(f, it).exists() } } == true
+        val plan = com.arin.selffix.Orchestrator.choose(d, workerOn, claudeHelperOn, orchestratorStats, projectMap = hasMap)
+            .let { pl -> resumed?.approach?.let { pl.copy(approach = it, reason = "resumed: " + pl.reason) } ?: pl }
+        run.ctx = com.arin.selffix.RunContext(runId, run.chat, run.chatTitle, projectId, p, m, workDirOf(run.chat).orEmpty(), claudeHelperOn, workerOn, ledger.task.original)
+        run.ledger = ledger
+        run.plan = plan
+        com.arin.selffix.Orchestrator.saveCheckpoint(taskFile(run.chat), ledger, plan, if (resumed != null) "resumed" else "started")
+        com.arin.selffix.Orchestrator.log(runLog, runId, run.chat, if (resumed != null) "resume" else "plan", mapOf("project" to projectId,
+            "type" to d.type.name, "approach" to plan.approach.name, "why" to plan.reason, "provider" to p, "model" to m,
+            "requirements" to ledger.requirements.joinToString(",") { it.id }))
+        com.arin.selffix.Activity.log("chat", "🧭 Plan: " + plan.line().take(200))
+    }
+
+    /** This chat's project folder in Linux (its work folder), when one is set. */
+    private fun projectFolder(chat: String): java.io.File? = workDirOf(chat)?.takeIf { it.isNotBlank() && it != "/root" && it != "~" }
+        ?.let { java.io.File(com.arin.terminal.Linux.rootfs(getApplication()), it.trimStart('/')) }?.takeIf { it.isDirectory }
+
+    /** The current project map of this chat's folder (refreshed: only changed files are re-read), or null. */
+    private fun projectMapFor(chat: String): com.arin.selffix.ProjectGraph? =
+        projectFolder(chat)?.let { f -> runCatching { com.arin.selffix.ProjectMaps.forFolder("folder:" + workDirOf(chat), f) }.getOrNull() }
+
+    /** The completion checkpoint: ledger statuses from what the answer and the executed steps show; outcome recorded. */
+    private fun finishRun(run: Run, answer: String, ran: List<com.arin.data.CommandRun>, failure: String?, workerAccepted: Boolean) {
+        val ledger = run.ledger ?: return
+        val ctx = run.ctx ?: return
+        val executedOk = ran.any { it.kind != "tool" && it.kind != "steer" && it.exitCode == 0 }
+        val anyFailed = ran.lastOrNull { it.kind != "tool" && it.kind != "steer" }?.let { it.exitCode != null && it.exitCode != 0 } == true
+        val uncovered = com.arin.selffix.Requirements.uncovered(ledger.open().map { it.text }, answer).toSet()
+        ledger.requirements.forEach { r ->
+            when {
+                failure != null -> ledger.update(r.id, com.arin.selffix.Orchestrator.ReqStatus.FAILED, failure.take(120))
+                r.text in uncovered -> Unit
+                // VERIFIED only when a real command or build step ran successfully and nothing after it failed.
+                executedOk && !anyFailed -> ledger.update(r.id, com.arin.selffix.Orchestrator.ReqStatus.VERIFIED, "commands ran with exit 0")
+                else -> ledger.update(r.id, com.arin.selffix.Orchestrator.ReqStatus.IMPLEMENTED, "addressed in the answer")
+            }
+        }
+        val verified = failure == null && !anyFailed && (executedOk || workerAccepted) && uncovered.isEmpty()
+        val status = when {
+            failure != null -> "FAILED"
+            ledger.requirements.all { it.status == com.arin.selffix.Orchestrator.ReqStatus.VERIFIED } -> "COMPLETED"
+            ledger.requirements.any { it.status == com.arin.selffix.Orchestrator.ReqStatus.VERIFIED || it.status == com.arin.selffix.Orchestrator.ReqStatus.IMPLEMENTED } -> "PARTIALLY COMPLETED"
+            else -> "INCOMPLETE"
+        }
+        run.plan?.let { pl ->
+            val d = com.arin.selffix.Orchestrator.diagnose(ledger.task.original, ledger.requirements.size)
+            orchestratorStats.record(d.type, pl.approach, verified, ctx.model)
+        }
+        com.arin.selffix.Orchestrator.saveCheckpoint(taskFile(run.chat), ledger, run.plan, if (failure == null) "finished" else "failed: ${failure.take(100)}")
+        com.arin.selffix.Orchestrator.log(runLog, ctx.runId, ctx.chatId, "finish", mapOf("status" to status, "verified" to verified.toString(),
+            "approach" to (run.plan?.approach?.name ?: ""), "tried" to run.tried.joinToString(","),
+            "ledger" to ledger.requirements.joinToString(",") { "${it.id}:${it.status}" }))
     }
 
     /** Replies running now, by chat id (a temporary chat uses [TEMP_CHAT]). */
     val runs = androidx.compose.runtime.mutableStateMapOf<String, Run>()
 
     private fun chatKey(): String = chatId ?: TEMP_CHAT
+
+    // ---- Each chat's own working folder (survives restarts; one chat's `cd` never moves another chat) ----
+    private val workDirs = java.util.concurrent.ConcurrentHashMap<String, String>()
+    private val workDirPrefs by lazy { getApplication<Application>().getSharedPreferences("arin-workdirs", android.content.Context.MODE_PRIVATE) }
+    fun workDirOf(chat: String): String? = workDirs[chat] ?: workDirPrefs.getString(chat, null)?.also { workDirs[chat] = it }
+    fun setWorkDir(chat: String, dir: String) { workDirs[chat] = dir; workDirPrefs.edit().putString(chat, dir).apply() }
 
     /** The open chat's running reply, if any. */
     fun runFor(key: String? = chatKey()): Run? = key?.let { runs[it] }
@@ -95,13 +189,14 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     val streaming: Boolean get() = runFor() != null
     val liveText: String get() = runFor()?.liveText.orEmpty()
     val liveThinking: String get() = runFor()?.liveThinking.orEmpty()
+    val liveWho: String get() = runFor()?.who.orEmpty()
 
     /** Status outside any reply (e.g. loading a model); a running reply's own status takes precedence. */
     private var idleStatus by mutableStateOf<String?>(null)
     /** What Arin is doing right now when it isn't writing, such as "Searching the web for …". */
     var status: String?
         get() = runFor()?.status ?: idleStatus
-        private set(value) { idleStatus = value }
+        private set(value) { idleStatus = value; if (value != null) com.arin.selffix.Activity.log("chat", value) }
     var notice by mutableStateOf<String?>(null)
 
     /** Details of the last crash, shown once when Arin opens again. */
@@ -147,15 +242,15 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
      *     copies become a one-line marker. No unique information is dropped, so the model still has
      *     every bit it needs to build the project.
      */
-    /** Test apps on an Android emulator after building (Settings → Build apps). */
-    var testApps by mutableStateOf(settings.testApps)
-        private set
+    /**
+     * ARIN-PROTECTED: test-before-handover — every app is ALWAYS tested on an Android emulator after building, without being
+     * asked. There is no switch to turn it off; only the owner can change this rule.
+     */
+    val testApps: Boolean get() = true
 
+    @Suppress("UNUSED_PARAMETER")
     fun toggleTestApps(on: Boolean) {
-        testApps = on
-        settings.testApps = on
-        notice = if (on) "Apps will be opened and tested on an Android emulator after each build (adds a few minutes)."
-            else "Apps won't be tested after building (faster builds)."
+        notice = "Apps are always opened and tested on an Android emulator before you get the link (your strict rule)."
     }
 
     var saveCredits by mutableStateOf(settings.saveCredits)
@@ -198,6 +293,48 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                     t.text.takeLast(600),
             )
         }
+    }
+
+    // ARIN-PROTECTED: credit-saver — strict mode: the boss gets the least it needs to keep working at full strength.
+    // The latest messages are sent whole; older ones are cut down. Nothing is deleted from the chat itself.
+    private fun strictTrim(turns: List<Turn>, cacheSafe: Boolean = false): List<Turn> {
+        if (turns.size <= 4) return turns
+        val think = Regex("(?s)<think>.*?</think>")
+        val lastUserMedia = turns.indexOfLast { it.fromUser && it.hasMedia }
+        val keepWhole = 6
+        val cut = turns.size - keepWhole
+        var out = turns.mapIndexed { i, t ->
+            var x = t
+            // Old thinking is never needed again.
+            if (!x.fromUser && x.text.contains("<think>")) x = x.copy(text = x.text.replace(think, "").trim())
+            // Attachments go once: only the latest message with pictures/PDFs keeps them.
+            if (x.hasMedia && i != lastUserMedia) x = x.copy(images = emptyList(), pdfs = emptyList(),
+                text = x.text + "\n[attachment sent earlier — already seen]")
+            if (i < cut && !cacheSafe) {
+                val lim = if (x.fromUser && !x.text.startsWith("[")) 2_000 else 700
+                if (x.text.length > lim + 300) x = x.copy(text = x.text.take(lim) + "\n…[older part shortened to save credits]…\n" + x.text.takeLast(200))
+            }
+            x
+        }
+        // A long chat: the first message (what the work is about) and the latest 24 turns.
+        if (out.size > 26 && !cacheSafe) {
+            val first = out.first()
+            var tail = out.takeLast(24)
+            if (!tail.first().fromUser) tail = tail.drop(1)
+            out = listOf(first, Turn(false, "[Earlier messages were left out to save credits; ask if you need something from them.]")) + tail
+        }
+        return out
+    }
+
+    /** Worker mode: the main model sees the first message and only the latest 8 turns (older long ones cut short). */
+    private fun bossTrim(turns: List<Turn>): List<Turn> {
+        val cut = turns.mapIndexed { i, t ->
+            if (i < turns.size - 2 && t.text.length > 1_200 && !t.hasMedia) t.copy(text = t.text.take(800) + "\n…[shortened to save credits]…\n" + t.text.takeLast(200)) else t
+        }
+        if (cut.size <= 10) return cut
+        var tail = cut.takeLast(8)
+        if (!tail.first().fromUser) tail = tail.drop(1)
+        return listOf(cut.first(), Turn(false, "[Earlier messages left out to save credits; ask if you need something from them.]")) + tail
     }
 
     private fun dedupeTurns(turns: List<Turn>): List<Turn> {
@@ -367,6 +504,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     val linuxLog = mutableStateListOf<String>()
 
     private fun logLine(line: String) {
+        com.arin.selffix.InstallProgress.onLine(line)
         ArinApp.scope.launch(kotlinx.coroutines.Dispatchers.Main) {
             linuxLog += line
             while (linuxLog.size > 40) linuxLog.removeAt(0)
@@ -396,7 +534,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             } finally {
                 linuxInstalled = com.arin.terminal.Linux.installed(app)
                 linuxReady = com.arin.terminal.Linux.nodeReady(app)
-                linuxBusy = false
+                toolsVersion++; linuxBusy = false
                 ReplyService.stop(app)
             }
         }
@@ -419,7 +557,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 logLine("Failed: ${e.message}")
                 notice = "REA repair failed: ${e.message}"
             } finally {
-                linuxBusy = false
+                toolsVersion++; linuxBusy = false
                 ReplyService.stop(app)
             }
         }
@@ -471,6 +609,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 // The Android SDK too, so apps compile to APKs right on the phone.
                 val a = com.arin.terminal.Linux.installAndroidBuild(app) { logLine(it) }
                 androidBuildReady = com.arin.terminal.Linux.androidBuildReady(app)
+                // ARIN-PROTECTED: apk-toolkit — and every APK tool, in its newest version.
+                com.arin.terminal.Linux.installApkToolkit(app) { logLine(it) }
                 toggleTerminal(true)
                 notice = if (androidBuildReady) "Java, Kotlin, Gradle and the Android SDK are installed: apps now build on this phone too"
                     else "Java, Kotlin and Gradle are installed, but the Android SDK part didn't finish: " +
@@ -481,7 +621,56 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 logLine("Failed: ${e.message}")
                 notice = "Developer tools install failed: ${e.message}"
             } finally {
-                linuxBusy = false
+                toolsVersion++; linuxBusy = false
+                ReplyService.stop(app)
+            }
+        }
+    }
+
+    /** Installed state of each tool, refreshed after every install or uninstall (Settings → Linux). */
+    var toolsVersion by mutableStateOf(0)
+        private set
+
+    fun toolInstalled(tool: com.arin.terminal.Linux.Tool): Boolean {
+        toolsVersion // read so the screen updates
+        return com.arin.terminal.Linux.toolInstalled(getApplication(), tool)
+    }
+
+    /** Uninstalls one tool from Linux (Settings → Linux). */
+    fun uninstallTool(tool: com.arin.terminal.Linux.Tool) = linuxJob("${tool.label} uninstalled", "Uninstall failed") { app ->
+        val r = com.arin.terminal.Linux.uninstallTool(app, tool) { logLine(it) }
+        if (r.exitCode != 0 || r.error != null) throw IllegalStateException(r.error ?: r.combined().takeLast(300))
+    }
+
+    /** Uninstalls REA and removes its connection. */
+    fun uninstallRea() = linuxJob("REA uninstalled", "Uninstall failed") { app ->
+        com.arin.mcp.Mcp.forget(com.arin.mcp.Mcp.REA.name)
+        com.arin.terminal.Linux.uninstallRea(app) { logLine(it) }
+        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+            mcpServers.firstOrNull { it.name == com.arin.mcp.Mcp.REA.name }?.let { removeServer(it) }
+        }
+    }
+
+    private fun linuxJob(done: String, failed: String, work: suspend (Application) -> Unit) {
+        if (linuxBusy) return
+        val app = getApplication<Application>()
+        linuxBusy = true
+        linuxLog.clear()
+        ReplyService.start(app)
+        ArinApp.scope.launch {
+            try {
+                work(app)
+                notice = done
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                logLine("Failed: ${e.message}")
+                notice = "$failed: ${e.message}"
+            } finally {
+                devToolsReady = com.arin.terminal.Linux.devToolsReady(app)
+                androidBuildReady = com.arin.terminal.Linux.androidBuildReady(app)
+                toolsVersion++
+                toolsVersion++; linuxBusy = false
                 ReplyService.stop(app)
             }
         }
@@ -498,7 +687,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             linuxReady = false
             devToolsReady = false
             androidBuildReady = false
-            linuxBusy = false
+            toolsVersion++; linuxBusy = false
             linuxLog.clear()
             notice = "Linux removed"
         }
@@ -514,9 +703,19 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     val ccLog = mutableStateListOf<String>()
 
     private fun ccLogLine(line: String) {
+        com.arin.selffix.InstallProgress.onLine(line)
         ArinApp.scope.launch(kotlinx.coroutines.Dispatchers.Main) {
             ccLog += line
             while (ccLog.size > 30) ccLog.removeAt(0)
+        }
+    }
+
+    /** Checks quietly whether the Claude Code login is there (for the "AI for this chat" menu). */
+    fun checkCcLogin() {
+        val app = getApplication<Application>()
+        ArinApp.scope.launch {
+            val ok = runCatching { com.arin.terminal.Linux.installed(app) && com.arin.claudecode.ClaudeCode.connected(app) }.getOrDefault(false)
+            withContext(Dispatchers.Main) { if (ok) ccConnected = true }
         }
     }
 
@@ -530,26 +729,63 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /** Claude Code's last message, when the helper should help it finish once it has answered. */
+    private var ccConsult: String? = null
+    private var ccHelperFixes = 0
+    private var ccLastFailure: String? = null
+
+    /** True only while Claude Code is being installed (signing in doesn't show the install progress). */
+    var ccInstalling by mutableStateOf(false)
+        private set
+
     fun installClaudeCode() {
         if (ccBusy || linuxBusy) return
         val app = getApplication<Application>()
         ccBusy = true
+        ccInstalling = true
         ccLog.clear()
+        ReplyService.hold(getApplication(), "cc-install") // keeps installing in the background
         ArinApp.scope.launch {
             try {
                 if (!com.arin.terminal.Linux.installed(app)) {
                     ccLogLine("Setting up Linux first…")
                     com.arin.terminal.Linux.install(app) { ccLogLine(it) }
                 }
-                val err = com.arin.claudecode.ClaudeCode.install(app) { ccLogLine(it) }
+                var err = com.arin.claudecode.ClaudeCode.install(app) { ccLogLine(it) }
+                // ARIN-PROTECTED: never give up — a second try resumes the download where it stopped.
+                if (err != null && !err.contains("space") && !err.contains("CPU")) {
+                    ccLogLine("Trying again (the download resumes where it stopped)…")
+                    err = com.arin.claudecode.ClaudeCode.install(app) { ccLogLine(it) }
+                }
                 ccInstalled = com.arin.claudecode.ClaudeCode.installed(app)
-                if (err != null) notice = err else applyCcLinux()
+                if (err != null) {
+                    notice = err
+                    researchCcInstall(err)
+                } else applyCcLinux()
             } catch (e: Exception) {
                 notice = "Claude Code install failed: ${e.message}"
+                researchCcInstall(e.message ?: "install failed")
             } finally {
+                ccInstalling = false
                 ccBusy = false
+                ReplyService.release(getApplication(), "cc-install")
             }
         }
+    }
+
+    /** ARIN-PROTECTED: research-first-error-help — the install failed: search the internet, then say how to fix it. */
+    private suspend fun researchCcInstall(err: String) {
+        val app = getApplication<Application>()
+        val p = provider
+        val m = model
+        val endpoint = if (p == Provider.Custom) com.arin.llm.CustomApi.current() else null
+        val advice = runCatching {
+            com.arin.selffix.ErrorDoctor.diagnose(app, "installing Claude Code in Arin's built-in Linux (Ubuntu, PRoot)",
+                err + "\n" + ccLog.takeLast(10).joinToString("\n"), com.arin.selffix.ErrorDoctor.Brain(p, settings.key(p), m, endpoint)) {
+                ccLogLine("🔎 " + it.take(100))
+            }
+        }.getOrNull()
+        if (!advice.isNullOrBlank()) advice.lines().filter { it.isNotBlank() }.forEach { ccLogLine(it) }
     }
 
     /** What the sign-in is doing right now (or the error it showed), for Settings. */
@@ -561,9 +797,53 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             .filter { line -> line.length > 3 && line.any { it.isLetter() } && !line.all { it in "─│╭╮╰╯ " } }
             .lastOrNull().orEmpty().take(200)
 
-    fun startCcLogin() {
+    /** Name for the Claude account being added (several accounts, each with its own sign-in). */
+    var ccAddingAccount by mutableStateOf<String?>(null)
+    /** Bumps when the list of Claude accounts changes, so the screens update. */
+    var ccAccountsTick by mutableStateOf(0)
+
+    /** A sign-in finished: keep it as a named account and refresh the model menu. */
+    private fun ccSignedInAsAccount() {
+        val app = getApplication<Application>()
+        com.arin.claudecode.ClaudeAccounts.migrate(app)
+        val acc = com.arin.claudecode.ClaudeAccounts.addFromMainToken(app, ccAddingAccount.orEmpty())
+        // The account just signed in to becomes the active one (switch back any time).
+        acc?.let { com.arin.claudecode.ClaudeAccounts.setActive(app, it.id) }
+        ccAddingAccount = null
+        ccAccountsTick++
+        if (provider == Provider.ClaudeCode) loadModels()
+        acc?.let { notice = "Signed in ✓ — \"${it.name}\" is in the model menu" }
+    }
+
+    fun makeCcAccountMain(id: String) {
+        val app = getApplication<Application>()
+        ArinApp.scope.launch {
+            com.arin.claudecode.ClaudeAccounts.setActive(app, id); ccAccountsTick++
+            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) { if (provider == Provider.ClaudeCode) loadModels() }
+            // Old Claude processes still hold the previous account's sign-in: end them so the next message uses this one.
+            runCatching { com.arin.claudecode.Harness.stopAll() }
+            runCatching { com.arin.terminal.Shell.run(app, "pkill -f 'arin-claude/claude' ; pkill -f '/claude -p' ; true", 15_000) }
+            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) { applyCcLinux() }
+            notice = "Switched — Claude now uses \"${com.arin.claudecode.ClaudeAccounts.name(app, id)}\" (send your message again)"
+        }
+    }
+
+    /** New name for a Claude account (shown in the model menu, e.g. "Claude Sonnet · Work"). */
+    fun renameCcAccount(id: String, name: String) {
+        com.arin.claudecode.ClaudeAccounts.rename(getApplication(), id, name); ccAccountsTick++
+        if (provider == Provider.ClaudeCode) loadModels()
+        notice = "Renamed to \"$name\""
+    }
+
+    fun removeCcAccount(id: String) {
+        com.arin.claudecode.ClaudeAccounts.remove(getApplication(), id); ccAccountsTick++
+        if (provider == Provider.ClaudeCode) loadModels()
+    }
+
+    fun startCcLogin(newAccount: String? = null) {
         if (ccBusy) return
         val app = getApplication<Application>()
+        if (newAccount != null) ccAddingAccount = newAccount
         ccBusy = true
         ccLoginUrl = null
         ccLoginStatus = "Starting Claude Code's sign-in…"
@@ -572,11 +852,12 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 var out = com.arin.claudecode.ClaudeCode.startLogin(app)
                 // Claude Code starts slowly in Arin's Linux: keep looking for the link for up to a minute.
                 var tries = 0
-                ccLoginUrl = com.arin.claudecode.ClaudeCode.urlIn(out)
+                // The FULL link (a cut one sends you to the wrong account).
+                ccLoginUrl = com.arin.claudecode.ClaudeCode.loginUrl(app)
                 while (ccLoginUrl == null && tries++ < 30) {
                     kotlinx.coroutines.delay(2000)
                     out = com.arin.claudecode.ClaudeCode.loginOutput(app)
-                    ccLoginUrl = com.arin.claudecode.ClaudeCode.urlIn(out)
+                    ccLoginUrl = com.arin.claudecode.ClaudeCode.loginUrl(app)
                 }
                 if (ccLoginUrl == null) {
                     ccLoginStatus = "Couldn't get the sign-in link. " + lastLoginLine(out).ifBlank { "Is Claude Code installed?" }
@@ -592,7 +873,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                         ccLoginUrl = null
                         ccLoginStatus = ""
                         applyCcLinux()
-                        notice = "Signed in to Claude Code ✓"
+                        notice = "Signed in to Claude Code ✓"; ccSignedInAsAccount()
                         return@launch
                     }
                     val line = lastLoginLine(out)
@@ -609,15 +890,53 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
     fun pasteCcCode(code: String) {
         val app = getApplication<Application>()
+        val c = code.trim()
+        // A full token pasted in the code box: save it directly.
+        if (com.arin.claudecode.ClaudeCode.tokenIn(c.replace(Regex("\\s+"), "")) != null) { saveCcToken(c); return }
         ccLoginStatus = "Checking the code…"
-        ArinApp.scope.launch { com.arin.claudecode.ClaudeCode.pasteCode(app, code) }
+        ArinApp.scope.launch {
+            if (!com.arin.claudecode.ClaudeCode.loginRunning(app)) {
+                ccLoginStatus = "The sign-in had stopped, so the code couldn't be checked. Tap the sign-in button again, open the new " +
+                    "page, and paste the NEW code (each code works only once)."
+                return@launch
+            }
+            com.arin.claudecode.ClaudeCode.pasteCode(app, c)
+            // Say what Claude Code answered, so it's never a silent wait.
+            repeat(10) {
+                kotlinx.coroutines.delay(2000)
+                if (ccConnected) return@launch
+                if (com.arin.claudecode.ClaudeCode.captureToken(app)) {
+                    ccConnected = true; ccLoginUrl = null; ccLoginStatus = ""; applyCcLinux(); notice = "Signed in to Claude Code ✓"; ccSignedInAsAccount()
+                    return@launch
+                }
+                val says = com.arin.claudecode.ClaudeCode.loginSays(app)
+                if (says.isNotBlank()) ccLoginStatus = "Claude Code says: $says"
+            }
+            if (!ccConnected) {
+                val says = com.arin.claudecode.ClaudeCode.loginSays(app)
+                ccLoginStatus = "Not signed in yet. Claude Code says: ${says.ifBlank { "nothing" }}. Make sure you copied the WHOLE code " +
+                    "(it often has a # in the middle), or tap the sign-in button again for a new code."
+            }
+        }
     }
 
     fun saveCcToken(token: String) {
         val app = getApplication<Application>()
+        val t = token.trim()
         ArinApp.scope.launch {
-            ccConnected = com.arin.claudecode.ClaudeCode.saveToken(app, token)
-            if (ccConnected) applyCcLinux()
+            // A sign-in code pasted in the token box: give it to the waiting sign-in instead.
+            if (com.arin.claudecode.ClaudeCode.tokenIn(t.replace(Regex("\\s+"), "")) == null) {
+                if (t.length in 10..400 && com.arin.claudecode.ClaudeCode.loginRunning(app)) {
+                    notice = "That's a sign-in code, not a token — checking it with the sign-in."
+                    pasteCcCode(t)
+                } else {
+                    notice = "That isn't a Claude Code token (it starts with sk-ant-oat01-). For the sign-in code from the page, " +
+                        "tap the sign-in button and paste it in the upper box."
+                }
+                return@launch
+            }
+            ccConnected = com.arin.claudecode.ClaudeCode.saveToken(app, t)
+            if (ccConnected) { applyCcLinux(); ccSignedInAsAccount() }
             notice = if (ccConnected) "Connected to Claude Code ✓" else "That didn't look like a valid token."
         }
     }
@@ -640,7 +959,11 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     var ccLiveText by mutableStateOf("")
     var ccLiveThinking by mutableStateOf("")
     val ccLiveCommands = mutableStateListOf<com.arin.data.CommandRun>()
-    var ccStatus by mutableStateOf<String?>(null)
+    private var ccStatusNow by mutableStateOf<String?>(null)
+    /** What Claude Code is doing; every step also goes into the tab's "What Arin is doing" summary. */
+    var ccStatus: String?
+        get() = ccStatusNow
+        set(v) { ccStatusNow = v; if (v != null) com.arin.selffix.Activity.log("claude-code", v) }
     /** Pictures/videos Claude Code found with Arin's tools this turn (shown under the reply). */
     private val ccLiveMedia = java.util.concurrent.CopyOnWriteArrayList<com.arin.data.MediaItem>()
 
@@ -942,6 +1265,9 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     /** Send a message. While Claude Code is working, a message steers it (like the chat tab). */
     fun askClaudeCode(prompt: String) {
         val typed = prompt.trim()
+        // With the helper on: Claude Code reads and answers first, then the helper helps it finish (after its reply).
+        // With the AI helper on, it helps Claude Code with every message (and every error), not only in "Talk to" mode.
+        if (helperOn("claude-code") && typed.isNotEmpty() && !ccRunning) { ccConsult = typed; ccHelperFixes = 0; ccLastFailure = null }
         val files = ccPending.toList()
         if ((typed.isEmpty() && files.isEmpty()) || !ccSignedIn || ccAttaching) return
         if (ccRunning) { steerClaudeCode(typed, files); return }
@@ -1053,6 +1379,64 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 ccRunning = false
                 saveCcChat()
                 ReplyService.stop(app)
+                // Talking with the helper: Claude Code has read the message and answered; now the helper helps it finish.
+                val asked = ccConsult
+                ccConsult = null
+                if (asked != null && failed == null && helperOn("claude-code")) {
+                    val draft = ccMessages.lastOrNull { !it.fromUser }?.text.orEmpty()
+                    ArinApp.scope.launch {
+                        val help = com.arin.selffix.ClaudeHelper.ask(source = "claude-code", context = app,
+                            ownerTexts = ccMessages.filter { it.fromUser }.map { it.text }, question =
+                            "Claude Code (the boss) answered:\n\"\"\"\n${draft.take(8_000)}\n\"\"\"\n\n" +
+                                "Help it: point out mistakes, fill gaps, and say exactly what it should still do. Write to Claude Code.") { ccStatus = it }
+                        withContext(Dispatchers.Main) {
+                            if (!help.contains("couldn't be reached") && !help.contains("isn't connected") && !help.contains("switched off")) {
+                                runCcTurn("[Help from the AI helper ($helperLabel), which the person asked you to use:]\n$help\n\n" +
+                                    "Use this help where it is right and finish the task. Don't mention this note.", emptyList(), steering = false)
+                            }
+                        }
+                    }
+                }
+                // ARIN-PROTECTED: with the AI helper on, every Claude Code error is solved with its help, one by one: Claude Code
+                // asks, the helper gives the solution, Claude Code applies it. The same error three times in a row → stop and
+                // show the internet's advice instead of looping.
+                if (failed != null && helperOn("claude-code") && asked != null) {
+                    val err = failed!!
+                    val same = ccLastFailure != null && ccLastFailure!!.take(200) == err.take(200)
+                    ccHelperFixes = if (same) ccHelperFixes + 1 else 0
+                    ccLastFailure = err
+                    if (ccHelperFixes < 3) ArinApp.scope.launch {
+                        val sol = com.arin.selffix.ClaudeHelper.ask(source = "claude-code", context = app,
+                            ownerTexts = ccMessages.filter { it.fromUser }.map { it.text }, question =
+                            "Claude Code (the boss) hit this error:\n${err.take(4_000)}\n\n" +
+                                "Claude Code asks you for the solution: the real cause and exactly what to do. Write to Claude Code.") { ccStatus = it }
+                        withContext(Dispatchers.Main) {
+                            if (!sol.contains("couldn't be reached") && !sol.contains("isn't connected") && !sol.contains("switched off") && sol.isNotBlank()) {
+                                ccConsult = asked
+                                runCcTurn("[Solution from the AI helper ($helperLabel) for the error you hit — apply it and carry on:]\n$sol\n\n" +
+                                    "Error was: ${err.take(1_000)}\nDon't mention this note.", emptyList(), steering = false)
+                            }
+                        }
+                    }
+                }
+                // ARIN-PROTECTED: research-first-error-help — search the internet first, then say how to fix it.
+                if (failed != null) {
+                    val err = failed!!
+                    val brain = if (ccBackend == "pro") null else com.arin.selffix.ErrorDoctor.Brain(
+                        Provider.Custom, settings.ccCustomKey, ccModel,
+                        com.arin.llm.CustomApi.Endpoint(settings.ccCustomBase,
+                            if (settings.ccCustomKind == "openai") com.arin.llm.ApiFormat.OpenAI else com.arin.llm.ApiFormat.Anthropic),
+                    )
+                    ArinApp.scope.launch {
+                        val advice = withContext(Dispatchers.IO) {
+                            runCatching { com.arin.selffix.ErrorDoctor.diagnose(app, "the Claude Code tab", err, brain) }.getOrNull()
+                        }
+                        if (!advice.isNullOrBlank()) withContext(Dispatchers.Main) {
+                            ccMessages += Message(fromUser = false, text = "🔎 **I searched the internet for this error.**\n\n$advice")
+                            saveCcChat()
+                        }
+                    }
+                }
             }
         }
     }
@@ -1064,6 +1448,13 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         val idx = ccMessages.indexOf(lastUser)
         while (ccMessages.size > idx) ccMessages.removeAt(ccMessages.lastIndex)
         runCcTurn(lastUser.text, emptyList(), steering = false)
+    }
+
+    /** Carry on from where Claude Code stopped: same conversation, finished steps aren't redone. */
+    fun resumeClaudeCode() {
+        if (ccRunning) return
+        runCcTurn("Resume the task from exactly where you stopped. Don't redo the steps already finished (check the current " +
+            "state quickly if you need to), then continue to the end.", emptyList(), steering = false)
     }
 
     fun stopClaudeCode() {
@@ -1113,6 +1504,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private fun movieStatus(step: String, fraction: Float?) {
+        com.arin.selffix.Activity.log("movie", step)
         movieStep = step
         movieFraction = fraction
         com.arin.movie.MovieService.update(getApplication<Application>(), step, fraction)
@@ -1121,6 +1513,20 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     private fun movieFail(msg: String) {
         movieError = msg
         notice = msg
+        // ARIN-PROTECTED: research-first-error-help — search the internet first, then say how to fix it.
+        val app = getApplication<Application>()
+        val p = provider
+        val m = model
+        val key = settings.key(p)
+        val endpoint = if (p == Provider.Custom) com.arin.llm.CustomApi.current() else null
+        ArinApp.scope.launch {
+            val advice = withContext(Dispatchers.IO) {
+                runCatching { com.arin.selffix.ErrorDoctor.diagnose(app, "Movie Maker", msg, com.arin.selffix.ErrorDoctor.Brain(p, key, m, endpoint)) }.getOrNull()
+            }
+            if (!advice.isNullOrBlank()) withContext(Dispatchers.Main) {
+                if (movieError == msg) movieError = "$msg\n\n🔎 $advice"
+            }
+        }
     }
 
     /** One call to the person's own model (the director). Shows live activity while it streams. */
@@ -1178,7 +1584,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         movieError = null
         movieProgress = ""
         movieLog.clear()
-        movieChat.clear()
+        if (movieChat.isNotEmpty()) movieChat += MovieChatLine(false, "──────── New movie ────────")
         movieNotes.clear()
         moviePhase = MoviePhase.Planning
         com.arin.movie.MovieService.start(app, "Getting ready…")
@@ -1425,7 +1831,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                     logLine("Failed: ${e.message}")
                     notice = "REA setup failed: ${e.message}"
                 } finally {
-                    linuxBusy = false
+                    toolsVersion++; linuxBusy = false
                     ReplyService.stop(app)
                 }
             }
@@ -1490,11 +1896,49 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         private set
 
     init {
+        // An offline model download that was cut off (Android closed Arin): resume it.
+        settings.secret("OFFLINE_PENDING").takeIf { it.contains('\n') }?.let { p ->
+            viewModelScope.launch { kotlinx.coroutines.delay(4_000); setUpOfflineModel(p.substringBefore('\n'), p.substringAfter('\n')) }
+        }
+    }
+
+    init {
+        // The Claude harness (every tab) gets Arin's tools, the person's MCP servers and the GitHub sign-in.
+        com.arin.claudecode.Harness.extras = { val (cfg, names) = ccMcpConfig(); Triple(cfg, names, githubToken()) }
+        // Every install shows live progress (what it's doing, MB, %, speed, time left) while it runs.
+        viewModelScope.launch {
+            androidx.compose.runtime.snapshotFlow { linuxBusy to ccInstalling }.collect { (linux, cc) ->
+                val app = getApplication<Application>()
+                when {
+                    cc -> com.arin.selffix.InstallProgress.begin(app, "Installing Claude Code")
+                    linux -> com.arin.selffix.InstallProgress.begin(app, "Installing in Arin's Linux")
+                    else -> com.arin.selffix.InstallProgress.end()
+                }
+            }
+        }
         refreshChats()
         refreshProjects()
         memories.addAll(memoryStore.list())
         loadModels()
+        // Movie Maker's conversation is kept on the phone until Clear all chats.
+        runCatching {
+            val arr = org.json.JSONArray(movieChatFile.readText())
+            for (i in 0 until arr.length()) arr.optJSONObject(i)?.let { movieChat += MovieChatLine(it.optBoolean("u"), it.optString("t")) }
+        }
+        viewModelScope.launch {
+            androidx.compose.runtime.snapshotFlow { movieChat.toList() }.collect { lines ->
+                withContext(Dispatchers.IO) {
+                    runCatching {
+                        val arr = org.json.JSONArray()
+                        lines.forEach { arr.put(org.json.JSONObject().put("u", it.fromUser).put("t", it.text)) }
+                        movieChatFile.writeText(arr.toString())
+                    }
+                }
+            }
+        }
     }
+
+    private val movieChatFile get() = java.io.File(getApplication<Application>().filesDir, "movie_chat.json")
 
     // ---------------- Sending ----------------
 
@@ -1600,10 +2044,71 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
     fun chatBuildAppName(): String = chatBuildSession()?.project?.appName ?: "the app"
 
-    /** Stops this chat's build only; what's built so far stays saved, so it can be resumed. */
-    fun stopChatBuild() {
+    /** Rolls this tab's app back to before its last change (see send). Returns false when there's nothing to roll back. */
+    private fun rollBack(said: String): Boolean {
         val app = getApplication<Application>()
-        val sid = linkedBuild(chatId) ?: return
+        val project = chatBuildSession()?.project ?: return false
+        if (project.owner == com.arin.builder.BuildAgent.LOCAL_OWNER || project.selfUpdate) return false
+        val mem = com.arin.builder.ProjectMemory.of(app, project.packageName)
+        val (head, to) = mem.lastRollback() ?: return false
+        if (to.isBlank()) return false
+        messages += Message(fromUser = true, text = said)
+        val note = Message(fromUser = false, text = "↩️ Rolling ${project.appName} back to before the last change…")
+        messages += note
+        persist()
+        ArinApp.scope.launch {
+            val text = runCatching {
+                val gh = com.arin.builder.GitHubClient(githubToken())
+                val repo = com.arin.builder.GitHubClient.Repo(project.owner, project.repo, project.branch, project.repoUrl)
+                val sha = gh.restore(repo, to, "Roll back: undo ${head.take(7)} (asked by the owner)")
+                mem.recordCommit(sha, head, "Roll back to ${to.take(7)}")
+                "↩️ **Rolled back.** ${project.appName}'s files on GitHub are back to how they were before the last change " +
+                    "(commit ${to.take(7)}). Nothing was deleted — say \"undo last change\" again to bring it back.\n\n" +
+                    "**What to do next:** say \"build it\" when you want an APK of this version (I won't build it by myself)."
+            }.getOrElse { "Couldn't roll back: ${it.message?.take(200)}" }
+            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                messages.indexOfFirst { it.id == note.id }.takeIf { it >= 0 }?.let { messages[it] = messages[it].copy(text = text) }
+                persist()
+            }
+        }
+        return true
+    }
+
+    /** One build per tab: steers the running one with [request] and returns a note, or null when none is running. */
+    private fun oneBuildPerTab(request: String): String? {
+        val (sid, name) = runningBuildsHere().firstOrNull() ?: return null
+        val s = com.arin.builder.BuildRunner.session(sid) ?: return null
+        val said = request.trim().take(2_000)
+        if (said.isNotBlank()) s.steer(said)
+        return "Only one build runs per tab: $name is already building here, so I've given it your request — it carries on " +
+            "from where it is and follows it. (Tap Stop on the build if you'd rather start over.)"
+    }
+
+    /** Every build running from this chat (several can run at once): session id → app name. */
+    fun runningBuildsHere(): List<Pair<String, String>> {
+        com.arin.builder.BuildRunner.runningCount // read so the bar updates
+        val ids = (follows.values.filter { it.chat == chatId }.map { it.session } + listOfNotNull(linkedBuild(chatId))).distinct()
+        stoppedTick
+        return ids.filter { it !in stoppedNow }.mapNotNull { id -> com.arin.builder.BuildRunner.session(id)?.takeIf { it.running }?.let { id to (it.project?.appName ?: "the app") } }
+    }
+
+    /** Stops this chat's build only; what's built so far stays saved, so it can be resumed. */
+    fun stopChatBuild() { linkedBuild(chatId)?.let { stopBuild(it) } }
+
+    /**
+     * Stops exactly one build, at once: its message says Stopped immediately and its work is cancelled; what's built so
+     * far stays saved (Resume carries on). Other builds keep running.
+     */
+    private val stoppedNow = mutableSetOf<String>()
+    private var stoppedTick by mutableStateOf(0)
+
+    fun stopBuild(sid: String) {
+        val app = getApplication<Application>()
+        stoppedNow += sid; stoppedTick++ // gone from the screen at once
+        com.arin.builder.BuildRunner.session(sid)?.let { s ->
+            s.steering.clear()
+            s.timeline += com.arin.builder.TimelineItem.Event(com.arin.builder.BuildEvent(com.arin.builder.BuildEvent.Kind.STEP, "⏹ Stopped by you"))
+        }
         val session = com.arin.builder.BuildRunner.session(sid)
         com.arin.builder.BuildService.stop(app, sid)
         follows.remove(sid)?.let { f ->
@@ -1615,6 +2120,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             // Give the service a moment to wind down and save its checkpoint.
             repeat(20) { if (session?.running != true) return@repeat; kotlinx.coroutines.delay(500) }
             if (session != null) com.arin.builder.BuildRunner.saveNow(app, session)
+            stoppedNow -= sid; stoppedTick++
             refreshChatBuild()
         }
     }
@@ -1623,11 +2129,21 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     private fun followBuildInChat(title: String, session: com.arin.builder.BuildSession) {
         if (chatId == null) persist()
         chatId?.let { linkBuild(it, session.id) }
-        val msg = Message(fromUser = false, text = "🛠️ **$title…**\n\nStarting.")
-        messages += msg
+        // ONE build message per tab: reuse this build's message if it has one; any older progress message left in the
+        // chat (from a build that was replaced or stopped) is closed, so only one "building" line ever shows.
+        val reuse = follows[session.id]?.msg?.takeIf { id -> messages.any { it.id == id } }
+        val active = follows.values.mapNotNull { it.msg }.toSet() - setOfNotNull(reuse)
+        messages.indices.forEach { i ->
+            val m = messages[i]
+            if (!m.fromUser && m.id != reuse && m.id !in active && m.text.startsWith("🛠️") && !m.text.contains("— steps**")) {
+                messages[i] = m.copy(text = m.text.replaceFirst(Regex("""^🛠️ \*\*(.+?)…\*\*"""), "🛠️ **$1 — steps**") +
+                    if (m.text.contains("— steps**")) "" else "\n\n_(continued in the build below)_")
+            }
+        }
+        val msgId = reuse ?: Message(fromUser = false, text = "🛠️ **$title…**\n\nStarting.").also { messages += it }.id
         persist()
         follows[session.id]?.job?.cancel()
-        val f = Follow(session.id, chatId, msg.id)
+        val f = Follow(session.id, chatId, msgId)
         follows[session.id] = f
         f.job = viewModelScope.launch {
             var last = ""
@@ -1705,6 +2221,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private fun postBuildResult(result: com.arin.builder.BuildResult, project: com.arin.builder.Project?, sessionId: String) {
+        // The Arin Update tab's build: its result goes into the tab's conversation.
+        if (sessionId == arinUpdateSession) com.arin.selffix.ArinUpdateChat.onFinished(getApplication(), result, com.arin.builder.BuildRunner.session(sessionId))
         refreshChatBuild()
         // Started in the Build tab: the result stays there.
         val f = follows.remove(sessionId) ?: return
@@ -1718,13 +2236,21 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         val progressId = f.msg
         if (f.chat == chatId) replaceBuildMessage(f, steps, save = false)
         f.msg = null
+        if (result.message.startsWith(com.arin.builder.BuildAgent.CODE_READY)) {
+            val changed = result.message.removePrefix(com.arin.builder.BuildAgent.CODE_READY).split(',').filter { it.isNotBlank() }
+            postToBuildChat(f.chat, Message(fromUser = false,
+                text = "✍️ **The code for ${project?.appName ?: "the app"} is written** (${changed.size} file${if (changed.size == 1) "" else "s"}).\n\n" +
+                    (if (result.explanation.isNotBlank()) result.explanation.trim() + "\n\n" else "") + "_Where should I build it?_",
+                pendingBuild = "where\u0000$sessionId"), progressId, steps)
+            return
+        }
         val name = project?.appName ?: "The app"
         val phoneOnly = project?.owner == com.arin.builder.BuildAgent.LOCAL_OWNER
-        val text = if (result.success && phoneOnly) buildString {
+        val text0 = if (result.success && phoneOnly) buildString {
             append("✅ **$name is built on this phone.**\n\n")
             result.phoneApk?.let { append("- **APK:** `$it`\n") }
             result.phoneSourceZip?.let { append("- **Source code (zip):** `$it`\n") }
-            append("\nAndroid's install screen opens now. Both files are in your Download/Arin folder.")
+            append("\nAndroid's install screen opens now. Both files are in Arin's folder (Builds).")
         } else if (result.success && project != null) buildString {
             append(if (project.selfUpdate) "✅ **The new version of Arin is built.**\n\n" else "✅ **$name is built.**\n\n")
             result.apkUrl?.let { append("- **APK:** [Download $name APK]($it)\n  $it\n") }
@@ -1750,6 +2276,10 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 append("\nTell me what to fix (or say \"try again\" / \"fix these errors\") and I\'ll correct them and rebuild.")
             }
         }
+        // Direct download links from a free file site (found after the build), when there are some.
+        val text = text0 + result.message.substringAfter("📥", "").let { if (it.isBlank()) "" else "\n\n📥" + it } +
+            // ARIN-PROTECTED: explain-after-coding — the code explained in plain English, with suggestions.
+            (if (result.explanation.isNotBlank()) "\n\n" + result.explanation.trim() else "")
         lastFailure = if (result.success) "" else
             "The last Build mode run ($name) FAILED. Reason: ${result.message}" +
                 (if (result.log.isNotBlank()) " Error log (the full list is in the chat message):\n${result.log.take(4_000)}\n" else "") +
@@ -1770,7 +2300,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 runCatching { com.arin.builder.ApkInstaller.download(app, url) {} }
                     .onSuccess {
                         postToBuildChat(f.chat, Message(fromUser = false, text =
-                            "⬇️ **$name saved to your phone** in Download/Arin (`${it.name}`). Opening the installer…"), null, "")
+                            "⬇️ **$name saved to your phone** in Arin's folder (Builds) (`${it.name}`). Opening the installer…"), null, "")
                         runCatching { com.arin.builder.ApkInstaller.install(app, it) }
                     }
                     .onFailure { notice = "Built, but couldn't auto-save the APK: ${it.message}. Tap the APK link above." }
@@ -1813,11 +2343,17 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
     fun githubToken(): String = settings.secret("GITHUB")
 
+    /** The selected Custom API's key, for its own usage meter only. */
+    fun customKeyForMeter(): String = settings.key(Provider.Custom)
+
     /** Set when chat starts a build, so the screen can switch to Build mode. */
     var openBuild by mutableStateOf(false)
 
     /** Starts building an app from chat; returns a problem to show, or null when it started. */
-    fun startBuild(name: String, description: String, target: BuildTarget = BuildTarget.CHAT): String? {
+    fun startBuild(name: String, description: String, target: BuildTarget = BuildTarget.CHAT, writeFirst: Boolean = false): String? {
+        // ONE build per tab: while this chat's build runs, a new build request becomes a direction for that build
+        // (it carries on and follows it) instead of starting a second one.
+        oneBuildPerTab(description)?.let { return it }
         val token = githubToken()
         val app = getApplication<Application>()
         val phoneReady = com.arin.terminal.Linux.androidBuildReady(app)
@@ -1852,6 +2388,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 com.arin.builder.BuildService.start(
                     app,
                     com.arin.builder.BuildRequest(
+                        helperTab = if (target == BuildTarget.CHAT) "chat" else "build",
                         description = description,
                         appName = appName,
                         provider = provider,
@@ -1868,27 +2405,110 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                         // The whole conversation goes to the builder, so nothing that was discussed gets lost.
                         requirements = buildRequirements(description),
                         requirementsComplete = true,
-                        localOnly = onPhone,
-                        codespace = inCodespace,
+                        localOnly = onPhone && !writeFirst,
+                        codespace = inCodespace && !writeFirst,
+                        stopAfterWriting = writeFirst,
+                        // Named place: "on github" builds only on GitHub (no phone build first).
+                        target = if (writeFirst) "" else when (target) {
+                            BuildTarget.PHONE -> "phone"; BuildTarget.CODESPACE -> "codespace"
+                            BuildTarget.CHAT, BuildTarget.BUILD_TAB -> "github"; else -> ""
+                        },
                     ),
                     session,
                 )
                 if (inBuildTab) { com.arin.builder.BuildRunner.open(app, session.id); openBuild = true }
-                else followBuildInChat((if (same) "Working on $appName again" else "Building $appName") +
+                else followBuildInChat(if (writeFirst) "Writing the code for $appName" else (if (same) "Working on $appName again" else "Building $appName") +
                     when { onPhone -> " on this phone"; inCodespace -> " in a Codespace"; else -> "" }, session)
                 null
             }
         }
     }
 
+    /**
+     * After Stop (or a failed build), a plain order naming where to build ("build on github") continues this chat's
+     * build from where it stopped, at that place — nothing is rewritten. Returns null when there's nothing to continue
+     * (then a normal build starts), "" when it continued, or a problem to show.
+     */
+    private fun continueStoppedBuild(said: List<String>, target: BuildTarget): String? {
+        val session = chatBuildSession() ?: return null
+        if (session.running || session.project == null || session.project?.selfUpdate == true || session.lastRequest == null) return null
+        val tl = session.timeline.toList()
+        val lastUser = tl.indexOfLast { it is com.arin.builder.TimelineItem.User }
+        val lastResult = tl.indexOfLast { it is com.arin.builder.TimelineItem.Result }
+        val unfinished = lastUser > lastResult ||
+            (tl.getOrNull(lastResult) as? com.arin.builder.TimelineItem.Result)?.let { !it.success } == true
+        if (!unfinished) return null
+        // Only a short "build it on github"-style order; asking for changes makes a new round of coding.
+        if (said.none { it.trim().split(Regex("\\s+")).size <= 10 && Prompt.namedBuildTarget(it) != null }) return null
+        val where = when (target) {
+            BuildTarget.PHONE -> "phone"; BuildTarget.CODESPACE -> "codespace"; BuildTarget.BUILD_TAB -> "buildtab"
+            BuildTarget.AUTO -> "auto"; else -> "chat"
+        }
+        return buildWrittenAt(session.id, where) ?: ""
+    }
+
+    /**
+     * The code of [sessionId] is written: build it where the person chose — "github", "phone", "codespace", "auto",
+     * "chat" (GitHub, followed in this chat) or "buildtab" (GitHub, followed in the Build tab). Nothing is rewritten.
+     */
+    fun buildWrittenAt(sessionId: String, where: String): String? {
+        if (runningBuildsHere().any { it.first != sessionId }) return "A build is already running in this chat — only one build per tab. Stop it first, or wait for it to finish."
+        val app = getApplication<Application>()
+        val session = com.arin.builder.BuildRunner.sessionFor(app, sessionId) ?: return "That build isn't on this phone any more."
+        val base = session.lastRequest ?: return "Couldn't find that build's request. Ask for it again."
+        if (session.running) return "It's still working. Wait a moment."
+        val token = githubToken()
+        val phoneReady = com.arin.terminal.Linux.androidBuildReady(app)
+        val target = when (where) {
+            "auto" -> if (phoneReady && token.isBlank()) "phone" else "github"
+            "chat", "buildtab" -> "github"
+            else -> where
+        }
+        when {
+            target == "phone" && !phoneReady -> return "To build on this phone, install the Android build tools in Settings → Linux first (it shows the download progress)."
+            target != "phone" && token.isBlank() -> return "To build on GitHub, sign in with GitHub in Settings → GitHub first."
+        }
+        com.arin.builder.BuildService.start(
+            app,
+            base.copy(
+                apiKey = settings.key(base.provider).ifBlank { base.apiKey },
+                githubToken = token.ifBlank { base.githubToken },
+                project = session.project ?: base.project,
+                resume = true,
+                stopAfterWriting = false,
+                target = target,
+                localOnly = target == "phone",
+                codespace = target == "codespace",
+            ),
+            session,
+        )
+        val label = when (target) { "phone" -> "on this phone"; "codespace" -> "on GitHub with a Codespace"; else -> "on GitHub" }
+        when (where) {
+            "buildtab" -> { com.arin.builder.BuildRunner.open(app, session.id); openBuild = true }
+            "chat" -> followBuildInChat("Building ${session.project?.appName ?: base.appName} $label", session)
+            else -> if (follows[session.id] == null && session.id != arinUpdateSession && session.id != com.arin.builder.BuildRunner.projectId)
+                followBuildInChat("Building ${session.project?.appName ?: base.appName} $label", session)
+        }
+        return null
+    }
+
     /** The person tapped "Build now" (or "Update Arin now") under a reply that prepared a build. */
     fun confirmBuildAt(message: Message, target: BuildTarget) {
         val (name, spec) = message.pendingBuild.split('\u0000', limit = 2).let { it[0] to it.getOrElse(1) { "" } }
         if (spec.isBlank()) return
-        val problem = if (name == "update") startSelfUpdate(spec) else startBuild(name, spec, target)
+        val problem = when (name) {
+            "update" -> startSelfUpdate(spec)
+            // The code is written: build it where the person chose.
+            "where" -> buildWrittenAt(spec, when (target) {
+                BuildTarget.PHONE -> "phone"; BuildTarget.CODESPACE -> "codespace"; BuildTarget.BUILD_TAB -> "buildtab"
+                BuildTarget.AUTO -> "auto"; else -> "github"
+            })
+            // Write the code first; where to build is asked once it's written.
+            else -> startBuild(name, spec, target, writeFirst = target == BuildTarget.AUTO)
+        }
         if (problem != null) { notice = problem; return }
         val i = messages.indexOfFirst { it.id == message.id }
-        if (i >= 0) messages[i] = messages[i].copy(pendingBuild = "", text = messages[i].text.substringBefore("\n\n_Where should I build"))
+        if (i >= 0) messages[i] = messages[i].copy(pendingBuild = "", text = messages[i].text.substringBefore("\n\n_Where should I build").substringBefore("\n\n_Tap ✍️"))
         persist()
     }
 
@@ -1945,21 +2565,10 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                     if (linuxPath != null) {
                         "Downloaded $fileName (${r.header("Content-Length")?.toLongOrNull()?.let { com.arin.data.Attachments.readableSize(it) } ?: "size unknown"}) to $linuxPath in Linux. Terminal tools can use it there."
                     } else {
-                        val values = android.content.ContentValues().apply {
-                            put(android.provider.MediaStore.Downloads.DISPLAY_NAME, fileName)
-                            put(android.provider.MediaStore.Downloads.RELATIVE_PATH, "Download/Arin")
-                        }
-                        val dest = if (android.os.Build.VERSION.SDK_INT >= 29) {
-                            app.contentResolver.insert(android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
-                        } else null
-                        if (dest != null) {
-                            app.contentResolver.openOutputStream(dest)?.use { out -> body.byteStream().use { it.copyTo(out, 64 * 1024) } }
-                            "Downloaded $fileName to the phone's Download/Arin folder (/storage/emulated/0/Download/Arin/$fileName)."
-                        } else {
-                            val f = java.io.File(app.getExternalFilesDir(null), fileName)
-                            f.outputStream().use { out -> body.byteStream().use { it.copyTo(out, 64 * 1024) } }
-                            "Downloaded $fileName to ${f.absolutePath}."
-                        }
+                        // Into Arin's one folder (Downloads), not scattered around the phone.
+                        val f = java.io.File(com.arin.settings.ArinFolder.sub(app, "Downloads"), fileName)
+                        f.outputStream().use { out -> body.byteStream().use { it.copyTo(out, 64 * 1024) } }
+                        "Downloaded $fileName to Arin's folder (Downloads): ${f.absolutePath}."
                     }
                 }
             } catch (e: Exception) {
@@ -2015,6 +2624,211 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 null
             }
         }
+    }
+
+    // ---- AI helper (⋮ menu in every tab): Claude, ChatGPT, Gemini or a Custom API model helps the tab's model ----
+
+    /** The AI helper switch: on = any model can take the helper's help; off = every model works on its own. */
+    /** Each tab's own AI helper switch (turning it off in one tab leaves the others as they are). */
+    private val helperSwitches = androidx.compose.runtime.mutableStateMapOf<String, Boolean>()
+
+    fun helperOn(tab: String): Boolean {
+        val t = com.arin.selffix.ClaudeHelper.tabOf(tab)
+        return helperSwitches[t] ?: com.arin.selffix.ClaudeHelper.enabled(getApplication(), t)
+    }
+
+    /** The chat tab's switch. */
+    val claudeHelperOn: Boolean get() = helperOn("chat")
+
+    /** Who helps now, e.g. "Claude (opus)" or "OpenRouter (deepseek-r1)". */
+    var helperLabel by mutableStateOf(com.arin.selffix.ClaudeHelper.helper(getApplication()).label)
+        private set
+
+    fun setClaudeHelper(on: Boolean, tab: String = "chat") {
+        val t = com.arin.selffix.ClaudeHelper.tabOf(tab)
+        helperSwitches[t] = on
+        com.arin.selffix.ClaudeHelper.setEnabled(getApplication(), on, t)
+        notice = if (on) "AI helper on in this tab: models can take $helperLabel's help" else "AI helper off in this tab only: other tabs keep their own setting"
+    }
+
+    /** Picks which AI (and model) helps. The tab's own model and Custom API are not changed. */
+    fun setHelper(h: com.arin.selffix.ClaudeHelper.Helper) {
+        com.arin.selffix.ClaudeHelper.setHelper(getApplication(), h)
+        helperLabel = h.label
+    }
+
+    /** "claude", "chatgpt", "gemini" or "custom": which kind of AI helps now. */
+    fun helperKind(): String = com.arin.selffix.ClaudeHelper.helper(getApplication()).kind
+
+    /**
+     * "Talk to …" chosen: messages typed in the tab's own message box go to the helper (it answers right there in the
+     * conversation, then forgets), until the person goes back to their model.
+     */
+    var helperTalk by mutableStateOf(false)
+        private set
+
+    /** The next message is answered with the helper's help (the model reads it first). */
+    private var consultNext = false
+
+    /** Set when a tab without a message box starts talking to the helper: the chat opens. */
+    var openChat by mutableStateOf(false)
+
+    fun startHelperTalk() {
+        if (!claudeHelperOn) setClaudeHelper(true)
+        helperTalk = true
+        notice = "${modelLabel()} reads every message first, then takes $helperLabel's help. $helperLabel helps and then forgets."
+    }
+
+    fun endHelperTalk() {
+        helperTalk = false
+        notice = "Back to ${modelLabel()}"
+    }
+
+    /** Asks the helper and puts the question and answer into [list] (a tab's own conversation). */
+    fun talkToHelperIn(list: androidx.compose.runtime.snapshots.SnapshotStateList<Message>, question: String, save: () -> Unit) {
+        val q = question.trim()
+        if (q.isEmpty()) return
+        val who = helperLabel
+        val recent = list.takeLast(8).joinToString("\n\n") { (if (it.fromUser) "Person: " else "Assistant: ") + it.text.take(1_500) }
+        list += Message(fromUser = true, text = "🟣 **Ask $who:** $q")
+        save()
+        askingClaude = true
+        val app = getApplication<Application>()
+        com.arin.app.ReplyService.hold(app, "helper")
+        ArinApp.scope.launch {
+            val answer = withContext(Dispatchers.IO) {
+                com.arin.selffix.ClaudeHelper.ask(source = "claude-code", context = app,
+                    question = "A model asks you: $q")
+            }
+            withContext(Dispatchers.Main) {
+                askingClaude = false
+                com.arin.app.ReplyService.release(app, "helper")
+                list += Message(fromUser = false, text = "🟣 **$who:**\n\n$answer")
+                save()
+            }
+        }
+    }
+
+    /** Asks the helper and returns its answer (for tabs that show it themselves). */
+    suspend fun askHelper(question: String, context: String = "", source: String = "all"): String = withContext(Dispatchers.IO) {
+        com.arin.selffix.ClaudeHelper.ask(source = source, context = getApplication(),
+            question = question)
+    }
+
+    /** True while a "Talk to…" question waits for the helper's answer. */
+    var askingClaude by mutableStateOf(false)
+        private set
+
+    /** The helper's last answer, for tabs that aren't a chat (Build, Claude Code, Movie Maker, Arin Update…). */
+    var helperReply by mutableStateOf<String?>(null)
+
+    /**
+     * Asks the helper directly, whatever model the tab uses. In a chat ([intoChat]) the question and answer are added
+     * to the chat, so the tab's own model sees the help on its next reply; elsewhere the answer is shown in a box.
+     * The helper itself remembers nothing: each question is asked fresh.
+     */
+    fun talkToHelper(question: String, intoChat: Boolean = true) {
+        val q = question.trim()
+        if (q.isEmpty()) return
+        if (!claudeHelperOn) { notice = "Switch the AI helper on first (⋮ menu)."; return }
+        val who = helperLabel
+        val target = if (intoChat) { if (chatId == null) persist(); chatId } else null
+        val recent = if (intoChat) messages.takeLast(8).joinToString("\n\n") { (if (it.fromUser) "Person: " else "Assistant: ") + it.text.take(1_500) } else ""
+        if (intoChat) {
+            messages += Message(fromUser = true, text = "🟣 **Ask $who:** $q")
+            persist()
+        }
+        askingClaude = true
+        val app = getApplication<Application>()
+        com.arin.app.ReplyService.hold(app, "helper")
+        ArinApp.scope.launch {
+            val answer = withContext(Dispatchers.IO) {
+                com.arin.selffix.ClaudeHelper.ask(source = "chat", context = app,
+                    question = "A model asks you: $q",
+                )
+            }
+            withContext(Dispatchers.Main) {
+                askingClaude = false
+                com.arin.app.ReplyService.release(app, "helper")
+                if (intoChat) postToBuildChat(target, Message(fromUser = false, text = "🟣 **$who:**\n\n$answer"), null, "")
+                else helperReply = answer
+            }
+        }
+    }
+
+    /** Kept for the earlier menu: asks the helper in the open chat. */
+    fun talkToClaude(question: String) = talkToHelper(question, intoChat = true)
+
+    // ---- Arin Update tab (ARIN-PROTECTED-RULE: self-update-only-arin) ----
+    // It only ever updates Arin itself (its own repo, app id com.arin.app, same signing key, higher version),
+    // so the update installs over the Arin that's installed. It never builds another app.
+
+    /** The Arin Update tab's build (kept across restarts). */
+    var arinUpdateSession by mutableStateOf(settings.secret("ARIN_UPDATE_SESSION").ifBlank { null })
+        private set
+
+    /**
+     * Starts an update of Arin from the Arin Update tab. [unlock] is true only when the owner confirmed, in the tab,
+     * that this change may touch the protected rules. Returns a problem, or null.
+     */
+    fun startArinUpdate(
+        change: String,
+        unlock: Boolean = false,
+        retry: Boolean = false,
+        stopAfterWriting: Boolean = false,
+        attachments: List<com.arin.data.Attachment> = emptyList(),
+    ): String? {
+        val token = githubToken()
+        val app = getApplication<Application>()
+        val previous = arinUpdateSession?.let { com.arin.builder.BuildRunner.sessionFor(app, it) }
+        return when {
+            change.isBlank() && !retry -> "Describe what to change in Arin."
+            token.isBlank() -> "To update Arin, sign in with GitHub in Settings → GitHub first."
+            com.arin.builder.BuildRunner.sessions.values.any { it.running && (it.project?.selfUpdate == true || it.pending?.selfUpdate == true) } ->
+                "An update of Arin is already building. Wait for it, or press Stop."
+            provider.needsKey && settings.key(provider).isBlank() -> "Add your ${provider.label} key in Settings."
+            else -> {
+                val resume = retry && previous?.project?.selfUpdate == true
+                val session = if (resume) previous!! else com.arin.builder.BuildRunner.createSession()
+                com.arin.builder.BuildService.start(
+                    app,
+                    com.arin.builder.BuildRequest(
+                        description = if (resume) (previous?.lastRequest?.description ?: change).trim().ifBlank { "Resume" } else change.trim(),
+                        appName = "Arin",
+                        provider = provider,
+                        model = model,
+                        apiKey = settings.key(provider),
+                        customBaseUrl = if (provider == Provider.Custom) customBaseUrl else "",
+                        customFormat = customFormat.name,
+                        testApp = testApps,
+                        effort = effort,
+                        githubToken = token,
+                        allowOtherSites = true,
+                        selfUpdate = true, // ARIN-PROTECTED: the Arin Update tab only updates Arin
+                        selfRepo = selfRepo(),
+                        selfBranch = selfBranch(),
+                        project = if (resume) previous!!.project else null,
+                        resume = resume,
+                        unlockProtected = unlock && !resume, // only after the owner tapped Approve in the Arin Update tab
+                        stopAfterWriting = stopAfterWriting && !resume,
+                        attachments = attachments,
+                    ),
+                    session,
+                )
+                arinUpdateSession = session.id
+                settings.setSecret("ARIN_UPDATE_SESSION", session.id)
+                null
+            }
+        }
+    }
+
+    /** Steers the Arin Update tab's running build (followed at its next step). */
+    fun steerArinUpdate(text: String) {
+        arinUpdateSession?.let { com.arin.builder.BuildRunner.sessions[it]?.steer(text) }
+    }
+
+    fun stopArinUpdate() {
+        arinUpdateSession?.let { com.arin.builder.BuildService.stop(getApplication(), it) }
     }
 
     // ---- Sign in with GitHub (device flow) ----
@@ -2088,7 +2902,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
      * What the model is told after a failure: Arin searches the web for the error itself, every time, and passes on what
      * it found with the instruction to apply a fix and retry, so known solutions are used straight away.
      */
-    private suspend fun fixAdvice(streak: Int, errorQuery: String, sources: MutableList<Source>): String {
+    private suspend fun fixAdvice(streak: Int, errorQuery: String, sources: MutableList<Source>, boss: String? = null): String {
         val base = "Fix this yourself and keep going: find the cause in the output, apply a fix (install what's missing, change " +
             "the command or flags, correct the code or config) and try again. Don't stop to ask unless it truly needs the person."
         if (errorQuery.isBlank()) {
@@ -2098,10 +2912,34 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         val found = runCatching { WebSearch.searchForModel(errorQuery) }.getOrNull()
         status = null
         found?.first?.take(4)?.forEach { h -> if (sources.none { it.url == h.url }) sources += Source(h.title, h.url) }
-        val web = found?.second?.take(7_000).orEmpty()
+        var web = found?.second?.take(7_000).orEmpty()
+        // ARIN-PROTECTED: research first — also read the two best pages, not only the search snippets.
+        found?.first?.take(2)?.forEach { h ->
+            status = "Reading " + h.url.removePrefix("https://").take(60)
+            val page = runCatching { com.arin.builder.WebTools.fetch(h.url) }.getOrNull().orEmpty()
+            if (page.isNotBlank() && !page.startsWith("Couldn't open")) web += "\n\nPage: ${h.url}\n" + page.take(3_000)
+            status = null
+        }
+        // ARIN-PROTECTED: the same error keeps failing: ask Claude for help, whichever model this chat uses.
+        if (streak >= 3 && web.isNotBlank()) {
+            val app = getApplication<Application>()
+            if (com.arin.selffix.ClaudeHelper.route(app, "chat") != null) {
+                status = "Asking the AI helper about the error"
+                web += "\n\nThe AI helper's advice:\n" + com.arin.selffix.ClaudeHelper.ask(source = "chat", context = app,
+                    question = "A task keeps failing ($streak times in a row) with this error: $errorQuery\n\nSearch results so far:\n" +
+                        web.take(6_000) + "\n\nWhat is the real cause and the exact fix?").take(6_000)
+                status = null
+            }
+        }
+        // ARIN-PROTECTED: team-work in every tab — the worker reads the research and gives the boss a short summary.
+        if (boss != null && web.isNotBlank()) {
+            web = com.arin.selffix.TeamWork.digest(getApplication<Application>(), errorQuery, web, boss) { _, s -> status = s }
+            status = null
+        }
         return if (web.isBlank()) {
             "$base A web search for the error found nothing; search with other words (<search>) or try a different approach."
         } else {
+            com.arin.selffix.AutoFix.RULE_FOR_MODEL + "\n\n" +
             "I searched the web for this error (\"$errorQuery\"). Results:\n$web\n\n" +
                 "Use them to fix it: read the most relevant page with <fetch> if you need the details, apply the fix and " +
                 "try again." + if (streak >= 2) " This has failed $streak times in a row, so try a different approach than before." else ""
@@ -2139,7 +2977,44 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     /** Thrown inside a stream to stop it when the person steers. */
     private class SteerInterrupt : Exception()
 
+    /**
+     * "Send now": the reply stops at once — even while the model is still thinking — and goes on with what it has done
+     * plus the queued message(s).
+     */
+    fun sendSteerNow() {
+        val r = runFor() ?: return
+        if (r.steering.isEmpty()) return
+        r.steerPending = true
+        r.steerNow = true
+        notice = "Sent now — Arin carries on from where it is, following your message"
+    }
+
+    private fun <T> steerable(f: kotlinx.coroutines.flow.Flow<T>, r: Run): kotlinx.coroutines.flow.Flow<T> = kotlinx.coroutines.flow.channelFlow {
+        val j = launch { f.collect { send(it) } }
+        while (j.isActive) {
+            if (r.steerNow) { r.steerNow = false; j.cancel(); throw SteerInterrupt() }
+            kotlinx.coroutines.delay(200)
+        }
+    }
+
+    /** The reply already holds a complete tool step: stop reading and act on it now (speed). */
+    private class StepReady : Exception()
+
     fun send(text: String) {
+        // Talking with the AI helper: the chat's own model reads the whole message first and drafts its answer; then the
+        // helper helps it, and the model gives the final answer (see consultHelper in the reply loop).
+        consultNext = helperTalk && claudeHelperOn
+        // "Roll back" / "undo the last change": the app's files go back to how they were before the last change
+        // (safe: a new commit on top, so it can itself be undone). Only on the owner's own words.
+        if (!streaming && Regex("""(?i)^\s*(please\s+)?(roll\s*back|undo (the |my )?last (change|update|build))\b""").containsMatchIn(text) && rollBack(text)) return
+        // A build from this chat is running: what you type steers it (followed at its next step).
+        if (text.isNotBlank() && !streaming && chatBuildRunning()) {
+            chatBuildSession()?.steer(text)
+            messages += Message(fromUser = true, text = "↪ $text")
+            messages += Message(fromUser = false, text = "↪ Sent to the build — it follows this at its next step. (Tap Stop on the build to stop it.)")
+            persist()
+            return
+        }
         if (streaming) {
             steer(text)
             return
@@ -2185,6 +3060,20 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
     /** The script in Movie Maker's box (kept here so the chat can fill it). */
     var movieScript by mutableStateOf("")
+
+    /** Movie Maker attachments: a file's text goes into the script; photos, videos and other files are noted for the director. */
+    fun movieAttach(uris: List<Uri>) {
+        val app = getApplication<Application>()
+        viewModelScope.launch {
+            uris.forEach { u ->
+                runCatching { com.arin.builder.importForBuild(app, u) }.onSuccess { a ->
+                    val text = runCatching { if (a.textPath.isNotBlank()) java.io.File(a.textPath).readText() else a.text }.getOrDefault("")
+                    movieScript = (movieScript.trimEnd() + "\n\n" + if (text.isNotBlank()) "From ${a.name}:\n$text"
+                        else "(Attached ${a.name}, saved at ${a.path} — use it in the film where it fits.)").trim()
+                }.onFailure { notice = "Couldn't read that file: ${it.message}" }
+            }
+        }
+    }
 
     /** "build the movie", "make the film", "send it to movie maker" — but not "make a movie script". */
     private fun isMovieRequest(text: String): Boolean {
@@ -2271,6 +3160,9 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /** How many times in a row each chat has carried on by itself after an error (for the wait between tries). */
+    private val autoTries = java.util.concurrent.ConcurrentHashMap<String, Int>()
+
     /** Carries on an interrupted reply from its last completed step (the steps done are sent to the model). */
     fun resumeInterrupted() {
         if (streaming) return
@@ -2286,6 +3178,9 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
     private fun reply() {
         val history = messages.filterNot { it.failed }
+        // ARIN-PROTECTED: owner-words-only-to-main — the person's own messages in this chat; anything copied from them is
+        // removed before a task or question goes to the worker or the helper (only the main model sees them).
+        val ownerWords = history.filter { it.fromUser }.map { it.text }
         val p = provider
         val m = model
         val key = settings.key(p)
@@ -2311,7 +3206,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         val hasChatBuild = history.any { !it.fromUser && (it.text.startsWith("🛠️") || it.text.startsWith("⚠️ **The build")) }
         val app = getApplication<Application>()
         // Each chat runs its own reply; others keep going in the background.
-        val run = Run(chatKey(), title, messages.toList())
+        // With the AI helper switched on, it helps the model from the start to the end of every reply.
+        val run = Run(chatKey(), title, messages.toList()).also { it.consultHelper = consultNext || claudeHelperOn; it.askedHelper = consultNext; consultNext = false }
         if (runs.containsKey(run.chat)) return
         runs[run.chat] = run
         run.liveText = ""
@@ -2319,7 +3215,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         run.status = null
         ReplyService.start(app)
         // App-wide scope: the reply finishes even if this screen goes away.
-        run.job = ArinApp.scope.launch {
+        run.job = ArinApp.scope.launch(com.arin.selffix.TabScope("chat:" + run.chat)) {
             val thinking = StringBuilder()
             var thinkStart = 0L
             var answer = ""
@@ -2334,8 +3230,12 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             var failStreak = 0
             run.liveCommands.clear()
             var failure: String? = null
+            withContext(Dispatchers.IO) { runCatching { planRun(run, userSaid, project?.id.orEmpty(), p.name, m, app) } }
+            var workerAccepted = false
             try {
-                val turns = Attachments.toTurns(p, history, projectMedia(project)).toMutableList()
+                // Models that can't see get every picture and video described for them (text read, content described).
+                val seenHistory = com.arin.selffix.VisionBridge.prepare(app, p, m, history) { run.status = it }.also { run.status = null }
+                val turns = Attachments.toTurns(p, seenHistory, projectMedia(project)).toMutableList()
                 // Everything added after this point is tool output from this reply's own steps.
                 val firstToolTurn = turns.size
                 // Save progress every few seconds, so a crash or a killed app leaves a reply that can be resumed.
@@ -2370,14 +3270,16 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                     if (problem != null) throw com.arin.llm.LlmException(problem)
                 }
                 var system = if (offline) Prompt.localSystem(memoryList, aboutYou, howToAnswer, replyStyle) else Prompt.system(
-                    searchFlag, memoryFlag, memoryList, project, useTerminal, com.arin.mcp.Mcp.promptSection(activeNames, compact = saveCredits),
-                    terminalInfo = com.arin.terminal.Shell.describe(app),
-                    pastChats = if (memoryFlag) withContext(Dispatchers.IO) { runCatching { store.recentTitles(run.chat) }.getOrDefault("") } else "",
+                    searchFlag, memoryFlag, memoryList, project, useTerminal, com.arin.mcp.Mcp.promptSection(activeNames, compact = saveCredits || com.arin.selffix.CreditSaver.on(getApplication())),
+                    terminalInfo = com.arin.terminal.Shell.describe(app) +
+                        (workDirOf(run.chat)?.let { " This chat's commands start in $it (where its last command ended; `cd` to change it)." } ?: ""),
+                    // ARIN-PROTECTED: tab-isolation — other chats are listed only when the owner asks for an earlier chat here.
+                    pastChats = if (memoryFlag && com.arin.selffix.TabIsolation.asksPastChats(userSaid)) withContext(Dispatchers.IO) { runCatching { store.recentTitles(run.chat) }.getOrDefault("") } else "",
                     aboutPerson = aboutYou,
                     howToAnswer = howToAnswer,
                     style = replyStyle,
                     deepResearch = deep,
-                    lean = saveCredits,
+                    lean = saveCredits || com.arin.selffix.CreditSaver.on(getApplication()),
                     topics = Prompt.topics(
                         history.filter { it.fromUser }.takeLast(3).joinToString("\n") { it.text } +
                             // A pending build failure keeps the build rules in.
@@ -2397,9 +3299,67 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                     "'connected') describe OTHER chats, not this one. If asked whether REA is active here, answer plainly: no, " +
                     "and it can be switched on for this chat from the ⋮ menu → Activate reverse engineering (REA).")
                 if (voiceMode) system += VOICE_SPOKEN_STYLE
+                // Linux, the terminal and GitHub: available whenever the task needs them.
+                if (!offline) {
+                    val gh = githubToken()
+                    com.arin.selffix.LinuxGitHub.sync(app, gh)
+                    system += com.arin.selffix.LinuxGitHub.note(gh)
+                    if (useTerminal) system += com.arin.terminal.Linux.TOOLS_NOTE // ARIN-PROTECTED: apk-toolkit in every tab
+                }
                 var recalls = 0
+                var claudeAsks = 0
+                // A model that writes broken tool calls: retried with plain tags, then the AI helper does that step.
+                var formatHint = false
+                var helperTakeovers = 0
+                var helperConsulted = false
+                var workerAsks = 0
+                var reviewsDone = 0
+                val bossName = com.arin.selffix.Worker.nice(m)
+                // ARIN-PROTECTED: boss-minimum-credit — worker mode: your main model gets a short history, short replies,
+                // no harness and least thinking; the worker and helper do the heavy work.
+                val bossLean = !offline && com.arin.selffix.Worker.on(app)
+                // ARIN-PROTECTED: smart-thinking — your main model keeps its full thinking power for big problems and
+                // puzzles (planning, debugging, "why", errors), and answers quickly (little thinking, little credit) otherwise.
+                val hardWords = Regex("""(?i)\b(why|debug|bug|error|crash|fail|fix|plan|design|architect|puzzle|solve|prove|calculate|algorithm|optimi[sz]e|compare|analy[sz]e|investigate|reverse|complex|difficult|hard|build|app)\b""")
+                var lastWorkerResult = ""
+                var helperGuides = 0
+                var lastGuided = -1
+                // The files the person uploaded in this chat: the helper can read them too.
+                val chatFiles = history.flatMap { it.attachments }.takeLast(12)
                 var searches = 0
                 while (true) {
+                    // ARIN-PROTECTED: the AI helper guides the model from start to end — a plan before the first step, and
+                    // after every step's result the next move (every error is solved one by one: the model asks, the helper
+                    // gives the solution). Only the model writes to the person.
+                    if (run.consultHelper && claudeHelperOn && turns.isNotEmpty() && turns.last().fromUser && turns.size != lastGuided) {
+                        val lastText = turns.last().text
+                        val isError = Regex("(?i)(FAILED|error|exception|not found|denied|cannot|can't|unable|traceback|exit code [1-9])").containsMatchIn(lastText.take(4_000))
+                        val first = lastGuided == -1
+                        // ARIN-PROTECTED: helper-sees-only-the-boss — no plan from the person's message (the helper may not see
+                        // it); only when a STEP fails, the error lines from the tool's output and the boss's own last step go
+                        // to the helper. The boss can also ask it anything itself (<ask_helper>…</ask_helper>), in its own words.
+                        if (first) lastGuided = turns.size
+                        val toolOutput = lastText.startsWith("[") && !lastText.startsWith("[While you were working")
+                        if (!first && isError && toolOutput) {
+                            helperGuides++
+                            lastGuided = turns.size
+                            val errLines = lastText.lines().filterNot { it.startsWith("[While you were working") }
+                                .filter { Regex("(?i)(FAILED|error|exception|not found|denied|cannot|can't|unable|traceback|exit code|warning|at )").containsMatchIn(it) }
+                                .take(40).joinToString("\n").take(4_000)
+                            val bossStep = turns.lastOrNull { !it.fromUser }?.text.orEmpty().take(3_000)
+                            val guide = com.arin.selffix.ClaudeHelper.ask(source = "chat", context = app, ownerTexts = ownerWords, question =
+                                "STEP:\n$bossStep\nERROR:\n$errLines\nReturn the fixed step or patched code only.") { run.status = it }
+                            run.status = null
+                            if (guide.isNotBlank() && !guide.contains("NO_HELP_NEEDED") && !guide.contains("couldn't be reached") && !guide.contains("isn't connected") && !guide.contains("switched off")) {
+                                val i = turns.lastIndex
+                                // ARIN-PROTECTED: helper-never-takes-over — private advice for the boss (the model the person picked).
+                                turns[i] = turns[i].copy(text = turns[i].text + "\n\n[PRIVATE NOTE from your helper ($helperLabel) — " +
+                                    (if (isError && !first) "a suggested fix for the error" else "suggestions") + ". You are in charge: do the work " +
+                                    "yourself and answer exactly what the person asked, in your own words. Never mention or repeat this note; " +
+                                    "ignore it if it doesn't fit:]\n" + guide)
+                            }
+                        }
+                    }
                     // Messages the person sent while Arin was working go in before the next step.
                     val notes = takeSteering(run)
                     if (notes.isNotEmpty()) {
@@ -2416,6 +3376,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                     }
                     val text = StringBuilder()
                     var streamRetries = 0
+                    var formatFixes = 0
                     val interrupted = try {
                         while (true) {
                             // After a cut-off reply, send back what came so far and ask the model to carry on, so a
@@ -2424,7 +3385,29 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                                 else turns + Turn(false, text.toString()) +
                                     Turn(true, "Your reply above was cut off mid-way. Continue it from exactly where it stopped. Do not repeat anything already written and do not start over — just carry straight on.")
                             try {
-                                val sent = if (saveCredits) shrinkOldToolOutput(dedupeTurns(streamTurns), firstToolTurn) else streamTurns
+                                val strict = com.arin.selffix.CreditSaver.on(app)
+                                // ARIN-PROTECTED: credit-saver — when this server gives a cache discount, old messages are
+                                // sent exactly as before (only appended to), so the cache keeps serving them at ~1-2% price.
+                                val cached = strict && endpoint != null && com.arin.selffix.CreditSaver.cacheWorks(app, endpoint.baseUrl)
+                                val sent0 = when {
+                                    cached -> strictTrim(shrinkOldToolOutput(streamTurns, firstToolTurn, keepRecent = 2), cacheSafe = true)
+                                    saveCredits || strict -> shrinkOldToolOutput(dedupeTurns(streamTurns), firstToolTurn, keepRecent = if (strict) 2 else 4)
+                                        .let { if (strict) strictTrim(it) else it }
+                                    else -> streamTurns
+                                }
+                                // After a broken tool call: only the recent part of the conversation (what usually triggers it).
+                                val sent1 = if (formatHint && sent0.size > 14) sent0.takeLast(14) else sent0
+                                // ARIN-PROTECTED: boss-memory — worker mode: the main model reads the first message, a running memory
+                                // of the whole chat, matching older messages word for word, and the latest turns (remembers everything,
+                                // reads little). The memory is written by the offline model when there is one, else briefly by the main model.
+                                val sent = if (!bossLean) sent1 else com.arin.selffix.ChatMemory.compact(app, run.chat, sent1, userSaid) { q ->
+                                    com.arin.selffix.CreditSaver.offline(app, q, 900)?.takeIf { it.isNotBlank() } ?: kotlin.run {
+                                        val sb = StringBuilder()
+                                        Llm.stream(p, key, m, "You write short, complete memory notes.", listOf(com.arin.llm.Turn(true, q)),
+                                            maxTokens = 1_200, endpoint = endpoint, boss = true).collect { d -> if (d is com.arin.llm.Delta.Text) sb.append(d.text) }
+                                        sb.toString()
+                                    }
+                                }
                                 // Speed check: how big the request is and how long the service takes to start answering.
                                 val t0 = System.currentTimeMillis()
                                 var firstAt = 0L
@@ -2438,7 +3421,11 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                                     }
                                 }
                                 try {
-                                    Llm.stream(p, key, m, system, sent, cache = saveCredits, endpoint = endpoint).collect { d ->
+                                    run.who = bossName
+                                    if (run.status == null) run.status = "$bossName is working on your message"
+                                    try { steerable(Llm.stream(p, key, m, system + (if (formatHint) PLAIN_TOOLS_NOTE else ""), sent, cache = saveCredits, endpoint = endpoint, conv = run.chat,
+                                        boss = bossLean, hard = bossLean && (userSaid.length > 400 || hardWords.containsMatchIn(userSaid) ||
+                                            ran.any { it.kind != "steer" && (it.exitCode ?: 0) != 0 })), run).collect { d ->
                                         if (run.steerPending) throw SteerInterrupt()
                                         if (firstAt == 0L) { firstAt = System.currentTimeMillis(); waitJob.cancel(); run.status = null }
                                         val nowMs = System.currentTimeMillis()
@@ -2448,6 +3435,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                                         when (d) {
                                             is Delta.Text -> {
                                                 text.append(d.text)
+                                                // Speed: act on a finished tool step at once, without waiting for the rest of the reply.
+                                                if (d.text.contains('>') && com.arin.selffix.TeamWork.stepComplete(text.toString())) throw StepReady()
                                                 if (redraw) {
                                                     lastUi = nowMs
                                                     val now = text.toString()
@@ -2461,7 +3450,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                                                 if (redraw) { lastUi = nowMs; run.liveThinking = thinking.toString() }
                                             }
                                         }
-                                    }
+                                    } } catch (e: StepReady) { /* the step is complete: go on with it now */ }
                                 } finally {
                                     waitJob.cancel()
                                     if (run.status?.startsWith("Waiting for ") == true) run.status = null
@@ -2500,6 +3489,48 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                                     run.status = null
                                     continue
                                 }
+                                // ARIN-PROTECTED: never give up — the model wrote a tool call its service rejects.
+                                if (Regex(BROKEN_TOOL_CALL).containsMatchIn(e.message.orEmpty())) {
+                                    // 1. Try again with plain tool tags and only the recent conversation.
+                                    if (formatFixes < 2) {
+                                        formatFixes++
+                                        formatHint = true
+                                        run.status = "The model wrote a broken tool call — retrying with plain tool tags (${formatFixes}/2)…"
+                                        kotlinx.coroutines.delay(1_000)
+                                        run.status = null
+                                        continue
+                                    }
+                                    // 2. Still failing: the AI helper writes this one step for the model, then the model carries on.
+                                    if (claudeHelperOn && helperTakeovers < 6 && com.arin.selffix.ClaudeHelper.route(app, "chat") != null) {
+                                        helperTakeovers++
+                                        run.status = "${m.substringAfterLast('/')} keeps failing here — $helperLabel is doing this step for it"
+                                        // Only the boss's own recent steps (never the person's messages).
+                                        val convo = turns.filter { !it.fromUser }.takeLast(6).joinToString("\n\n") { t -> "ASSISTANT:\n" + t.text.take(3_000) }
+                                        val ans = com.arin.selffix.ClaudeHelper.ask(source = "chat", context = app,
+                                            question = "Another AI model (the assistant below) failed to write its next reply: its tool call kept being rejected. " +
+                                                "Write that ONE next reply for it, exactly as the assistant should, continuing the task. Use the same tools it " +
+                                                "has, written as PLAIN TEXT TAGS in the reply (e.g. <run>command</run>, <search>words</search>, " +
+                                                "<fetch>https://url</fetch>, <write path=\"…\">…</write>) — never native function/tool calls. " +
+                                                "Continue what the assistant was doing.\n\nITS INSTRUCTIONS (start):\n" + system.take(5_000) +
+                                                "\n\nITS RECENT STEPS (latest last):\n" + convo)
+                                        run.status = null
+                                        if (!ans.contains("couldn't be reached") && !ans.contains("isn't connected") && ans.isNotBlank()) {
+                                            if (Regex("""<(run|search|fetch|write|read|edit|install|tool|images|videos|download)\b""").containsMatchIn(ans)) {
+                                                // Only a tool step from the helper; the reply to the person is the model's.
+                                                text.setLength(0)
+                                                text.append(ans.substring(Regex("""<(run|search|fetch|write|read|edit|install|tool|images|videos|download)\b""").find(ans)!!.range.first))
+                                                run.liveText = ""
+                                                break
+                                            }
+                                            // Not a tool step: it's guidance — the model writes the answer itself.
+                                            val i = turns.lastIndex
+                                            turns[i] = turns[i].copy(text = turns[i].text + "\n\n[The AI helper's guidance — use it and reply yourself, " +
+                                                "with plain text tags for any tool:]\n" + ans.take(8_000))
+                                            formatFixes = 0
+                                            continue
+                                        }
+                                    }
+                                }
                                 throw e
                             }
                         }
@@ -2514,7 +3545,38 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                         run.liveText = ""
                         continue
                     }
-                    val full = text.toString()
+                    var full = text.toString()
+                    // ARIN-PROTECTED: team-work in every tab — the boss writes a direction; the worker writes the command or
+                    // file without seeing any file, output or the person's chat; Arin runs it and shrinks the result for the boss.
+                    var bossView: String? = null
+                    val team = com.arin.selffix.TeamWork.on(app)
+                    if (team && ran.count { it.kind != "steer" } < Prompt.MAX_COMMANDS) {
+                        val direction = com.arin.selffix.TeamWork.doTask(full)
+                        val fileJob = if (direction == null) com.arin.selffix.TeamWork.writeTask(full) else null
+                        if (direction != null || fileJob != null) {
+                            run.liveText = ""
+                            run.status = "$bossName is instructing the worker: " + (direction ?: "write ${fileJob!!.first.substringAfterLast('/')}").lineSequence().first().take(90)
+                            val (who, tool) = if (direction != null)
+                                com.arin.selffix.TeamWork.command(app, direction, bossName) { w, s -> run.who = w; run.status = s }
+                            else com.arin.selffix.TeamWork.write(app, fileJob!!.first, fileJob.second, bossName) { w, s -> run.who = w; run.status = s }
+                            run.who = bossName
+                            run.status = null
+                            val base = com.arin.selffix.TeamWork.clean(full).trimEnd()
+                            if (who.isBlank() || tool.isBlank()) {
+                                turns += Turn(false, full)
+                                turns += Turn(true, "[No worker could do this step (all refused or failed). Do this one step yourself, briefly, then go back to giving directions.]")
+                                continue
+                            }
+                            if (direction != null) {
+                                full = "$base\n$tool"
+                                bossView = "$base\n[$who wrote:] $tool"
+                            } else {
+                                full = "$base\n<write path=\"${fileJob!!.first}\">\n$tool</write>"
+                                bossView = "$base\n[$who wrote ${fileJob.first} — short view for you to check; read it if you need more:]\n" +
+                                    com.arin.selffix.TeamWork.preview(tool)
+                            }
+                        }
+                    }
                     val underLimit = ran.count { it.kind != "steer" } < Prompt.MAX_COMMANDS
                     // Install / read / write / edit (Claude Code-style tools), and terminal commands. They work even when
                     // the terminal is switched off: the person is asked once, and Arin's Linux is set up if it's missing.
@@ -2537,11 +3599,20 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                             allowed = askToRun(if (action is Prompt.AgentAction.Write) label + "\n\n" + action.content.take(1_500) else
                                 if (action is Prompt.AgentAction.Edit) "$label\n\n− ${action.old.take(600)}\n+ ${action.new.take(600)}" else label, tool = false, fromChat = run.chat)
                         }
-                        val shellProblem = if (allowed) com.arin.terminal.AgentTools.ensureShell(app) { run.status = it } else null
-                        val step = if (!allowed) {
+                        val shellProblem = (if (allowed) com.arin.terminal.AgentTools.ensureShell(app) { run.status = it } else null)
+                            // ARIN-PROTECTED: apk-toolkit in every tab — build/APK tools are installed before a command needs them.
+                            ?: (if (allowed && cmd != null) com.arin.terminal.Linux.ensureToolsFor(app, cmd) { run.status = it.take(120) } else null)
+                        // ARIN-PROTECTED: per-run-workdir — commands, reads and writes of this chat's task run in this chat's own
+                        // working folder (where its previous command ended), never in another chat's.
+                        val wd = workDirOf(run.chat)
+                        // ARIN-PROTECTED: bounded-retry — the same failed command isn't repeated without a change in between.
+                        val blocked = if (allowed && shellProblem == null && cmd != null && action == null) run.retries.check(cmd, wd) else null
+                        val step0 = if (!allowed) {
                             com.arin.data.CommandRun(label, "The person chose not to allow this.", null, ran = false)
                         } else if (shellProblem != null) {
                             com.arin.data.CommandRun(label, shellProblem, 1)
+                        } else if (blocked != null) {
+                            com.arin.data.CommandRun(label, blocked, 1)
                         } else {
                             run.status = when (action) {
                                 is Prompt.AgentAction.Install -> "Installing " + action.spec.take(60)
@@ -2552,27 +3623,39 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                             }
                             val r = when (action) {
                                 is Prompt.AgentAction.Install -> com.arin.terminal.AgentTools.install(app, action.spec)
-                                is Prompt.AgentAction.Read -> com.arin.terminal.AgentTools.read(app, action.path, action.from)
-                                is Prompt.AgentAction.Write -> com.arin.terminal.AgentTools.write(app, action.path, action.content)
-                                is Prompt.AgentAction.Edit -> com.arin.terminal.AgentTools.edit(app, action.path, action.old, action.new)
-                                null -> com.arin.terminal.Shell.run(app, cmd!!)
+                                is Prompt.AgentAction.Read -> com.arin.terminal.AgentTools.read(app, action.path, action.from, workDir = wd)
+                                is Prompt.AgentAction.Write -> com.arin.terminal.AgentTools.write(app, action.path, action.content, workDir = wd)
+                                is Prompt.AgentAction.Edit -> com.arin.terminal.AgentTools.edit(app, action.path, action.old, action.new, workDir = wd)
+                                null -> com.arin.terminal.Shell.run(app, cmd!!, workDir = wd)
                             }
                             run.status = null
-                            com.arin.data.CommandRun(label, r.forModel(), r.exitCode)
+                            // Where this chat's task now is (a `cd` holds for its next command); a change lets retries run again.
+                            val moved = if (action == null) r.cwd?.takeIf { it != wd }?.also { setWorkDir(run.chat, it) } else null
+                            if (action != null && action !is Prompt.AgentAction.Read && r.exitCode == 0) run.retries.changed()
+                            if (action == null) run.retries.record(cmd!!, wd, r.exitCode == 0, r.combined().takeLast(300))
+                            com.arin.data.CommandRun(label, r.forModel() + (moved?.let { "\n(working folder is now $it)" } ?: ""), r.exitCode)
                         }
+                        // A search that just found nothing (grep/find exit 1, a closed pipe) is not an error: no red ✗, no research.
+                        val step = if (step0.ran && com.arin.selffix.TeamWork.nothingFound(step0.exitCode, step0.output))
+                            step0.copy(exitCode = 0, output = "(nothing found — exit code ${step0.exitCode}, which is not an error here)\n" + step0.output)
+                        else step0
                         ran += step
                         run.liveCommands += step
-                        turns += Turn(false, full)
+                        turns += Turn(false, bossView ?: full)
                         val failed = step.ran && step.exitCode != 0
                         failStreak = if (failed) failStreak + 1 else 0
+                        // ARIN-PROTECTED: team-work in every tab — Arin (no AI) shrinks the result before the boss reads it.
+                        val forBoss = if (team) com.arin.selffix.TeamWork.shrink(step.output, if (action is Prompt.AgentAction.Read) 8_000 else 3_500) else step.output
+                        val shownLabel = if (action is Prompt.AgentAction.Write && bossView != null) "write ${action.path}" else label
                         turns += Turn(
                             true,
                             when {
                                 !step.ran -> "I chose not to allow that. Continue without it, or suggest another way."
-                                !failed -> "Done: $label (exit code ${step.exitCode ?: "unknown"}). Output:\n```\n${step.output}\n```\n" +
-                                    "Continue the task: run the next command if needed, or answer when you're done."
-                                else -> "Command FAILED (exit code ${step.exitCode ?: "unknown"}). Output:\n```\n${step.output}\n```\n" +
-                                    fixAdvice(failStreak, Prompt.errorQuery(step.output, label), sources)
+                                !failed -> "Done: $shownLabel (exit code ${step.exitCode ?: "unknown"}). Output:\n```\n$forBoss\n```\n" +
+                                    (if (team) "Continue: give the worker the next direction if needed, or answer when you're done."
+                                    else "Continue the task: run the next command if needed, or answer when you're done.")
+                                else -> "Command FAILED (exit code ${step.exitCode ?: "unknown"}). Output:\n```\n$forBoss\n```\n" +
+                                    fixAdvice(failStreak, Prompt.errorQuery(step.output, label), sources, if (team) bossName else null)
                             },
                         )
                         continue
@@ -2607,26 +3690,146 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                             if (!step.ran) "I didn't allow that tool call. Continue without it, or suggest another way."
                             else if (step.exitCode != 0) {
                                 failStreak++
-                                "Result of $name (FAILED):\n```\n${step.output}\n```\n" + fixAdvice(failStreak, Prompt.errorQuery(step.output, name), sources)
+                                "Result of $name (FAILED):\n```\n${if (team) com.arin.selffix.TeamWork.shrink(step.output) else step.output}\n```\n" +
+                                    fixAdvice(failStreak, Prompt.errorQuery(step.output, name), sources, if (team) bossName else null)
                             } else {
                                 failStreak = 0
-                                "Result of $name:\n```\n${step.output}\n```\n" +
+                                "Result of $name:\n```\n${if (team) com.arin.selffix.TeamWork.shrink(step.output, 6_000) else step.output}\n```\n" +
                                     "Continue the task: call the next tool or command if needed, or answer when you're done."
                             },
                         )
                         continue
                     }
+                    // AI helper: any model can ask the chosen helper (Claude, ChatGPT, Gemini or a Custom API model) for help.
+                    val claudeQ = if (claudeHelperOn && claudeAsks < com.arin.selffix.ClaudeHelper.maxAsks(app)) com.arin.selffix.ClaudeHelper.question(full) else null // ARIN-PROTECTED: ai-helper
+                    if (claudeQ != null) {
+                        claudeAsks++
+                        run.liveText = ""
+                        run.status = "$bossName asked ${com.arin.selffix.ClaudeHelper.helper(app).name} for help — ${com.arin.selffix.ClaudeHelper.helper(app).name} is helping $bossName"
+                        run.who = com.arin.selffix.ClaudeHelper.helper(app).name
+                        val helperMap = withContext(Dispatchers.IO) { projectMapFor(run.chat)?.focus(claudeQ, max = 4, maxChars = 1_500) }.orEmpty()
+                        val answer = com.arin.selffix.ClaudeHelper.ask(source = "chat", context = app, question = if (helperMap.isBlank()) claudeQ else claudeQ + "\n\n" + helperMap, ownerTexts = ownerWords) { }
+                        run.who = bossName
+                        run.status = "${com.arin.selffix.ClaudeHelper.helper(app).name} helped; $bossName is continuing"
+                        run.status = null
+                        val step = com.arin.data.CommandRun("ask ${helperLabel}: ${claudeQ.take(80)}", answer.take(2_000), 0, kind = "tool")
+                        ran += step
+                        run.liveCommands += step
+                        turns += Turn(false, full)
+                        turns += Turn(true, "The AI helper's answer:\n\n${answer.take(16_000)}\n\nContinue the task using it where it helps.")
+                        continue
+                    }
+                    // ARIN-PROTECTED: worker-mode — the boss hands heavy work to the worker and inspects what comes back.
+                    val workerTask = if (workerAsks < 4 && com.arin.selffix.Worker.on(app)) com.arin.selffix.Worker.task(full) else null
+                    if (workerTask != null) {
+                        workerAsks++
+                        run.liveText = ""
+                        run.status = "$bossName is instructing the worker: " + workerTask.lineSequence().firstOrNull { it.isNotBlank() }.orEmpty().removePrefix("TASK:").trim().take(90)
+                        // ARIN-PROTECTED: project-map-in-chat — the worker gets only the related part of this chat's project map.
+                        val pmap = withContext(Dispatchers.IO) { projectMapFor(run.chat) }
+                        val mapNote = pmap?.focus(workerTask).orEmpty()
+                        val mapFiles = if (mapNote.isBlank()) emptyList() else pmap!!.relevant(workerTask)
+                        if (pmap != null) com.arin.selffix.Orchestrator.log(runLog, run.ctx?.runId.orEmpty(), run.chat, "map", mapOf("project" to pmap.projectId,
+                            "version" to pmap.version, "files" to pmap.files.size.toString(), "given" to mapFiles.joinToString(",")))
+                        val brief = com.arin.selffix.Orchestrator.delegationBrief(workerTask, run.plan, mapNote)
+                        val wr = com.arin.selffix.Worker.runDetailed(app, brief, bossName, tab = run.chat, ownerTexts = ownerWords) { w, s -> run.who = w; run.status = s }
+                        var who = wr.who
+                        var result = if (wr.ok) wr.text else ""
+                        // ARIN-PROTECTED: refusal-review — a worker that declined gets a bounded review: its exact answer and
+                        // reason, the helper's independent assessment, and the boss's decision (clarify, permitted
+                        // alternative, or stop). Genuine safety/authorization refusals are final and never re-sent in other words.
+                        var reviewNote = ""
+                        val declined = wr.attempts.lastOrNull()?.takeIf { !wr.ok && it.verdict.kind.refusal }
+                        if (declined != null) {
+                            run.status = "${declined.who} declined — reviewing why"
+                            val bossTurn: suspend (String) -> com.arin.selffix.RefusalReview.Reply = { prompt ->
+                                val sb = StringBuilder()
+                                com.arin.llm.Llm.stream(p, key, m, "You are the BOSS (main model) reviewing a declined task. Follow every rule you already have.",
+                                    listOf(Turn(true, prompt)), endpoint = endpoint, conv = "review:${run.chat}", boss = true)
+                                    .collect { d -> if (d is Delta.Text) sb.append(d.text) }
+                                com.arin.selffix.RefusalReview.Reply(bossName, sb.toString())
+                            }
+                            val helperTurn: (suspend (String) -> com.arin.selffix.RefusalReview.Reply)? = if (claudeHelperOn) ({ q ->
+                                com.arin.selffix.RefusalReview.Reply(com.arin.selffix.ClaudeHelper.helper(app).name,
+                                    com.arin.selffix.ClaudeHelper.ask(app, q, source = "chat", ownerTexts = ownerWords) { run.status = it })
+                            }) else null
+                            val rv = com.arin.selffix.RefusalReview.review(
+                                objective = workerTask, task = workerTask,
+                                first = com.arin.selffix.RefusalReview.Reply(declined.who, declined.raw),
+                                middle = { t ->
+                                    val again = com.arin.selffix.Worker.runDetailed(app, t, bossName, tab = run.chat, ownerTexts = ownerWords) { w, s -> run.who = w; run.status = s }
+                                    com.arin.selffix.RefusalReview.Reply(again.who.ifBlank { again.attempts.lastOrNull()?.who ?: "worker" },
+                                        if (again.ok) again.text else again.attempts.lastOrNull()?.raw.orEmpty())
+                                },
+                                helper = helperTurn,
+                                boss = bossTurn,
+                            )
+                            reviewNote = rv.summary()
+                            com.arin.selffix.Activity.log("chat", "⚖️ " + reviewNote.take(300))
+                            if (rv.decision == com.arin.selffix.RefusalReview.Decision.USE_RESULT) { who = rv.who; result = rv.text }
+                        }
+                        run.who = bossName
+                        run.status = null
+                        val step = com.arin.data.CommandRun("worker ${who.ifBlank { "(none)" }}: ${workerTask.take(80)}", result.take(2_000), 0, kind = "tool")
+                        ran += step
+                        run.liveCommands += step
+                        turns += Turn(false, full)
+                        // ARIN-PROTECTED: outcome-classes — the boss is told which worker declined or failed and why (from the
+                        // real answers), and decides: restate a misunderstood task, respect a genuine refusal, or do it itself.
+                        run.plan?.let { pl -> run.tried += pl.approach }
+                        val nextPlan = if (result.isBlank()) run.plan?.let { pl -> wr.attempts.lastOrNull()?.verdict?.kind?.let { k ->
+                            com.arin.selffix.Orchestrator.escalate(pl, k, run.tried, com.arin.selffix.Worker.on(app), claudeHelperOn) } } else null
+                        if (nextPlan != null) run.plan = nextPlan
+                        turns += Turn(true, if (result.isBlank()) "[No worker did this task — ${wr.summary()}." +
+                            (nextPlan?.let { " Suggested next approach: ${it.approach} (${it.reason}); don't repeat the same attempt." } ?: "") +
+                            (if (reviewNote.isNotBlank()) " $reviewNote." else "") + " You (the main model) decide the next " +
+                            "step: if a worker misunderstood, restate the task accurately; respect a genuine safety or authorization refusal " +
+                            "(don't reword the task to get around it); after a technical failure, do it yourself, briefly.]"
+                            else { lastWorkerResult = result
+                                // ARIN-PROTECTED: evidence-check — a worker's "done" is checked against its task (no AI call).
+                                val acc = com.arin.selffix.Orchestrator.accept(result, com.arin.selffix.Orchestrator.Evidence(deliverable = result,
+                                    requiredRefs = if (run.plan?.approach == com.arin.selffix.Orchestrator.Approach.INVESTIGATE_FIRST) mapFiles else emptyList()),
+                                    com.arin.selffix.Orchestrator.Ledger(com.arin.selffix.Orchestrator.record(run.ctx?.runId.orEmpty(), run.chat, "", workerTask)))
+                                if (acc.accepted) workerAccepted = true
+                                // The plan chose an independent review: one helper call that challenges the result.
+                                val review = if (acc.accepted && claudeHelperOn && run.plan?.approach == com.arin.selffix.Orchestrator.Approach.MIDDLE_WITH_HELPER_REVIEW &&
+                                    reviewsDone < (run.plan?.budget?.reviews ?: 0)) {
+                                    reviewsDone++
+                                    run.status = "${com.arin.selffix.ClaudeHelper.helper(app).name} is reviewing the worker's result"
+                                    runCatching { com.arin.selffix.ClaudeHelper.ask(app, com.arin.selffix.Orchestrator.reviewQuestion(workerTask, result, mapNote),
+                                        source = "chat", ownerTexts = ownerWords) { run.status = it } }.getOrDefault("")
+                                } else ""
+                                if (review.isNotBlank() && com.arin.selffix.Orchestrator.reviewFoundIssues(review)) workerAccepted = false
+                                (if (acc.accepted) "" else "[Arin check: ${acc.status} — ${acc.reason}. Don't accept this as done without evidence.]\n") +
+                                (if (review.isNotBlank()) "[INDEPENDENT REVIEW by ${com.arin.selffix.ClaudeHelper.helper(app).name} (model output, unverified):\n${review.take(6_000)}]\n" else "") +
+                                "[WORKER RESULT from $who (Middle-model output: unverified until checked against the source or a command) — inspect it. If it's right, answer the person and write " +
+                                "${com.arin.selffix.Worker.RESULT_TAG} where its output should appear (don't copy it). If it's wrong, send directions " +
+                                "in another <ask_worker>.]\n" + result.take(16_000) })
+                        continue
+                    }
                     // Past chats: read what was said before.
-                    val recallQuery = if (memoryFlag && recalls < 4) Prompt.recall(full) else null
+                    // ARIN-PROTECTED: tab-isolation — other chats are read only when the owner's message here asks for them.
+                    val recallQuery = if (memoryFlag && recalls < 4 && com.arin.selffix.TabIsolation.asksPastChats(userSaid)) Prompt.recall(full) else null
+                    // ARIN-PROTECTED: tab-isolation — asked to read other chats without the owner asking: refused, stay on this tab's task.
+                    if (recallQuery == null && memoryFlag && recalls < 4 && Prompt.recall(full) != null) {
+                        recalls++
+                        turns += Turn(false, full)
+                        turns += Turn(true, "[Arin: other chats are not read here — each tab keeps only its own task. Continue with " +
+                            "ONLY the task the person gave in this conversation.]")
+                        run.liveText = ""
+                        continue
+                    }
                     if (recallQuery != null) {
                         recalls++
                         run.liveText = ""
                         run.status = "Remembering “$recallQuery”"
-                        val found = withContext(Dispatchers.IO) { runCatching { store.recall(recallQuery, run.chat) }.getOrDefault("") }
+                        val found = withContext(Dispatchers.IO) { runCatching { store.recall(recallQuery, null, only = run.chat) }.getOrDefault("") }
+                        // ARIN-PROTECTED: tab-memory — "remember our past conversation" means THIS tab's own conversation only
+                        // (its whole saved history), never what was built or said in another tab.
                         run.status = null
                         val result = if (found.isBlank())
-                            "No past chat mentions \"$recallQuery\". Try other words once, or answer from this chat and ask the person for the detail."
-                        else "Matching parts of past chats:\n\n$found\n\nNow answer using these where they help."
+                            "Nothing earlier in this tab mentions \"$recallQuery\". Try other words once, or ask the person for the detail (other tabs are never read)."
+                        else "Matching earlier parts of THIS tab's conversation:\n\n$found\n\nNow answer using these where they help."
                         val step = com.arin.data.CommandRun("recall: $recallQuery", result.take(2_000), 0, kind = "tool")
                         ran += step
                         run.liveCommands += step
@@ -2657,7 +3860,12 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                                 }
                                 page != null -> {
                                     run.status = "Reading " + page.removePrefix("https://").removePrefix("http://").take(60)
-                                    "Content of $page:\n\n" + runCatching { com.arin.builder.WebTools.fetch(page) }.getOrElse { "Couldn't open it: ${it.message}" }.take(24_000)
+                                    val pageText = runCatching { com.arin.builder.WebTools.fetch(page) }.getOrElse { "Couldn't open it: ${it.message}" }.take(24_000)
+                                    // ARIN-PROTECTED: team-work in every tab — the worker reads the page; the boss gets a short summary.
+                                    if (team && !pageText.startsWith("Couldn't open")) "Content of $page:\n\n" +
+                                        com.arin.selffix.TeamWork.digest(app, "the page $page", pageText, bossName, scrubAbout = false) { w, st -> run.who = w; run.status = st }
+                                            .also { run.who = bossName; run.status = null }
+                                    else "Content of $page:\n\n$pageText"
                                 }
                                 else -> {
                                     val (name, url) = file!!
@@ -2749,9 +3957,28 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                             turns += Turn(false, full)
                             turns += Turn(
                                 true,
-                                "You described your next step but didn't send it. Do it now: put the <run> command or <tool> call " +
+                                (if (team) "You described your next step but didn't send it. Do it now: put the <worker_do> direction or <tool> call "
+                                else "You described your next step but didn't send it. Do it now: put the <run> command or <tool> call ") +
                                     "as the last thing in your reply. If the task is actually finished, give the final answer instead.",
                             )
+                            run.liveText = ""
+                            continue
+                        }
+                        // Talking with the helper: the model has read the whole message and drafted its answer; now the
+                        // helper helps it, and the model gives the final answer with that help.
+                        // ARIN-PROTECTED: credit-saver — with the saver on, the draft isn't sent for a second pass every reply
+                        // (that doubled your model's and Claude's use even for "hi"); only when you asked for the helper.
+                        if (run.consultHelper && !helperConsulted && claudeHelperOn && (run.askedHelper || !com.arin.selffix.CreditSaver.on(app))) {
+                            helperConsulted = true
+                            // Only the boss's own draft goes to the helper (never the person's message).
+                            val help = com.arin.selffix.ClaudeHelper.ask(source = "chat", context = app, ownerTexts = ownerWords, question =
+                                "I (the boss model) drafted this answer:\n\"\"\"\n${Prompt.clean(full).take(8_000)}\n\"\"\"\n\n" +
+                                    "Help the assistant: point out mistakes, fill gaps, and give it what it needs to answer the person well " +
+                                    "(exact facts, code, commands or steps). Write to the assistant, not to the person.") { run.status = it }
+                            run.status = "Finishing the answer with ${helperLabel}'s help"
+                            turns += Turn(false, full)
+                            turns += Turn(true, "[Help from the AI helper ($helperLabel), which the person asked you to use:]\n$help\n\n" +
+                                "Now give the person your final answer, using this help where it is right. Don't mention this note.")
                             run.liveText = ""
                             continue
                         }
@@ -2765,10 +3992,20 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                     hits.take(5).forEach { h -> if (sources.none { it.url == h.url }) sources += Source(h.title, h.url) }
                     run.status = null
                     turns += Turn(false, "<search>$q</search>")
-                    val trimmed = results
+                    // ARIN-PROTECTED: team-work in every tab — the worker reads the results; the boss gets a short summary.
+                    val trimmed = if (team) com.arin.selffix.TeamWork.digest(app, q, results, bossName) { w, st -> run.who = w; run.status = st }
+                        .also { run.who = bossName; run.status = null } else results
                     turns += Turn(true, trimmed + "\n\nNow answer my earlier message using these results where they help.")
                 }
+                // The worker's output goes in where the boss pointed to it (the boss didn't spend tokens copying it).
+                answer = com.arin.selffix.Worker.clean(com.arin.selffix.TeamWork.clean(answer)).let {
+                    if (lastWorkerResult.isNotBlank() && it.contains(com.arin.selffix.Worker.RESULT_TAG)) it.replace(com.arin.selffix.Worker.RESULT_TAG, lastWorkerResult) else it.replace(com.arin.selffix.Worker.RESULT_TAG, "")
+                }
                 if (Prompt.clean(answer).isBlank() && ran.isEmpty()) failure = "The model sent an empty reply. Tap Retry, or pick another model."
+                // ARIN-PROTECTED: task-summary in every tab — after a task, what was done and what to do next (Arin adds it if missing).
+                ran.filter { it.kind != "steer" && it.ran }.let { steps ->
+                    answer = com.arin.selffix.TaskSummary.ensure(answer, steps.map { it.command }, steps.lastOrNull()?.exitCode.let { it != null && it != 0 })
+                }
             } catch (e: CancellationException) {
                 stopped = true
                 answer = run.liveText // Stop pressed: keep whatever arrived.
@@ -2804,13 +4041,20 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                         val target = runCatching { BuildTarget.valueOf(named) }.getOrDefault(BuildTarget.CHAT)
                         val (name, description) = buildAsked
                         ArinApp.scope.launch(kotlinx.coroutines.Dispatchers.Main) {
-                            startBuild(name, description, target)?.let { notice = it }
+                            // Stopped earlier and now told where ("build on github"): carry on from where it stopped
+                            // (the code already written is kept), only at the place they named.
+                            (continueStoppedBuild(saidAll, target) ?: startBuild(name, description, target))?.let { if (it.isNotEmpty()) notice = it }
+                        }
+                    } else if (ordered && run.chat == chatKey()) {
+                        // Told to build: write the code now; where to build is asked once it's written.
+                        val (name, description) = buildAsked
+                        ArinApp.scope.launch(kotlinx.coroutines.Dispatchers.Main) {
+                            startBuild(name, description, BuildTarget.AUTO, writeFirst = true)?.let { notice = it }
                         }
                     } else {
-                        // Prepared, but nothing starts until the person picks where to build it.
+                        // Prepared: nothing starts until the person taps Write the code (then where to build is asked).
                         pendingBuild = buildAsked.first + "\u0000" + buildAsked.second
-                        buildNote = if (ordered) "\n\n_Where should I build it? Pick below — nothing builds until you choose._"
-                        else "\n\n_Where should I build it? Pick below when you're ready._"
+                        buildNote = "\n\n_Tap ✍️ Write the code when you're ready — I'll ask where to build once it's written._"
                     }
                 }
                 // Pictures and videos: found by searches, plus any the model linked in its text, plus ones it drew.
@@ -2828,6 +4072,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                             "\n\n⚠️ **Stopped:** ${failure!!.take(300)}",
                         thinking = thinking.toString(),
                         thoughtSeconds = seconds,
+                        by = com.arin.selffix.Worker.nice(m),
                         sources = sources,
                         commands = ran.toList(),
                         media = foundMedia.toList(),
@@ -2840,12 +4085,14 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                         text = shown.ifBlank { if (ran.isNotEmpty()) "Ran ${ran.size} command${if (ran.size == 1) "" else "s"}." else "(Stopped)" },
                         thinking = thinking.toString(),
                         thoughtSeconds = seconds,
+                        by = com.arin.selffix.Worker.nice(m),
                         sources = sources,
                         commands = ran.toList(),
                         media = foundMedia.toList(),
                         pendingBuild = pendingBuild,
                     )
                 }
+                withContext(Dispatchers.IO) { runCatching { finishRun(run, Prompt.clean(answer), ran.toList(), failure, workerAccepted) } }
                 runs.remove(run.chat)
                 if (run.chat == chatKey()) {
                     // This chat is open: show the answer here. Append in place (no full-list rebuild) when nothing
@@ -2863,7 +4110,42 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                         withContext(Dispatchers.Main) { refreshChats() }
                     }
                 }
-                if (runs.isEmpty()) ReplyService.stop(app)
+                ReplyService.stop(app) // counted: the notification stays while any other task still runs
+                // ARIN-PROTECTED: research-first-error-help — a failed reply: search the internet first, then say how to fix it.
+                if (failure != null && !stopped && run.chat != TEMP_CHAT) {
+                    val err = failure!!
+                    val target = run.chat
+                    // Keep running in the background while researching the error and carrying on.
+                    com.arin.app.ReplyService.hold(app, "error-help-$target")
+                    ArinApp.scope.launch {
+                      try {
+                        val advice = withContext(Dispatchers.IO) {
+                            runCatching {
+                                com.arin.selffix.ErrorDoctor.diagnose(app, "a chat reply (${p.label}, $m)", err,
+                                    com.arin.selffix.ErrorDoctor.Brain(p, key, m, endpoint))
+                            }.getOrNull()
+                        }
+                        if (!advice.isNullOrBlank()) withContext(Dispatchers.Main) {
+                            postToBuildChat(target, Message(fromUser = false, text = "🔎 **I searched the internet for this error.**\n\n$advice"), null, "")
+                            // ARIN-PROTECTED: never give up — carry on with another method unless the person must act first.
+                            val needsYou = !Regex(BROKEN_TOOL_CALL).containsMatchIn(err) &&
+                                Regex("""(?i)by itself\??\**\s*:?\s*\**\s*no\b""").containsMatchIn(advice)
+                            if (!needsYou) {
+                                val n = (autoTries[target] ?: 0) + 1
+                                autoTries[target] = n
+                                notice = "Trying again with another method in ${minOf(10 * n, 120)} s"
+                                kotlinx.coroutines.delay(minOf(10_000L * n, 120_000L))
+                                if (target == chatKey() && !streaming) {
+                                    send("That failed. Use the fix found above, or another method, and complete exactly what I asked — " +
+                                        "don't change or drop any part of my request.")
+                                }
+                            }
+                        }
+                      } finally {
+                        com.arin.app.ReplyService.release(app, "error-help-$target")
+                      }
+                    }
+                } else if (failure == null) autoTries.remove(run.chat)
                 // Messages sent after the model's last step become the next message.
                 ArinApp.scope.launch(kotlinx.coroutines.Dispatchers.Main) {
                     if (run.steering.isNotEmpty() && run.chat == chatKey() && !streaming) {
@@ -3162,6 +4444,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
     fun deleteAll() {
         newChat()
+        com.arin.selffix.ArinUpdateChat.clear(getApplication())
+        movieChat.clear()
         viewModelScope.launch(Dispatchers.IO) {
             store.deleteAll()
             projectStore.deleteAll()
@@ -3339,11 +4623,54 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         } finally {
             restoringSelection = false
         }
+        // An opened chat's model is the chat tab's model now.
+        settings.setTabSelection("chat", provider.name + "|" + model + "|" + currentSavedApi()?.slotId.orEmpty())
+    }
+
+    // ARIN-PROTECTED: model-per-tab — each tab (chat, build, Update Arin, Movie Maker, Claude Code) keeps its own
+    // model and API. Picking one in a tab changes only that tab; a task already running keeps the model it started with.
+    private val modelTabs = setOf("chat", "build", "arin-update", "movie", "claude-code")
+    /** Empty until the first tab opens, so the chat tab gets its own model back after a restart. */
+    private var modelTab = ""
+
+    private fun saveTabSelection() {
+        if (restoringSelection || modelTab.isBlank()) return
+        settings.setTabSelection(modelTab, provider.name + "|" + model + "|" + currentSavedApi()?.slotId.orEmpty())
+    }
+
+    /** Called when a tab opens: puts back that tab's own model (a tab never used yet starts with the one in use). */
+    fun enterModelTab(tab: String) {
+        if (tab !in modelTabs || tab == modelTab) return
+        saveTabSelection()
+        modelTab = tab
+        val saved = settings.tabSelection(tab)?.split('|')
+        if (saved == null || saved.size < 3) { saveTabSelection(); return }
+        if (saved[0] == provider.name && saved[1] == model && saved[2] == currentSavedApi()?.slotId.orEmpty()) return
+        applySelection(saved[0], saved[1], saved[2])
+    }
+
+    private fun applySelection(prov: String, mod: String, apiId: String) {
+        val p = runCatching { Provider.valueOf(prov) }.getOrNull() ?: return
+        restoringSelection = true
+        try {
+            val api = if (p == Provider.Custom) savedApis.firstOrNull { it.slotId == apiId } else null
+            if (api != null) useSavedApi(api, quiet = true) else if (p != provider || p == Provider.Custom) chooseProvider(p)
+            if (mod.isNotBlank()) {
+                pinnedModel = p to mod
+                model = mod
+                settings.setModel(p, mod)
+            }
+        } finally {
+            restoringSelection = false
+        }
     }
 
     /** Saves the open chat's model/API choice on that chat only (without moving it up the chats list). */
     private fun rememberChatSelection() {
-        if (restoringSelection || temporary) return
+        if (restoringSelection) return
+        saveTabSelection()
+        // Only the chat tab's choice belongs to the open chat: picking a model in Build or Update Arin leaves it alone.
+        if (modelTab != "chat" || temporary) return
         val id = chatId ?: return
         val prov = provider.name; val mod = model; val api = currentSavedApi()?.slotId.orEmpty()
         ArinApp.scope.launch(Dispatchers.IO) {
@@ -3399,12 +4726,16 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
      */
     fun setUpOfflineModel(repo: String, label: String) {
         if (offlineBusy) return
+        // Remembered until it finishes: if Android closes Arin mid-download, it carries on when Arin opens again.
+        settings.setSecret("OFFLINE_PENDING", "$repo\n$label")
         val app = getApplication<Application>()
         if (!com.arin.terminal.Linux.installed(app)) {
             offlineStatus = "Install Linux first: Settings → Linux → Install Linux. Then come back here."
             return
         }
         offlineBusy = true
+        // Keeps going in the background (and with the screen off) until the model is downloaded.
+        ReplyService.hold(app, "offline-model")
         ArinApp.scope.launch {
             try {
                 if (!com.arin.llm.LocalModel.serverInstalled(app)) {
@@ -3419,11 +4750,13 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 val i = savedApis.indexOfFirst { it.slotId == api.slotId }
                 if (i >= 0) savedApis[i] = api else savedApis.add(0, api)
                 settings.savedApis = savedApis.toList()
+                settings.setSecret("OFFLINE_PENDING", "")
                 kotlinx.coroutines.withContext(Dispatchers.Main) { useSavedApi(api) }
             } catch (e: Exception) {
                 offlineStatus = "Stopped: ${e.message ?: e.javaClass.simpleName}. Tap the model again to resume the download."
             } finally {
                 offlineBusy = false
+                ReplyService.release(app, "offline-model")
             }
         }
     }
@@ -3628,6 +4961,13 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         const val TEMP_CHAT = "__temporary_chat__"
 
         /** Arin's source repository, set when this build of Arin was made; changeable in Settings → GitHub. */
+        /** An error meaning the model wrote a tool/function call its service rejected (not a problem the person must fix). */
+        const val BROKEN_TOOL_CALL = "(?i)(invalid tool call|tool[ _-]?call|function[ _-]?call|tool_use|tool use|unknown tool|malformed|could not parse|failed to parse)"
+
+        /** Added to the instructions after a broken tool call. */
+        const val PLAIN_TOOLS_NOTE = "\n\nIMPORTANT: Never use native function calling or tool_calls. Write every tool step as PLAIN " +
+            "TEXT TAGS in your reply, exactly as described above (for example <run>command</run>), one per reply, then stop."
+
         const val DEFAULT_SELF_REPO = "poisaingti-spec/aiapp-261110-1752"
         const val DEFAULT_SELF_BRANCH = "arin"
 

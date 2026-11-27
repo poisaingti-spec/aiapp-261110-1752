@@ -123,6 +123,7 @@ fun VoiceMode(vm: ChatViewModel, onClose: () -> Unit) {
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
                 Box(Modifier.fillMaxWidth()) {
+                    Box(Modifier.align(Alignment.CenterStart)) { com.arin.selffix.AiHelperButtonHere() } // ARIN-PROTECTED: ai-helper in every tab
                     IconButton(onClick = onClose, modifier = Modifier.align(Alignment.CenterEnd)) {
                         Icon(Icons.Filled.Close, contentDescription = "End voice mode", tint = androidx.compose.ui.graphics.Color.White)
                     }

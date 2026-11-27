@@ -38,6 +38,7 @@ import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
@@ -107,6 +108,12 @@ fun StepsSummarySheet(
 ) {
     val sheet = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val list = rememberLazyListState()
+    // Maximise: everything the models are doing, word for word (Claude's thinking, every search, command and file).
+    var full by androidx.compose.runtime.saveable.rememberSaveable { androidx.compose.runtime.mutableStateOf(false) }
+    // A clock for "working for 2 min 10 s · last activity 4 s ago".
+    val opened = androidx.compose.runtime.remember { System.currentTimeMillis() }
+    var now by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(running) { while (running) { now = System.currentTimeMillis(); kotlinx.coroutines.delay(1_000) } }
     LaunchedEffect(steps.size) { if (steps.isNotEmpty()) list.animateScrollToItem(steps.size + if (running) 0 else -1) }
     ModalBottomSheet(onDismissRequest = onClose, sheetState = sheet, containerColor = MaterialTheme.colorScheme.surface) {
         Column(Modifier.fillMaxWidth().heightIn(min = 300.dp)) {
@@ -114,7 +121,35 @@ fun StepsSummarySheet(
                 IconButton(onClick = onClose, modifier = Modifier.align(Alignment.CenterStart)) {
                     Icon(Icons.Filled.Close, contentDescription = "Close")
                 }
-                Text(title, style = MaterialTheme.typography.titleMedium, modifier = Modifier.align(Alignment.Center))
+                Text(if (full) "What's happening — live" else title, style = MaterialTheme.typography.titleMedium, modifier = Modifier.align(Alignment.Center))
+                androidx.compose.material3.TextButton(onClick = { full = !full }, modifier = Modifier.align(Alignment.CenterEnd)) {
+                    Text(if (full) "Minimise" else "Maximise")
+                }
+            }
+            if (full) {
+                val feed = LiveFeed.lines
+                val feedList = rememberLazyListState()
+                LaunchedEffect(feed.size) { if (feed.isNotEmpty()) feedList.scrollToItem(feed.lastIndex) }
+                val fmt = androidx.compose.runtime.remember { java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.getDefault()) }
+                if (running) Text(activityLine(now, opened), style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.primary, modifier = Modifier.padding(horizontal = 20.dp))
+                LazyColumn(state = feedList, modifier = Modifier.fillMaxWidth().heightIn(min = 500.dp),
+                    contentPadding = androidx.compose.foundation.layout.PaddingValues(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 32.dp)) {
+                    if (feed.isEmpty()) item { Text("Nothing yet — lines appear here as soon as a model starts working.", color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                    itemsIndexed(feed) { _, l ->
+                        Text(
+                            fmt.format(java.util.Date(l.time)) + "  " + l.who + "  " + l.text,
+                            style = MaterialTheme.typography.bodySmall.copy(fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace),
+                            color = when {
+                                l.who.startsWith("Claude") -> Color(0xFFD97757)
+                                l.who == "…" -> MaterialTheme.colorScheme.onSurfaceVariant
+                                else -> MaterialTheme.colorScheme.onSurface
+                            },
+                            modifier = Modifier.padding(vertical = 2.dp),
+                        )
+                    }
+                }
+                return@Column
             }
             if (steps.isEmpty() && !running) {
                 Text(
@@ -131,12 +166,19 @@ fun StepsSummarySheet(
                 }
                 if (running) {
                     item {
-                        StepRow(SummaryStep(doing.takeIf { it.isNotBlank() }?.take(120) ?: "Working", BuildEvent.Kind.STEP), current = true, lineBelow = false)
+                        StepRow(SummaryStep((doing.takeIf { it.isNotBlank() }?.take(120) ?: "Working") + "\n" + activityLine(now, opened), BuildEvent.Kind.STEP), current = true, lineBelow = false)
                     }
                 }
             }
         }
     }
+}
+
+/** "Working for 2 min 10 s · last activity 4 s ago — Claude: searching…" (never just "Working"). */
+private fun activityLine(now: Long, opened: Long): String {
+    fun ago(ms: Long): String { val s = (ms / 1000).coerceAtLeast(0); return if (s < 60) "$s s" else "${s / 60} min ${s % 60} s" }
+    val last = LiveFeed.lastAt
+    return "⏱ open ${ago(now - opened)}" + if (last > 0) " · last activity ${ago(now - last)} ago — " + LiveFeed.lastLine.take(110) else ""
 }
 
 @Composable

@@ -42,7 +42,9 @@ fun FreeTokensScreen(vm: ChatViewModel, onBack: () -> Unit) {
     Column(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding()) {
         Row(Modifier.fillMaxWidth().padding(4.dp), verticalAlignment = Alignment.CenterVertically) {
             IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back") }
-            Text("Free tokens", style = MaterialTheme.typography.titleLarge)
+            Text("Free tokens", style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f))
+            com.arin.selffix.ModelSwitcher(vm)
+            com.arin.selffix.AiHelperButton(vm) // ARIN-PROTECTED: ai-helper in every tab
         }
         Column(
             Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 16.dp, vertical = 8.dp),

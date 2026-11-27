@@ -48,6 +48,8 @@ data class Message(
     val text: String,
     val thinking: String = "",
     val thoughtSeconds: Int = 0,
+    /** Which model wrote this reply (shown as "DeepSeek reasoned for 11 s"). */
+    val by: String = "",
     val attachments: List<Attachment> = emptyList(),
     /** Set when the reply failed; the text then holds the error to show. */
     val failed: Boolean = false,
@@ -181,14 +183,14 @@ class ChatStore(private val context: Context) {
      * The parts of saved chats that match [query], for the model to read: each matching message
      * with the message before and after it. Newest chats first; [exclude] is the current chat.
      */
-    fun recall(query: String, exclude: String?, maxChars: Int = 12_000): String {
+    fun recall(query: String, exclude: String?, maxChars: Int = 12_000, only: String? = null): String {
         val words = query.lowercase().split(Regex("""[^\p{L}\p{N}._-]+""")).filter { it.length >= 3 }.distinct()
         if (words.isEmpty()) return ""
         data class Hit(val score: Int, val text: String)
         val hits = mutableListOf<Hit>()
         val date = java.text.SimpleDateFormat("d MMM yyyy", java.util.Locale.ENGLISH)
         for (s in list()) {
-            if (s.id == exclude) continue
+            if (only != null) { if (s.id != only) continue } else if (s.id == exclude) continue
             val chat = load(s.id) ?: continue
             val titleScore = words.count { s.title.contains(it, ignoreCase = true) } * 2
             val msgs = chat.messages.filterNot { it.failed }

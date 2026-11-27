@@ -42,7 +42,8 @@ class SpeechGate(private val onSpeech: () -> Unit) {
                 rate, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT,
                 minBuf * 2,
             )
-        } catch (e: Exception) { return }
+        } catch (e: SecurityException) { return } // the microphone permission was taken away
+        catch (e: Exception) { return }
         if (rec.state != AudioRecord.STATE_INITIALIZED) { runCatching { rec.release() }; return }
 
         val aec = runCatching { if (AcousticEchoCanceler.isAvailable()) AcousticEchoCanceler.create(rec.audioSessionId)?.apply { enabled = true } else null }.getOrNull()

@@ -15,19 +15,28 @@ android {
         // 28, like Termux: Android blocks running programs from app storage for apps targeting 29+,
         // and the built-in Linux (PRoot) needs that. Arin is installed from GitHub, not the Play Store.
         targetSdk = 28
-        // Higher than the 925634 already installed, so a new build installs over it.
-        // The GitHub workflow raises this further on every run.
-        versionCode = 925700
-        versionName = "0.15.7"
+        versionCode = 269
+        versionName = "1.26.1"
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+    }
+
+    testOptions {
+        unitTests.isReturnDefaultValues = true
     }
 
     signingConfigs {
         // Fixed key so each new build installs over the previous one.
+        // Signing: if the repo has signing secrets (ARIN_KEYSTORE_FILE / ARIN_STORE_PASSWORD / ARIN_KEY_ALIAS /
+        // ARIN_KEY_PASSWORD, set by the workflow from GitHub Secrets), they are used; otherwise the bundled key, so every
+        // existing install keeps updating (Android only accepts updates signed with the same key).
+        // NOTE: the bundled key and its password are public in this repo, so treat that key as known to anyone. Moving
+        // to a private key means one reinstall (uninstall + install) — see SIGNING.md.
         getByName("debug") {
-            storeFile = file("arin-debug.keystore")
-            storePassword = "arinandroid"
-            keyAlias = "arin"
-            keyPassword = "arinandroid"
+            val ks = System.getenv("ARIN_KEYSTORE_FILE")?.takeIf { it.isNotBlank() && file(it).exists() }
+            storeFile = if (ks != null) file(ks) else file("arin-debug.keystore")
+            storePassword = System.getenv("ARIN_STORE_PASSWORD")?.takeIf { ks != null && it.isNotBlank() } ?: "arinandroid"
+            keyAlias = System.getenv("ARIN_KEY_ALIAS")?.takeIf { ks != null && it.isNotBlank() } ?: "arin"
+            keyPassword = System.getenv("ARIN_KEY_PASSWORD")?.takeIf { ks != null && it.isNotBlank() } ?: "arinandroid"
         }
     }
 
@@ -68,6 +77,13 @@ dependencies {
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.foundation:foundation")
     implementation("androidx.compose.material3:material3")
+    // Tests: JVM unit tests (testDebugUnitTest) and on-emulator tests (connected, run by the workflow).
+    testImplementation("junit:junit:4.13.2")
+    androidTestImplementation(composeBom)
+    androidTestImplementation("androidx.test.ext:junit:1.2.1")
+    androidTestImplementation("androidx.test:runner:1.6.2")
+    androidTestImplementation("androidx.compose.ui:ui-test-junit4")
+    debugImplementation("androidx.compose.ui:ui-test-manifest")
     implementation("androidx.compose.material:material-icons-core")
     implementation("androidx.activity:activity-compose:1.9.3")
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.7")
@@ -80,4 +96,7 @@ dependencies {
     implementation("com.tom-roush:pdfbox-android:2.0.27.0")
     // Unpacks the Ubuntu image for the built-in Linux.
     implementation("org.apache.commons:commons-compress:1.27.1")
+    // Reads text in pictures and video frames on the phone (offline), so models that can't see still get it.
+    implementation("com.google.mlkit:text-recognition:16.0.1")
+    implementation("com.google.mlkit:image-labeling:17.0.9")
 }

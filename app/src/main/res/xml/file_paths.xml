@@ -6,4 +6,6 @@
     <cache-path name="apks" path="apks/" />
     <!-- Movies made in the Movie Maker, opened or shared. -->
     <cache-path name="movies" path="movies/" />
+    <!-- Arin's one folder (Android/data/com.arin.app/files/Arin): open, share or install what's in it. -->
+    <external-files-path name="arin" path="Arin/" />
 </paths>

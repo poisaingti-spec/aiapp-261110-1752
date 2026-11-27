@@ -36,7 +36,6 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
@@ -87,8 +86,9 @@ object ImageLoader {
 
 @Composable
 fun NetImage(url: String, modifier: Modifier = Modifier, contentScale: ContentScale = ContentScale.Crop, fallback: String? = null) {
-    val bmp by produceState<Bitmap?>(null, url) {
-        value = ImageLoader.load(url) ?: fallback?.let { ImageLoader.load(it) }
+    var bmp by androidx.compose.runtime.remember(url) { androidx.compose.runtime.mutableStateOf<Bitmap?>(null) }
+    androidx.compose.runtime.LaunchedEffect(url, fallback) {
+        bmp = ImageLoader.load(url) ?: fallback?.let { ImageLoader.load(it) }
     }
     val b = bmp
     if (b != null) {

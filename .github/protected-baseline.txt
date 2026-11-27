@@ -1,0 +1,224 @@
+ArinApp.kt|rule-integrity|8bbdc2ca65af
+app/AppShell.kt|ai-helper in every tab|c266c4d7718c
+app/LogsScreen.kt|ai-helper in every tab|748384392a0e
+builder/BuildAgent.kt|ai-helper during builds|efa61d1c3fb7
+builder/BuildAgent.kt|api-index|173f1d1e1d70
+builder/BuildAgent.kt|batch-fix|d96182aa4ebc
+builder/BuildAgent.kt|before every fix|5d12c9793d1f
+builder/BuildAgent.kt|boss-minimum-credit|26bc53b795ee
+builder/BuildAgent.kt|budgets|76876a9dac0f
+builder/BuildAgent.kt|complete-project|5fbccb297763
+builder/BuildAgent.kt|complete-project|80fe152ff4d6
+builder/BuildAgent.kt|complete-project|c5161375c61d
+builder/BuildAgent.kt|credit-saver|04823dbe1d0c
+builder/BuildAgent.kt|credit-saver|771ad611720b
+builder/BuildAgent.kt|duplicate-guard|4bc088297403
+builder/BuildAgent.kt|exact-request|e65e056fcab3
+builder/BuildAgent.kt|explain-after-coding|cf5ca1b667ca
+builder/BuildAgent.kt|explain-after-coding|fbc19974179b
+builder/BuildAgent.kt|heavy-work-off-the-boss|e593d300d834
+builder/BuildAgent.kt|helper-sees-only-the-boss|ed443e8328a4
+builder/BuildAgent.kt|impact-analysis|0ce0d1653f22
+builder/BuildAgent.kt|import-guard|d4be192b9bec
+builder/BuildAgent.kt|never change the|d839f11028eb
+builder/BuildAgent.kt|never-stuck|abf51c33daa0
+builder/BuildAgent.kt|notes from earlier attempts|052d400cd754
+builder/BuildAgent.kt|outcome-classes|61d77a4844e6
+builder/BuildAgent.kt|owner-words-only-to-main|6b9c16e4a72c
+builder/BuildAgent.kt|owner-words-only-to-main|c09048528175
+builder/BuildAgent.kt|requirement-coverage|e726a2442a1c
+builder/BuildAgent.kt|research the internet before every fix|b421b8031644
+builder/BuildAgent.kt|research the internet before every fix|e80fccfd727a
+builder/BuildAgent.kt|research-fallback|255c8969e37e
+builder/BuildAgent.kt|research-first auto-fix keeps going until the error is fixed|91b677fb267a
+builder/BuildAgent.kt|self-updates change only|5aa75ece89a8
+builder/BuildAgent.kt|smart-thinking|b4694af1e895
+builder/BuildAgent.kt|steer-immediately|a78b357496f2
+builder/BuildAgent.kt|strict self-update rules also apply on|659376323a76
+builder/BuildAgent.kt|syntax-guard|92d5e8d5f1c1
+builder/BuildAgent.kt|syntax-guard|a229305080a5
+builder/BuildAgent.kt|syntax-guard|e6f3efd9d7b7
+builder/BuildAgent.kt|test-before-handover|2e27a9c87619
+builder/BuildAgent.kt|test-before-handover|307ab8981e0c
+builder/BuildAgent.kt|test-before-handover|b5cacf76a46e
+builder/BuildAgent.kt|test-before-handover|c48d528418a5
+builder/BuildAgent.kt|test-before-handover|f4578611c384
+builder/BuildAgent.kt|test-before-handover|fb4a41efc761
+builder/BuildAgent.kt|toolchain-guard|d4b08d21c147
+builder/BuildAgent.kt|watchdog|47876f3696ee
+builder/BuildAgent.kt|whole-problem-consultation|a3baf0f7cda3
+builder/BuildAgent.kt|with the|a43c93ab250d
+builder/BuildAgent.kt|worker-mode strict privacy for build errors|085f00db5fde
+builder/BuildAgent.kt|worker-mode|c16358b1e4e5
+builder/BuildAgent.kt|worker-mode|cf7329f9a1ac
+builder/BuildScreen.kt|ai-helper in every tab|62b4b2dfc76d
+builder/BuildScreen.kt|ai-helper in every tab|76ffc868287a
+builder/BuildScreen.kt|ai-helper in every tab|fb3cb00cf887
+builder/BuildScreen.kt|explain-after-coding|36ea85ff6c19
+builder/BuildScreen.kt|plan-improve-build-where|3c9db7341435
+builder/BuildScreen.kt|task-summary in every tab|b5e7d0ef3fb2
+builder/BuildService.kt|ai-helper during builds|ed0af7615273
+builder/BuildService.kt|ask-before-building|c18d26cb13d6
+builder/BuildService.kt|never give up|0c5fe31e18a7
+builder/Compat.kt|tab-isolation|e6532d97fe01
+builder/GitHubClient.kt|github-auth-check|03009b45d93b
+builder/GitHubClient.kt|safe rollback|21c87905d308
+builder/KotlinDuplicates.kt|duplicate-guard|c4bae74fd17e
+builder/KotlinFixes.kt|compiler-fixes|f8ea44bb66ce
+builder/KotlinImports.kt|import-guard|68671c580d71
+builder/KotlinSyntax.kt|syntax-guard|ae4bb5f1f9c6
+builder/KotlinSyntax.kt|syntax-guard|faf1d47b6734
+builder/ProjectMemory.kt|project-memory|13c203f70bd4
+builder/ProjectTemplate.kt|release-gating|97b54935177a
+builder/ProjectTemplate.kt|test-before-handover|a97003b20dac
+builder/ProjectTemplate.kt|test-before-handover|bd41a612cc95
+builder/ProjectTemplate.kt|toolchain-guard|2ac3389c0358
+chat/ChatScreen.kt|ai-helper in every tab|abe8c02d99b9
+chat/ChatScreen.kt|ai-helper in every tab|b6dd9701b788
+chat/ChatScreen.kt|ai-helper in every tab|b7d0c4724b7a
+chat/ChatViewModel.kt|ai-helper|eaa63b3eac9b
+chat/ChatViewModel.kt|apk-toolkit in every tab|070d6b68d8e1
+chat/ChatViewModel.kt|apk-toolkit in every tab|960bd5746b61
+chat/ChatViewModel.kt|apk-toolkit|6aa894d62f29
+chat/ChatViewModel.kt|boss-memory|6cd6931f73a9
+chat/ChatViewModel.kt|boss-minimum-credit|b27d49145a28
+chat/ChatViewModel.kt|bounded-retry|00d255d597bf
+chat/ChatViewModel.kt|credit-saver|5e75a670adea
+chat/ChatViewModel.kt|credit-saver|818b9d96dec9
+chat/ChatViewModel.kt|credit-saver|851b7a41b143
+chat/ChatViewModel.kt|evidence-check|ffa9c8364990
+chat/ChatViewModel.kt|explain-after-coding|8e9079e301b4
+chat/ChatViewModel.kt|helper-never-takes-over|b13f347d08e3
+chat/ChatViewModel.kt|helper-sees-only-the-boss|a8d875d20fe8
+chat/ChatViewModel.kt|model-per-tab|0d91f3a23fdf
+chat/ChatViewModel.kt|never give up|3e50fc805caa
+chat/ChatViewModel.kt|never give up|7ad15f33faf8
+chat/ChatViewModel.kt|never give up|f6c0ea7d9ebd
+chat/ChatViewModel.kt|outcome-classes|9bb1ad34afe3
+chat/ChatViewModel.kt|owner-words-only-to-main|0a62c80eb0e3
+chat/ChatViewModel.kt|per-run-workdir|401952e9e50e
+chat/ChatViewModel.kt|refusal-review|c65c208feed4
+chat/ChatViewModel.kt|research first|1fd6c08c4bbf
+chat/ChatViewModel.kt|research-first-error-help|6c0b0738dbab
+chat/ChatViewModel.kt|research-first-error-help|b63ac9227522
+chat/ChatViewModel.kt|research-first-error-help|bc6a01da0912
+chat/ChatViewModel.kt|self-update-only-arin|891e1c587697
+chat/ChatViewModel.kt|smart-thinking|65c24059fc82
+chat/ChatViewModel.kt|tab-isolation|4c4662e440b3
+chat/ChatViewModel.kt|tab-isolation|5c376ced6855
+chat/ChatViewModel.kt|tab-isolation|8815e8df9fba
+chat/ChatViewModel.kt|tab-memory|4e9e38d8bbb4
+chat/ChatViewModel.kt|task-summary in every tab|88afba1b084f
+chat/ChatViewModel.kt|team-work in every tab|1d54ff2b9dea
+chat/ChatViewModel.kt|team-work in every tab|7f1ee9d5c3b6
+chat/ChatViewModel.kt|team-work in every tab|b43902888bfd
+chat/ChatViewModel.kt|team-work in every tab|d64c01bf3f86
+chat/ChatViewModel.kt|team-work in every tab|f876de3bbb13
+chat/ChatViewModel.kt|test-before-handover|b3acb3f2bc2c
+chat/ChatViewModel.kt|the same error keeps failing|b928fea86ef9
+chat/ChatViewModel.kt|the|296636829ea6
+chat/ChatViewModel.kt|the|fbc96c634a79
+chat/ChatViewModel.kt|with the|cf80f58fc78b
+chat/ChatViewModel.kt|worker-mode|91b1ae652320
+claudecode/ClaudeCode.kt|task-summary in every tab|b0c35f859343
+claudecode/ClaudeCodeModel.kt|claude-lean|89ba040581dc
+claudecode/ClaudeCodeScreen.kt|ai-helper in every tab|b6dd9701b788
+claudecode/Harness.kt|claude-harness|a6775d5d18ed
+claudecode/Harness.kt|git-in-repo|f7a4326dda7c
+claudecode/Harness.kt|helper-sees-only-the-boss|9ea6a49bd9a9
+claudecode/Harness.kt|tab-isolation|a32105bde21a
+free/FreeTokensScreen.kt|ai-helper in every tab|9f806eaf11f4
+llm/Llm.kt|boss-minimum-credit|bfb152cb09b5
+llm/Llm.kt|claude-harness for|f6f2275bdccc
+llm/Llm.kt|claude-harness|fdbe35e2f93d
+llm/Llm.kt|credit-saver|c6d2347ae786
+llm/Llm.kt|tab-isolation|a67e1296effe
+llm/Prompt.kt|ai-helper|26b71d6e9b60
+llm/Prompt.kt|research-first auto-fix rule for every model|8448bdb73ae4
+llm/Prompt.kt|tab-isolation|c0796fd59313
+llm/Prompt.kt|tab-isolation|d94123e8025c
+llm/Prompt.kt|task-summary in every tab|512517445772
+llm/Prompt.kt|team-work in every tab|631493189c05
+llm/Prompt.kt|worker-mode|6adf63ade428
+movie/MovieMakerScreen.kt|ai-helper in every tab|9f806eaf11f4
+project/ProjectScreens.kt|ai-helper in every tab|44c39bda9388
+project/ProjectScreens.kt|ai-helper in every tab|9f806eaf11f4
+project/ProjectScreens.kt|ai-helper in every tab|d36f7312428c
+security/SecurityScreen.kt|bounded-scroll|3e0bd2917b15
+selffix/AiHelperUi.kt|ai-helper|6552a6bb1ee6
+selffix/AiHelperUi.kt|the|535c77240583
+selffix/ArinUpdateChat.kt|apk-toolkit in every tab|203a9567c111
+selffix/ArinUpdateChat.kt|apk-toolkit in every tab|42648c96c1b8
+selffix/ArinUpdateChat.kt|explain-after-coding|9ce6eff3f41a
+selffix/ArinUpdateChat.kt|helper-sees-only-the-boss|66696d6be77c
+selffix/ArinUpdateChat.kt|only an|ade1595dbecb
+selffix/ArinUpdateChat.kt|owner-words-only-to-main|030dbf595422
+selffix/ArinUpdateChat.kt|research-first-error-help|b63ac9227522
+selffix/ArinUpdateChat.kt|task-summary in every tab|350d9c2026f4
+selffix/ArinUpdateChat.kt|task-summary in every tab|7591ff38b85c
+selffix/ArinUpdateChat.kt|task-summary in every tab|c0dd9b3ff353
+selffix/ArinUpdateChat.kt|team-work in every tab|0cb7195724ca
+selffix/ArinUpdateChat.kt|team-work in every tab|10d8bc568ade
+selffix/ArinUpdateChat.kt|team-work in every tab|743ceea72f44
+selffix/ArinUpdateScreen.kt|ai-helper in every tab|853822a61903
+selffix/ArinUpdateScreen.kt|arin-update-tab|e6911b6685a9
+selffix/AutoFix.kt|do exactly what was asked|464c9d53a391
+selffix/AutoFix.kt|fix rounds never run out|a0713207d3e0
+selffix/AutoFix.kt|in every chat|c4653f349ce6
+selffix/AutoFix.kt|research the error on the internet before any fix|7a7c3612c8c2
+selffix/AutoFix.kt|research-first-autofix|0acb1b0d4b94
+selffix/AutoFix.kt|the rule is always on|b33d893decee
+selffix/ChatMemory.kt|boss-memory|c375e5d3cddd
+selffix/ChatMemory.kt|requirement-coverage|f3866ea35cd8
+selffix/ClaudeHelper.kt|ai-helper|052e438811df
+selffix/ClaudeHelper.kt|credit-saver|914a214ace99
+selffix/ClaudeHelper.kt|delegation-firewall|94db2e4b89a6
+selffix/ClaudeHelper.kt|helper-never-takes-over|0c09a0c38bae
+selffix/ClaudeHelper.kt|helper-never-takes-over|6ef1fe3e33ce
+selffix/ClaudeHelper.kt|helper-sees-only-the-boss|fa6d32b9aa80
+selffix/ClaudeHelper.kt|outcome-classes|121f80468133
+selffix/CreditSaver.kt|credit-saver|d0d73d7bf614
+selffix/CreditSaver.kt|worker-mode|7a7a950ff432
+selffix/Delegation.kt|delegation-firewall|7a03a23bc3d1
+selffix/Delegation.kt|owner-words-only-to-main|b99adc4f588e
+selffix/Delegation.kt|refusal-provenance|3890c7d5bf71
+selffix/ErrorDoctor.kt|research-first-error-help|d4c218126047
+selffix/ErrorDoctor.kt|researches the error on the internet|1d524e8c80fa
+selffix/Orchestrator.kt|orchestrator|f752b4f288ab
+selffix/Orchestrator.kt|run-context|1fcaf8c036f9
+selffix/Outcome.kt|outcome-classes|aab0487b7cab
+selffix/ProjectGraph.kt|project-graph|28dec20202b3
+selffix/RefusalReview.kt|refusal-review|2697e6a05fdc
+selffix/Requirements.kt|requirement-coverage|047d3f8fe280
+selffix/RuleIntegrity.kt|rule-integrity|153cf38d82db
+selffix/SelfUpdateRules.kt|Arin|9433b6f2cd31
+selffix/SelfUpdateRules.kt|files an update may never touch|c770320405ef
+selffix/SelfUpdateRules.kt|self-update-only-arin|4f32a69ea707
+selffix/TabIsolation.kt|tab-isolation|cb9bc99bcdfd
+selffix/TabScope.kt|strict-tab-scope|e91491b70ae0
+selffix/TaskSummary.kt|ask-before-building|7f02b8954f8a
+selffix/TaskSummary.kt|exact-request|d66a722bcbff
+selffix/TaskSummary.kt|explain-after-coding|dd1ba5686c5c
+selffix/TaskSummary.kt|orchestration|002aa9864980
+selffix/TaskSummary.kt|task-summary|894da808b6ac
+selffix/TaskSummary.kt|test-before-handover|01baad24ef08
+selffix/TaskSummary.kt|whole-problem-consultation|0c1e8823435a
+selffix/TeamWork.kt|team-work|dcc984e0b9a6
+selffix/VisionBridge.kt|owner-words-only-to-main|882b22930a94
+selffix/Worker.kt|delegation-firewall|7f021995ab28
+selffix/Worker.kt|tab-isolation|7faf725ce41c
+selffix/Worker.kt|worker-mode in chat|2ad408d7c477
+selffix/Worker.kt|worker-results|6229281fc66b
+settings/ArinFolder.kt|arin-folder|91bdb6683ded
+settings/SettingsScreen.kt|ai-helper in every tab|9f806eaf11f4
+settings/SettingsScreen.kt|terminal-self-test|3743837f5499
+terminal/Linux.kt|apk-toolkit in every tab|a86a0d6c4809
+terminal/Linux.kt|apk-toolkit|a3f075ae6094
+terminal/Linux.kt|per-run-workdir|df7c998e1ad8
+terminal/Linux.kt|proot-fallback|b1f5b8811f87
+terminal/RetryGuard.kt|bounded-retry|0c854381189a
+terminal/TerminalSelfTest.kt|terminal-self-test|f880982b7fc3
+voice/VoiceScreen.kt|ai-helper in every tab|fc42063188ae
+builder/BuildAgent.kt|project-map-in-build|7fb6d60b738c
+chat/ChatViewModel.kt|project-map-in-chat|a86781820ee1
+selffix/ProjectGraph.kt|project-map|e33091b2652d

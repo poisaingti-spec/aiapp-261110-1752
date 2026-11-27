@@ -37,29 +37,83 @@ object Llm {
      */
     @Volatile var thinkLess: Boolean = false
 
-    fun stream(provider: Provider, key: String, model: String, system: String, turns: List<Turn>, maxTokens: Int? = null, cache: Boolean = false, endpoint: CustomApi.Endpoint? = null): Flow<Delta> {
+    /**
+     * [boss] = the main model in worker mode (ARIN-PROTECTED: boss-minimum-credit): it only directs, so it goes straight
+     * to its API (never through the Claude Code harness, whose own instructions cost thousands of tokens per message)
+     * and thinks as little as the service allows (DeepSeek's billed thinking switched off).
+     */
+    fun stream(provider: Provider, key: String, model: String, system: String, turns: List<Turn>, maxTokens: Int? = null, cache: Boolean = false, endpoint: CustomApi.Endpoint? = null, conv: String = "", boss: Boolean = false,
+               /** A big problem or puzzle: the main model thinks fully, even in worker mode (smart thinking). */
+               hard: Boolean = false): Flow<Delta> {
+        // ARIN-PROTECTED: tab-isolation — each chat gets its own Claude Code session; one chat never reuses another's.
+        val purpose = if (conv.isBlank()) "chat:oneoff-" + System.nanoTime() else "chat:$conv" // no conv id: a one-off session, never a shared one
         if (provider.needsKey && key.isBlank()) {
             throw LlmException("Add your ${provider.label} API key in Settings, or switch to Free models.")
         }
         if (model.isBlank()) throw LlmException("Pick a model first, or type a model id in Settings → Custom API.")
         return when (provider) {
             Provider.Free -> freeStream(model, system, turns, maxTokens)
-            Provider.Gemini -> lessThinking { low -> openAiStream("$GEMINI_BASE/chat/completions", bearer(key), model, system, turns, maxTokens = maxTokens, lowReasoning = low) }
+            Provider.Gemini -> lessThinking(boss && !hard) { low -> openAiStream("$GEMINI_BASE/chat/completions", bearer(key), model, system, turns, maxTokens = maxTokens, lowReasoning = low) }
             // OpenAI's newer models take max_completion_tokens; leave ChatGPT on its default.
             Provider.ChatGPT -> openAiStream("$OPENAI_BASE/chat/completions", bearer(key), model, system, turns)
             Provider.Claude -> anthropicStream("$ANTHROPIC_BASE/messages", anthropicHeaders(key), key, model, system, turns, maxTokens, cache)
+            // ARIN-PROTECTED: claude-harness — one running Claude Code session per conversation (cached, low usage).
+            Provider.ClaudeCode -> com.arin.claudecode.Harness.stream(model, system, turns, purpose = purpose)
             Provider.Custom -> (endpoint ?: CustomApi.current()).let { ep ->
-                when (ep.format) {
-                    ApiFormat.OpenAI -> lessThinking { low -> openAiStream(ep.chatUrl(), bearer(key), model, system, turns, maxTokens = maxTokens, lowReasoning = low) }
+                val direct0 = when (ep.format) {
+                    ApiFormat.OpenAI -> lessThinking(boss && !hard) { low -> withUsage(ep.chatUrl()) { u -> openAiStream(ep.chatUrl(), bearer(key), model, system, turns, maxTokens = maxTokens, lowReasoning = low, usage = u) } }
                     ApiFormat.Anthropic -> anthropicStream(ep.chatUrl(), customAnthropicHeaders(key), key, model, system, turns, maxTokens, cache)
+                }
+                // ARIN-PROTECTED: credit-saver — stay under a free pool's requests-per-minute limit (waits, never fails).
+                val direct = kotlinx.coroutines.flow.flow {
+                    com.arin.selffix.CreditSaver.throttle(ep.baseUrl)
+                    direct0.collect { emit(it) }
+                }
+                // ARIN-PROTECTED: claude-harness for Custom APIs — the same API, key and model (never changed), run
+                // through the Claude Code harness for its tools and caching. If the harness can't start, the API is
+                // used directly exactly as before.
+                val app = com.arin.ArinApp.instance
+                // The phone's own offline model is always used directly (the harness would only slow it down).
+                if (boss || !com.arin.claudecode.Harness.customOn(app) || !com.arin.terminal.Linux.installed(app) || LocalModel.isLocal(ep.baseUrl)) direct
+                else kotlinx.coroutines.flow.flow {
+                    var started = false
+                    try {
+                        com.arin.claudecode.Harness.stream(model, system, turns, purpose = purpose,
+                            custom = com.arin.claudecode.Harness.Custom(ep.baseUrl, key, ep.format == ApiFormat.Anthropic))
+                            .collect { started = true; emit(it) }
+                    } catch (e: Exception) {
+                        if (started || e is kotlinx.coroutines.CancellationException) throw e
+                        direct.collect { emit(it) }
+                    }
                 }
             }
         }
     }
 
+    /** Hosts that refused "stream_options" (usage reports): asked without it from then on. */
+    private val noUsage = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+
+    /** Asks the service to report usage (cached tokens) at the end; if it refuses that before answering, asks without. */
+    private fun withUsage(url: String, make: (Boolean) -> Flow<Delta>): Flow<Delta> {
+        val h = runCatching { java.net.URI(url).host.orEmpty() }.getOrDefault(url)
+        val wanted = (h.contains("deepseek") || h.contains("experientiallabs") || h.contains("openrouter")) && h !in noUsage
+        if (!wanted) return make(false)
+        return kotlinx.coroutines.flow.flow {
+            var emitted = false
+            try {
+                make(true).collect { emitted = true; emit(it) }
+            } catch (e: LlmException) {
+                val m = e.message.orEmpty().lowercase()
+                if (emitted || !(m.contains("stream_options") || m.contains("include_usage") || m.contains("400") || m.contains("unknown") || m.contains("unrecognized"))) throw e
+                noUsage += h
+                make(false).collect { emit(it) }
+            }
+        }
+    }
+
     /** Run with "think less" fields when it's on; if the service refuses them before answering, run without. */
-    private fun lessThinking(make: (Boolean) -> Flow<Delta>): Flow<Delta> {
-        if (!thinkLess) return make(false)
+    private fun lessThinking(force: Boolean = false, make: (Boolean) -> Flow<Delta>): Flow<Delta> {
+        if (!thinkLess && !force) return make(false)
         return kotlinx.coroutines.flow.flow {
             var started = false
             try {
@@ -144,6 +198,7 @@ object Llm {
                     .filter { m -> m.id.startsWith("gpt-") && listOf("audio", "realtime", "image", "tts", "transcribe", "search").none { it in m.id } }
                     .sortedByDescending { it.id }
                 Provider.Custom -> customModels(key)
+                Provider.ClaudeCode -> com.arin.claudecode.ClaudeAccounts.models(com.arin.ArinApp.instance) // each account's models
             }
         }.getOrNull().orEmpty()
         if (provider == Provider.Custom) {
@@ -228,15 +283,17 @@ object Llm {
         extra: Boolean = false,
         maxTokens: Int? = null,
         lowReasoning: Boolean = false,
+        usage: Boolean = false,
     ): Flow<Delta> {
         val body = buildJsonObject {
             put("model", model)
             put("stream", true)
+            if (usage) putJsonObject("stream_options") { put("include_usage", true) }
             if (maxTokens != null) put("max_tokens", maxTokens)
             if (lowReasoning) {
                 put("reasoning_effort", "low")
                 // DeepSeek: thinking on by default and billed as output; switch it off.
-                if (model.contains("deepseek", ignoreCase = true)) putJsonObject("thinking") { put("type", "disabled") }
+                if (model.contains("deepseek", ignoreCase = true)) { putJsonObject("thinking") { put("type", "disabled") }; put("enable_thinking", false) }
             }
             if (extra) {
                 put("private", true) // keep prompts out of the free service's public feed
@@ -281,6 +338,12 @@ object Llm {
             val o = Http.parseObject(data) ?: return@mapNotNull null
             (o["error"] as? JsonObject)?.let { err ->
                 throw LlmException((err["message"] as? JsonPrimitive)?.contentOrNull ?: "The model returned an error.")
+            }
+            // Usage (sent with the last chunk): how many input tokens the server's cache served, for the credit saver.
+            (o["usage"] as? JsonObject)?.let { u ->
+                fun n(x: kotlinx.serialization.json.JsonElement?) = (x as? JsonPrimitive)?.contentOrNull?.toLongOrNull() ?: 0L
+                val cached = n(u["prompt_cache_hit_tokens"]).takeIf { it > 0 } ?: n((u["prompt_tokens_details"] as? JsonObject)?.get("cached_tokens"))
+                runCatching { com.arin.selffix.CreditSaver.recordUsage(url, n(u["prompt_tokens"]), cached, n(u["completion_tokens"])) }
             }
             val choice = (o["choices"] as? JsonArray)?.firstOrNull() as? JsonObject ?: return@mapNotNull null
             val delta = choice["delta"] as? JsonObject ?: return@mapNotNull null

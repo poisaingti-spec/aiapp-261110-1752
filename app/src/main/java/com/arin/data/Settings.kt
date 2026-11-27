@@ -84,6 +84,10 @@ class Settings(context: Context) {
 
     fun setModel(provider: Provider, id: String) = prefs.edit().putString("model_${slot(provider)}", id).apply()
 
+    /** The model each tab uses ("provider|model|apiId"): changing it in one tab never changes another. */
+    fun tabSelection(tab: String): String? = prefs.getString("tabsel_$tab", null)
+    fun setTabSelection(tab: String, v: String) = prefs.edit().putString("tabsel_$tab", v).apply()
+
     var theme: ThemeMode
         get() = prefs.getString("theme", null)?.let { runCatching { ThemeMode.valueOf(it) }.getOrNull() } ?: ThemeMode.System
         set(value) = prefs.edit().putString("theme", value.name).apply()
@@ -238,6 +242,9 @@ class Settings(context: Context) {
     fun setSecret(name: String, value: String) = keys.edit().putString("extra_$name", value.trim()).apply()
 
     fun key(provider: Provider): String = keys.getString(slot(provider), "").orEmpty()
+
+    /** Every saved secret value (API keys, tokens) — used only to redact them from anything sent to another model. */
+    fun secretValues(): List<String> = runCatching { keys.all.values.mapNotNull { (it as? String)?.trim()?.takeIf { v -> v.length >= 8 } } }.getOrDefault(emptyList())
 
     /** Key and model for a saved API's address, without switching to it. */
     fun keyFor(baseUrl: String): String = keys.getString("Custom@$baseUrl", "").orEmpty()

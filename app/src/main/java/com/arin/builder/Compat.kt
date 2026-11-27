@@ -44,20 +44,25 @@ fun streamModel(
     messages: List<ChatMessage>,
     system: String,
     endpoint: com.arin.llm.CustomApi.Endpoint? = null,
+    /** The main model only directing in worker mode: lean call, short answer. */
+    boss: Boolean = false,
+    hard: Boolean = false,
+    /** ARIN-PROTECTED: tab-isolation — this build's own conversation key (never shared with another app's build or a chat). */
+    conv: String = "",
 ): Flow<String> = flow {
     val history = messages.map { m -> Message(fromUser = m.role == Role.USER, text = m.text, attachments = m.attachments) }
     val turns = Attachments.toTurns(provider, history)
     // Whole apps need long answers: ask for plenty of output, and fall back to the default if the service refuses.
     var emitted = false
     try {
-        Llm.stream(provider, apiKey, model, system, turns, maxTokens = BUILD_MAX_TOKENS, endpoint = endpoint).collect { d ->
+        Llm.stream(provider, apiKey, model, system, turns, maxTokens = BUILD_MAX_TOKENS, endpoint = endpoint, boss = boss, hard = hard, conv = conv).collect { d ->
             emitted = true
             emit(if (d is Delta.Thinking) THOUGHT + d.text else (d as Delta.Text).text)
         }
     } catch (e: LlmException) {
         val m = e.message.orEmpty().lowercase()
         if (emitted || !(m.contains("400") || m.contains("token") || m.contains("invalid") || m.contains("422"))) throw e
-        Llm.stream(provider, apiKey, model, system, turns, endpoint = endpoint).map { d ->
+        Llm.stream(provider, apiKey, model, system, turns, endpoint = endpoint, boss = boss, hard = hard, conv = conv).map { d ->
             when (d) {
                 is Delta.Text -> d.text
                 is Delta.Thinking -> THOUGHT + d.text

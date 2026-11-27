@@ -88,6 +88,7 @@ object Linux {
                 val total = resp.body!!.contentLength()
                 val counting = CountingStream(resp.body!!.byteStream()) { n ->
                     if (total > 0) log("Downloading Ubuntu… ${n * 100 / total}% of ${total / (1024 * 1024)} MB")
+                    com.arin.selffix.InstallProgress.bytes("Ubuntu 24.04", n, total)
                 }
                 log("Unpacking Ubuntu…")
                 extract(counting, root)
@@ -100,6 +101,7 @@ object Linux {
         }
         log("Installing basics with apt (this takes a few minutes)…")
         val script = """
+            [ -f $DPKG_REPAIR_SCRIPT ] && bash $DPKG_REPAIR_SCRIPT
             set -e
             export DEBIAN_FRONTEND=noninteractive
             apt-get update
@@ -108,7 +110,9 @@ object Linux {
             if ! node -v 2>/dev/null | grep -Eq '^v24\.(2[2-9]|[3-9][0-9])\.'; then
               V=${'$'}(curl -fsSL https://nodejs.org/dist/latest-v24.x/ | grep -o "node-v24[0-9.]*-linux-${'$'}NA.tar.xz" | head -1)
               echo "Installing ${'$'}V"
-              curl -fsSL "https://nodejs.org/dist/latest-v24.x/${'$'}V" | tar -xJ -C /usr/local --strip-components=1
+              arin-fetch "https://nodejs.org/dist/latest-v24.x/${'$'}V" /tmp/node.tar.xz "Node.js" 2>/dev/null || curl -fsSL -o /tmp/node.tar.xz "https://nodejs.org/dist/latest-v24.x/${'$'}V"
+              echo "Unpacking Node.js…"
+              tar -xJf /tmp/node.tar.xz -C /usr/local --strip-components=1 && rm -f /tmp/node.tar.xz
             fi
             echo "node ${'$'}(node -v), npm ${'$'}(npm -v)"
         """.trimIndent()
@@ -126,7 +130,7 @@ object Linux {
 
     /** Versions installed by [installDevTools] (checked November 2026). */
     const val KOTLINC_VERSION = "2.4.20"
-    const val GRADLE_VERSION = "9.9.0"
+    const val GRADLE_VERSION = "9.9.2"
 
     /**
      * Installs a Java/Kotlin toolchain: OpenJDK 21, the Kotlin compiler and Gradle, so Java and Kotlin
@@ -134,18 +138,20 @@ object Linux {
      */
     suspend fun installDevTools(context: Context, log: (String) -> Unit): Termux.Result {
         log("Installing Java 21, Kotlin $KOTLINC_VERSION and Gradle $GRADLE_VERSION…")
+        configure(context) // also writes the apt repair script this step runs first
         val script = """
+            [ -f $DPKG_REPAIR_SCRIPT ] && bash $DPKG_REPAIR_SCRIPT
             set -e
             export DEBIAN_FRONTEND=noninteractive
             apt-get update
             apt-get install -y --no-install-recommends openjdk-21-jdk-headless unzip zip
             mkdir -p /opt
             if [ ! -x /opt/kotlinc/bin/kotlinc ]; then
-              curl -fsSL -o /tmp/kotlinc.zip https://github.com/JetBrains/kotlin/releases/download/v$KOTLINC_VERSION/kotlin-compiler-$KOTLINC_VERSION.zip
+              arin-fetch https://github.com/JetBrains/kotlin/releases/download/v$KOTLINC_VERSION/kotlin-compiler-$KOTLINC_VERSION.zip /tmp/kotlinc.zip "Kotlin $KOTLINC_VERSION" 2>/dev/null || curl -fsSL -o /tmp/kotlinc.zip https://github.com/JetBrains/kotlin/releases/download/v$KOTLINC_VERSION/kotlin-compiler-$KOTLINC_VERSION.zip
               rm -rf /opt/kotlinc && unzip -q /tmp/kotlinc.zip -d /opt && rm /tmp/kotlinc.zip
             fi
             if [ ! -x /opt/gradle-$GRADLE_VERSION/bin/gradle ]; then
-              curl -fsSL -o /tmp/gradle.zip https://services.gradle.org/distributions/gradle-$GRADLE_VERSION-bin.zip
+              arin-fetch https://services.gradle.org/distributions/gradle-$GRADLE_VERSION-bin.zip /tmp/gradle.zip "Gradle $GRADLE_VERSION" 2>/dev/null || curl -fsSL -o /tmp/gradle.zip https://services.gradle.org/distributions/gradle-$GRADLE_VERSION-bin.zip
               unzip -q /tmp/gradle.zip -d /opt && rm /tmp/gradle.zip
             fi
             ln -sf /opt/kotlinc/bin/kotlinc /opt/kotlinc/bin/kotlin /usr/local/bin/
@@ -176,7 +182,7 @@ object Linux {
             .replace("@@GRADLE@@", com.arin.builder.ProjectTemplate.GRADLE)
             .replace("@@SDK@@", com.arin.builder.ProjectTemplate.SDK.toString())
         File(rootfs(context), "root/.arin/setup-android-build.sh").writeText(script)
-        val r = run(context, "bash /root/.arin/setup-android-build.sh", timeoutMs = 60 * 60_000L, onOutput = log)
+        val r = run(context, DPKG_REPAIR + "bash /root/.arin/setup-android-build.sh", timeoutMs = 60 * 60_000L, onOutput = log)
         if (r.exitCode == 0 && r.error == null && r.combined().contains("ANDROID_BUILD_READY")) {
             androidBuildMarker(context).writeText("ok")
             devMarker(context).writeText("ok")
@@ -184,8 +190,104 @@ object Linux {
         return r
     }
 
+    private fun toolkitMarker(context: Context) = File(base(context), "apk-toolkit-ready")
+
+    /** True when the full APK toolkit (jadx, dex2jar, bundletool, apktool, APKEditor, signer, Kotlin, Gradle…) is installed. */
+    fun apkToolkitReady(context: Context): Boolean = installed(context) && toolkitMarker(context).exists()
+
+    /**
+     * ARIN-PROTECTED: apk-toolkit — every tool to decompile, compile, change, rebuild, sign and package apps, always the
+     * newest release (researched November 2026; each run looks up the latest versions and updates what is older).
+     * Needs the Android SDK part ([installAndroidBuild]) for apksigner/d8/r8 and the native aapt2.
+     */
+    suspend fun installApkToolkit(context: Context, log: (String) -> Unit): Termux.Result {
+        log("Installing the newest APK tools: Gradle, Kotlin, apktool, APKEditor, jadx, dex2jar, bundletool, signer, androguard…")
+        configure(context)
+        File(rootfs(context), "root/.arin").mkdirs()
+        File(rootfs(context), "root/.arin/rebuild-sign.sh").writeText(rebuildSignScript)
+        val script = context.assets.open("apk-toolkit-setup.sh").bufferedReader().use { it.readText() }
+        File(rootfs(context), "root/.arin/setup-apk-toolkit.sh").writeText(script)
+        val r = run(context, DPKG_REPAIR + "bash /root/.arin/setup-apk-toolkit.sh", timeoutMs = 60 * 60_000L, onOutput = log)
+        if (r.combined().contains("APK_TOOLKIT_READY")) toolkitMarker(context).writeText("ok")
+        return r
+    }
+
+    /** Commands that need the Android build tools / APK toolkit. */
+    private val needsTools = Regex("""(?:^|[\s;&|(/])(gradlew?|sdkmanager|avdmanager|aapt2?|d8|r8|apksigner|zipalign|bundletool|arin-build|arin-tools|kotlinc|kotlin|jadx|d2j-[\w-]+|apktool|apkeditor|uber-apk-signer|androguard|rebuild-sign\.sh)\b""")
+
+    /**
+     * ARIN-PROTECTED: apk-toolkit in every tab — before a command that uses a build or APK tool runs, Arin makes sure
+     * the tools are installed (installing them the first time). Returns a problem to report, or null.
+     */
+    suspend fun ensureToolsFor(context: Context, command: String, log: (String) -> Unit): String? {
+        if (!installed(context) || !needsTools.containsMatchIn(command)) return null
+        if (!androidBuildReady(context)) {
+            log("Installing the Android build tools first (JDK, Gradle, Android SDK, aapt2) — first time only…")
+            val a = installAndroidBuild(context, log)
+            if (!androidBuildReady(context)) return "The Android build tools didn't finish installing: " +
+                (a.error ?: a.combined().lines().lastOrNull { it.isNotBlank() }.orEmpty())
+        }
+        if (!apkToolkitReady(context)) {
+            log("Installing the APK toolkit (jadx, dex2jar, bundletool, apktool…) — first time only…")
+            installApkToolkit(context, log)
+        }
+        return null
+    }
+
+    /** Told to the model in every tab: what is installed and how to use it. */
+    const val TOOLS_NOTE = "\n\nAPK TOOLS in Arin's Linux (installed automatically the first time a command uses them; " +
+        "`arin-tools` lists versions, `arin-tools update` updates all to the newest): JDK 21, Gradle (latest) and each " +
+        "project's ./gradlew, Kotlin compiler (kotlinc), Android SDK at /opt/android-sdk (sdkmanager, platforms, " +
+        "build-tools: apksigner, d8, r8; native ARM aapt2/aidl/zipalign — Gradle already uses the ARM aapt2), " +
+        "`arin-build <project dir>` (builds a debug APK, prints ARIN_APK=path), apktool (decode/build), apkeditor " +
+        "(decode/rebuild/merge split APKs), jadx (dex→Java), d2j-dex2jar / d2j-smali / d2j-baksmali, bundletool " +
+        "(.aab→.apks/universal APK), uber-apk-signer, `bash /root/.arin/rebuild-sign.sh <decoded dir|apk> [out.apk]` " +
+        "(rebuild + sign, installable), androguard (Python). Use these instead of installing other copies."
+
     /** Script (inside Linux) that installs what REA needs to analyse APKs. */
     const val ANDROID_TOOLS_SCRIPT = "/root/.arin/setup-android-tools.sh"
+
+    /** Repairs apt when a package's setup failed under PRoot (systemd, D-Bus…). Safe to run any time. */
+    const val DPKG_REPAIR_SCRIPT = "/root/.arin/dpkg-repair.sh"
+
+    /** Prefix for any command that installs with apt: finishes or repairs a stuck earlier install first. */
+    const val DPKG_REPAIR = "[ -f $DPKG_REPAIR_SCRIPT ] && bash $DPKG_REPAIR_SCRIPT; "
+
+    private val dpkgRepairScript = """
+        #!/bin/bash
+        # Written by Arin. Under PRoot there is no systemd or D-Bus, so those packages (and the desktop packages
+        # that need them: GTK, the full desktop Java, apt's apksigner) can never finish installing, and every later
+        # apt install then fails with "Sub-process /usr/bin/dpkg returned an error code (1)".
+        # Arin needs none of them (it uses the headless JDK and the Android SDK's own apksigner), so this removes
+        # the unfinished ones, blocks them from coming back, and finishes the rest.
+        export DEBIAN_FRONTEND=noninteractive
+        mkdir -p /etc/apt/preferences.d
+        cat > /etc/apt/preferences.d/arin-no-desktop <<'PIN'
+        Package: apksigner default-jre openjdk-*-jre dbus-user-session libgtk-3-0t64 libgtk-3-bin libgtk-3-common libdecor-0-plugin-1-gtk systemd-resolved networkd-dispatcher
+        Pin: version *
+        Pin-Priority: -1
+        PIN
+        pending() { dpkg-query -W -f='${'$'}{db:Status-Abbrev} ${'$'}{binary:Package}\n' 2>/dev/null | awk '{s=substr(${'$'}1,2,1)} s!="i" && s!="n" && s!="c" {print ${'$'}2}'; }
+        [ -n "${'$'}(pending)" ] || { dpkg --audit 2>/dev/null | grep -q . || exit 0; }
+        echo "Repairing an unfinished package install (systemd/D-Bus can't run inside the phone's Linux)…"
+        CORE='^(dbus|dbus-[a-z-]+|systemd|systemd-[a-z-]+|libpam-systemd|networkd-dispatcher|udev|polkitd|policykit-1|dconf-service|dconf-gsettings-backend|at-spi2-core)${'$'}'
+        DESK='^(apksigner|default-jre|openjdk-[0-9]+-jre|dbus-user-session|systemd-resolved|networkd-dispatcher|libgtk-3-[a-z0-9-]+|libgtk-3-0t64|gsettings-desktop-schemas|libdecor-0-plugin-1-gtk|at-spi2-core|dconf-service|dconf-gsettings-backend|libatk-bridge[a-z0-9.-]*|libatk[a-z0-9.-]*)${'$'}'
+        stub() { for s in postinst prerm postrm; do for f in "/var/lib/dpkg/info/${'$'}1.${'$'}s" "/var/lib/dpkg/info/${'$'}{1%%:*}.${'$'}s"; do [ -f "${'$'}f" ] && printf '#!/bin/sh\nexit 0\n' > "${'$'}f"; done; done; }
+        for p in ${'$'}(pending); do echo "${'$'}{p%%:*}" | grep -Eq "${'$'}CORE|${'$'}DESK" && stub "${'$'}p"; done
+        RM=""; for p in ${'$'}(pending); do echo "${'$'}{p%%:*}" | grep -Eq "${'$'}DESK" && RM="${'$'}RM ${'$'}p"; done
+        if [ -n "${'$'}RM" ]; then
+          echo "Removing desktop packages that can't work here:${'$'}RM"
+          dpkg --purge --force-depends --force-remove-reinstreq ${'$'}RM 2>&1 | tail -3
+        fi
+        dpkg --configure -a 2>&1 | tail -5
+        # Anything still stuck: skip just its setup script (only the systemd/D-Bus kind gets here).
+        for p in ${'$'}(pending); do echo "${'$'}{p%%:*}" | grep -Eq "${'$'}CORE" && stub "${'$'}p"; done
+        dpkg --configure -a >/dev/null 2>&1
+        apt-get -f install -y 2>&1 | tail -3
+        if [ -n "${'$'}(pending)" ]; then echo "Still not set up:"; pending | head -20
+        else echo "Package install repaired."; fi
+        exit 0
+    """.trimIndent() + "\n"
 
     /**
      * REA analyses APKs through jadx-headless-mcp (a Java program, so it runs on ARM too) and decodes resources
@@ -202,6 +304,7 @@ object Linux {
         "# Installs JDK 21, JADX (headless MCP 0.7.1), apktool, APKEditor and uber-apk-signer for REA's Android tools.",
         "set -e",
         "export DEBIAN_FRONTEND=noninteractive",
+        "fetch(){ if command -v arin-fetch >/dev/null 2>&1; then arin-fetch \"\$@\"; else curl -fL --retry 5 -sS -o \"\$2\" \"\$1\"; fi; }",
         "if ! command -v javac >/dev/null 2>&1; then",
         "  apt-get update",
         "  apt-get install -y --no-install-recommends openjdk-21-jdk-headless",
@@ -211,13 +314,13 @@ object Linux {
         "JADX=jadx-headless-mcp-0.7.1-all.jar",
         "SUM=6e5eacf500b64292bfb73c49797c1958f6ee44646e43e868039ae7feb573ff75",
         "if ! echo \"\$SUM  \$JADX\" | sha256sum -c - >/dev/null 2>&1; then",
-        "  curl -fL -o \"\$JADX\" https://github.com/1013503897/jadx-headless-mcp/releases/download/v0.7.1/\$JADX",
+        "  fetch https://github.com/1013503897/jadx-headless-mcp/releases/download/v0.7.1/\$JADX \"\$JADX\" JADX",
         "  echo \"\$SUM  \$JADX\" | sha256sum -c -",
         "fi",
         "if [ ! -f apktool.jar ]; then",
         "  URL=\$(curl -fsSL https://api.github.com/repos/iBotPeaches/Apktool/releases/latest | grep -o 'https://[^\"]*\\.jar' | head -1)",
         "  [ -n \"\$URL\" ] || { echo \"Couldn't find the apktool download\"; exit 1; }",
-        "  curl -fL -o apktool.jar \"\$URL\"",
+        "  fetch \"\$URL\" apktool.jar apktool",
         "fi",
         "printf '#!/bin/sh\\nexec java -jar /opt/rea-android/apktool.jar \"\$@\"\\n' > /usr/local/bin/apktool",
         "chmod +x /usr/local/bin/apktool",
@@ -225,7 +328,7 @@ object Linux {
         "if [ ! -f APKEditor.jar ]; then",
         "  URL=\$(curl -fsSL https://api.github.com/repos/REAndroid/APKEditor/releases/latest | grep -o 'https://[^\"]*APKEditor-[^\"]*\\.jar' | head -1)",
         "  [ -n \"\$URL\" ] || { echo \"Couldn't find the APKEditor download\"; exit 1; }",
-        "  curl -fL -o APKEditor.jar \"\$URL\"",
+        "  fetch \"\$URL\" APKEditor.jar APKEditor",
         "fi",
         "printf '#!/bin/sh\\nexec java -jar /opt/rea-android/APKEditor.jar \"\$@\"\\n' > /usr/local/bin/apkeditor",
         "chmod +x /usr/local/bin/apkeditor",
@@ -233,7 +336,7 @@ object Linux {
         "if [ ! -f uber-apk-signer.jar ]; then",
         "  URL=\$(curl -fsSL https://api.github.com/repos/patrickfav/uber-apk-signer/releases/latest | grep -o 'https://[^\"]*uber-apk-signer-[^\"]*\\.jar' | head -1)",
         "  [ -n \"\$URL\" ] || { echo \"Couldn't find the uber-apk-signer download\"; exit 1; }",
-        "  curl -fL -o uber-apk-signer.jar \"\$URL\"",
+        "  fetch \"\$URL\" uber-apk-signer.jar uber-apk-signer",
         "fi",
         "JH=\$(dirname \"\$(dirname \"\$(readlink -f \"\$(command -v javac)\")\")\")",
         "mkdir -p /root/.arin",
@@ -289,7 +392,7 @@ object Linux {
         configure(context)
         File(rootfs(context), "root/.arin").mkdirs()
         File(rootfs(context), "root/.arin/rebuild-sign.sh").writeText(rebuildSignScript)
-        return run(context, "bash $ANDROID_TOOLS_SCRIPT", timeoutMs = 30 * 60_000L, onOutput = log)
+        return run(context, DPKG_REPAIR + "bash $ANDROID_TOOLS_SCRIPT", timeoutMs = 30 * 60_000L, onOutput = log)
     }
 
     /** Installs REA (npm package rea-agents) in Linux. */
@@ -302,7 +405,9 @@ object Linux {
               case "${'$'}(uname -m)" in aarch64) NA=arm64;; armv7l|armv8l) NA=armv7l;; x86_64) NA=x64;; *) echo "unknown arch"; exit 1;; esac
               V=${'$'}(curl -fsSL https://nodejs.org/dist/latest-v24.x/ | grep -o "node-v24[0-9.]*-linux-${'$'}NA.tar.xz" | head -1)
               echo "Updating Node.js to ${'$'}V"
-              curl -fsSL "https://nodejs.org/dist/latest-v24.x/${'$'}V" | tar -xJ -C /usr/local --strip-components=1
+              arin-fetch "https://nodejs.org/dist/latest-v24.x/${'$'}V" /tmp/node.tar.xz "Node.js" 2>/dev/null || curl -fsSL -o /tmp/node.tar.xz "https://nodejs.org/dist/latest-v24.x/${'$'}V"
+              echo "Unpacking Node.js…"
+              tar -xJf /tmp/node.tar.xz -C /usr/local --strip-components=1 && rm -f /tmp/node.tar.xz
             fi
             echo "node ${'$'}(node -v)"
         """.trimIndent()
@@ -319,6 +424,60 @@ object Linux {
     }
 
     /** Deletes the Linux system and everything in it. */
+    /** What each installed tool is, for Settings → Linux (Installed / Uninstall). */
+    enum class Tool(val label: String, val detail: String) {
+        JAVA("Java 21, Kotlin & Gradle", "Compile Java and Kotlin programs"),
+        ANDROID_SDK("Android SDK & build tools", "Compile apps into APKs on this phone (aapt2, d8, apksigner, arin-build)"),
+        APK_TOOLKIT("APK toolkit", "jadx, apktool, APKEditor, dex2jar, bundletool, uber-apk-signer, androguard"),
+    }
+
+    fun toolInstalled(context: Context, tool: Tool): Boolean = when (tool) {
+        Tool.JAVA -> devToolsReady(context)
+        Tool.ANDROID_SDK -> androidBuildReady(context)
+        Tool.APK_TOOLKIT -> apkToolkitReady(context)
+    }
+
+    /** Removes one tool from Linux (Linux itself and the other tools stay). */
+    suspend fun uninstallTool(context: Context, tool: Tool, log: (String) -> Unit): Termux.Result {
+        log("Uninstalling ${tool.label}…")
+        val script = when (tool) {
+            Tool.JAVA -> """
+                $DPKG_REPAIR
+                export DEBIAN_FRONTEND=noninteractive
+                apt-get purge -y 'openjdk-21-*' 2>&1 | tail -2
+                apt-get autoremove -y >/dev/null 2>&1
+                rm -rf /opt/kotlinc /opt/gradle-*
+                rm -f /usr/local/bin/kotlinc /usr/local/bin/kotlin /usr/local/bin/kotlinr /usr/local/bin/gradle
+                echo "Removed Java, Kotlin and Gradle."
+            """.trimIndent()
+            Tool.ANDROID_SDK -> """
+                rm -rf /opt/android-sdk /root/.android /etc/profile.d/arin-android.sh
+                rm -f /usr/local/bin/arin-build /usr/local/bin/apksigner /usr/local/bin/d8 /usr/local/bin/r8 /usr/local/bin/dexdump /usr/local/bin/aapt2 /usr/local/bin/zipalign
+                echo "Removed the Android SDK and build tools."
+            """.trimIndent()
+            Tool.APK_TOOLKIT -> """
+                rm -rf /opt/arin-tools /opt/jadx /opt/dex2jar
+                rm -f /opt/rea-android/APKEditor.jar /opt/rea-android/uber-apk-signer.jar
+                rm -f /usr/local/bin/jadx /usr/local/bin/apkeditor /usr/local/bin/uber-apk-signer /usr/local/bin/bundletool /usr/local/bin/arin-tools /usr/local/bin/d2j-*
+                pip3 uninstall -y --break-system-packages androguard >/dev/null 2>&1 || pip3 uninstall -y androguard >/dev/null 2>&1 || true
+                echo "Removed the APK toolkit (apktool stays: REA uses it)."
+            """.trimIndent()
+        }
+        val r = run(context, script, timeoutMs = 15 * 60_000L, onOutput = log)
+        if (r.exitCode == 0 && r.error == null) when (tool) {
+            Tool.JAVA -> { devMarker(context).delete(); androidBuildMarker(context).delete(); toolkitMarker(context).delete() }
+            Tool.ANDROID_SDK -> { androidBuildMarker(context).delete(); toolkitMarker(context).delete() }
+            Tool.APK_TOOLKIT -> toolkitMarker(context).delete()
+        }
+        return r
+    }
+
+    /** Removes REA (the npm package) from Linux. */
+    suspend fun uninstallRea(context: Context, log: (String) -> Unit): Termux.Result {
+        log("Uninstalling REA…")
+        return run(context, "pkill -f mcp-bridge.mjs; npm uninstall --global rea-agents 2>&1 | tail -2; echo 'Removed REA.'", timeoutMs = 10 * 60_000L, onOutput = log)
+    }
+
     suspend fun remove(context: Context) = withContext(Dispatchers.IO) {
         // PRoot may have made folders read-only; make them writable so they can be deleted.
         base(context).walkBottomUp().forEach { runCatching { it.setWritable(true) } }
@@ -389,6 +548,7 @@ object Linux {
     /** Settings that make Ubuntu work inside an app: DNS, hosts, apt without a sandbox user, a home folder. */
     private fun configure(context: Context) {
         val root = rootfs(context)
+        com.arin.selffix.InstallProgress.ensureFetchTool(context)
         File(root, "etc").mkdirs()
         File(root, "etc/resolv.conf").apply { runCatching { delete() } }.writeText("nameserver 8.8.8.8\nnameserver 1.1.1.1\n")
         File(root, "etc/hosts").writeText("127.0.0.1 localhost\n::1 localhost ip6-localhost ip6-loopback\n")
@@ -396,6 +556,12 @@ object Linux {
         File(root, "etc/apt/apt.conf.d/01-arin").writeText(
             "APT::Sandbox::User \"root\";\nAcquire::Retries \"3\";\nDPkg::Use-Pty \"false\";\n",
         )
+        // PRoot has no systemd / D-Bus, so those packages' setup scripts always fail and leave apt stuck
+        // ("dpkg returned an error code (1)"). Never pull them in as extras, and repair a stuck apt before installs.
+        File(root, "etc/apt/apt.conf.d/02-arin-no-recommends").writeText(
+            "APT::Install-Recommends \"0\";\nAPT::Install-Suggests \"0\";\n",
+        )
+        File(root, DPKG_REPAIR_SCRIPT.removePrefix("/")).apply { parentFile?.mkdirs() }.writeText(dpkgRepairScript)
         File(root, "etc/profile.d").mkdirs()
         File(root, "etc/profile.d/arin.sh").writeText(
             "# Set by Arin: PRoot can't translate io_uring or handle glibc's rseq; both can crash Node/npm.\n" +
@@ -428,17 +594,35 @@ object Linux {
      * Runs [command] with bash in Linux (home /root, as root) and waits until it finishes, at most
      * [timeoutMs]. Background jobs it starts (nohup … &) keep running after it returns.
      */
+    /**
+     * ARIN-PROTECTED: per-run-workdir — the script Arin runs for one command. It starts in [workDir] (the folder this
+     * chat's task is working in; /root when there is none), not always in /root, so `cd myproject` in one command
+     * still holds for the next command of the same task. Where the command ends up is written to [cwdFile] (read back
+     * by the caller and kept per chat, never shared between chats). A folder that no longer exists is reported, and
+     * the command runs in the home folder instead. Pure, so it is tested by really running it with bash.
+     */
+    fun script(command: String, done: String, workDir: String?, cwdFile: String, home: String = HOME): String {
+        val wd = workDir?.takeIf { it.isNotBlank() }
+        val q = { s: String -> "'" + s.replace("'", "'\\''") + "'" }
+        val start = if (wd == null) "cd ${q(home)} 2>/dev/null\n"
+            else "cd ${q(wd)} 2>/dev/null || { echo ${q("Arin: the working folder $wd no longer exists — running in $home")} >&2; cd ${q(home)} 2>/dev/null; }\n"
+        return start + "(\nset -o pipefail\n$command\n__arin_rc=\$?\npwd > ${q(cwdFile)} 2>/dev/null\nexit \$__arin_rc\n)\nrc=\$?\nprintf '\\n$done%s\\n' \"\$rc\" >&2\n"
+    }
+
     suspend fun run(
         context: Context,
         command: String,
         timeoutMs: Long = 15 * 60_000L,
+        /** The folder this task works in (kept per chat by the caller); null = the home folder. */
+        workDir: String? = null,
         onOutput: ((String) -> Unit)? = null,
     ): Termux.Result = withContext(Dispatchers.IO) {
         if (!installed(context)) return@withContext Termux.Result("", "", null, "Linux isn't installed. Open Settings → Linux and tap Install Linux.")
         val root = rootfs(context)
         // Installs from older Arin versions get the newer fixes too.
         if (File(root, "etc/profile.d/arin.sh").let { !it.exists() || !it.readText().contains("COLUMNS") } ||
-            !File(root, ANDROID_TOOLS_SCRIPT.removePrefix("/")).exists()
+            !File(root, ANDROID_TOOLS_SCRIPT.removePrefix("/")).exists() ||
+            !File(root, DPKG_REPAIR_SCRIPT.removePrefix("/")).exists()
         ) runCatching { configure(context) }
         val id = UUID.randomUUID().toString().replace("-", "").take(12)
         val done = "__ARIN_DONE_${id}__"
@@ -446,7 +630,8 @@ object Linux {
         // marker line, so background jobs it leaves running don't keep us waiting.
         val script = File(root, "tmp/arin-$id.sh")
         // pipefail: a crash before "| head" must not look like success.
-        script.writeText("cd $HOME 2>/dev/null\n(\nset -o pipefail\n$command\n)\nrc=$?\nprintf '\\n$done%s\\n' \"\$rc\" >&2\n")
+        val cwdFile = File(root, "tmp/arin-$id.cwd")
+        script.writeText(script(command, done, workDir, "/tmp/arin-$id.cwd"))
         val cmd = mutableListOf(
             proot(context).absolutePath,
             "-0", "-r", root.absolutePath,
@@ -484,6 +669,7 @@ object Linux {
             put("PATH", "/system/bin")
             put("ANDROID_ROOT", "/system")
             put("ANDROID_DATA", "/data")
+            if (noSeccomp(context)) put("PROOT_NO_SECCOMP", "1")
         }
         val process = try {
             pb.start()
@@ -513,7 +699,18 @@ object Linux {
         }.apply { isDaemon = true; start() }
         try {
             val code = withTimeout(timeoutMs) { finished.await() }
-            Termux.Result(out.toString(), err.toString(), code, null)
+            // Give the subshell a moment to have written where it ended up.
+            var cwd: String? = null
+            repeat(10) { if (cwd == null) { cwd = runCatching { cwdFile.readText().trim() }.getOrNull()?.ifBlank { null }; if (cwd == null) Thread.sleep(20) } }
+            val all = out.toString() + err.toString()
+            // ARIN-PROTECTED: proot-fallback — some kernels (emulators, a few phones) reject PRoot's fast seccomp mode, so the
+            // shell can't even open /dev/null. Nothing ran in that case: switch to the compatible mode once, remember it, retry.
+            if (!noSeccomp(context) && Regex("""(/dev/null|cannot duplicate pipe)[^\n]*Function not implemented""").containsMatchIn(all)) {
+                context.getSharedPreferences("arin-linux", Context.MODE_PRIVATE).edit().putBoolean("no_seccomp", true).apply()
+                runCatching { script.delete() }; runCatching { cwdFile.delete() }
+                return@withContext Linux.run(context, command, timeoutMs, workDir, onOutput)
+            }
+            Termux.Result(out.toString(), err.toString(), code, null, cwd = cwd)
         } catch (e: TimeoutCancellationException) {
             process.destroy()
             Termux.Result(out.toString(), err.toString(), null, "Stopped after ${timeoutMs / 60_000} min without finishing.")
@@ -522,8 +719,12 @@ object Linux {
             throw e
         } finally {
             runCatching { script.delete() }
+            runCatching { cwdFile.delete() }
         }
     }
+
+    /** True once this device was found to need PRoot's compatible (no-seccomp) mode. */
+    fun noSeccomp(context: Context): Boolean = context.getSharedPreferences("arin-linux", Context.MODE_PRIVATE).getBoolean("no_seccomp", false)
 
     /** Copies an attached file into Linux (/root/files) and returns its path there, or null. */
     fun importFile(context: Context, input: InputStream, name: String): String? = runCatching {
@@ -553,8 +754,10 @@ object Shell {
             "No terminal is set up. Open Settings → Terminal and tap Install Linux (built in), or set up Termux."
         }
 
-    suspend fun run(context: Context, command: String, timeoutMs: Long = 15 * 60_000L): Termux.Result =
-        if (usesLinux(context)) Linux.run(context, command, timeoutMs) else Termux.run(context, command, timeoutMs = timeoutMs)
+    /** Runs [command] in [workDir] (this task's folder; null = home). The result's `cwd` is where it ended up. */
+    suspend fun run(context: Context, command: String, timeoutMs: Long = 15 * 60_000L, workDir: String? = null): Termux.Result =
+        if (usesLinux(context)) Linux.run(context, command, timeoutMs, workDir = workDir)
+        else Termux.run(context, command, workdir = workDir ?: Termux.HOME, timeoutMs = timeoutMs)
 
     /** A line describing the environment, for the model. */
     fun describe(context: Context): String =

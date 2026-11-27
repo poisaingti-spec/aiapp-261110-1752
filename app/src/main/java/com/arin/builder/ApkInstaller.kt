@@ -42,6 +42,7 @@ object ApkInstaller {
                         o.write(buf, 0, n)
                         done += n
                         if (total > 0) onProgress(done.toFloat() / total)
+                        com.arin.selffix.InstallProgress.bytes(name, done, total)
                     }
                 }
             }

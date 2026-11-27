@@ -29,6 +29,7 @@ object AgentTools {
         val apt = if (linux) "apt-get install -y -qq --no-install-recommends" else "pkg install -y"
         val update = if (linux) "apt-get update -qq" else "pkg update -y"
         val script = buildString {
+            if (linux) appendLine(Linux.DPKG_REPAIR.trim())
             appendLine("ok=0; bad=0; updated=0")
             appendLine("try_sys(){ $apt \"$1\" >/tmp/arin-inst.log 2>&1 && return 0; if [ \$updated = 0 ]; then $update >/dev/null 2>&1; updated=1; $apt \"$1\" >/tmp/arin-inst.log 2>&1 && return 0; fi; return 1; }")
             appendLine("try_pip(){ (command -v pip3 >/dev/null || try_sys python3-pip) && pip3 install -q --break-system-packages \"$1\" >/tmp/arin-inst.log 2>&1 || pip3 install -q \"$1\" >/tmp/arin-inst.log 2>&1; }")
@@ -56,31 +57,31 @@ object AgentTools {
     }
 
     /** Reads a text file with line numbers, [from] (1-based) for [count] lines. */
-    suspend fun read(context: Context, path: String, from: Int = 1, count: Int = 400): Termux.Result {
+    suspend fun read(context: Context, path: String, from: Int = 1, count: Int = 400, workDir: String? = null): Termux.Result {
         val p = quote(path)
         return Shell.run(context,
             "if [ -d $p ]; then ls -la $p; elif [ -f $p ]; then total=\$(wc -l < $p); " +
                 "awk -v s=$from -v n=$count 'NR>=s && NR<s+n { printf \"%6d  %s\\n\", NR, \$0 }' $p | cut -c1-2000; " +
                 "echo \"(lines $from-\$(( $from + $count - 1 < total ? $from + $count - 1 : total )) of \$total)\"; else echo 'No such file: '$p; exit 1; fi",
-            timeoutMs = 60_000L)
+            timeoutMs = 60_000L, workDir = workDir)
     }
 
     /** Creates or replaces a file with [content], making its folders. */
-    suspend fun write(context: Context, path: String, content: String): Termux.Result {
+    suspend fun write(context: Context, path: String, content: String, workDir: String? = null): Termux.Result {
         val p = quote(path)
         val b64 = Base64.encodeToString(content.toByteArray(), Base64.NO_WRAP)
         return Shell.run(context,
             "mkdir -p \"\$(dirname $p)\" && printf '%s' '$b64' | base64 -d > $p && echo \"wrote \$(wc -c < $p) bytes, \$(wc -l < $p) lines to \"$p",
-            timeoutMs = 120_000L)
+            timeoutMs = 120_000L, workDir = workDir)
     }
 
     /**
      * Replaces [old] with [new] in a file. [old] must appear exactly once (like Claude Code's edit), so the
      * change lands where the model meant it.
      */
-    suspend fun edit(context: Context, path: String, old: String, new: String): Termux.Result {
+    suspend fun edit(context: Context, path: String, old: String, new: String, workDir: String? = null): Termux.Result {
         val p = quote(path)
-        val got = Shell.run(context, "[ -f $p ] && base64 -w0 $p || { echo 'No such file: '$p >&2; exit 1; }", timeoutMs = 60_000L)
+        val got = Shell.run(context, "[ -f $p ] && base64 -w0 $p || { echo 'No such file: '$p >&2; exit 1; }", timeoutMs = 60_000L, workDir = workDir)
         if (got.exitCode != 0) return got
         val text = runCatching { String(Base64.decode(got.stdout.trim(), Base64.DEFAULT)) }.getOrNull()
             ?: return Termux.Result("", "Couldn't read $path.", 1, null)
@@ -92,7 +93,7 @@ object AgentTools {
         return when {
             found == 0 -> Termux.Result("", "The <old> text was not found in $path. Read the file again and copy the exact text (spaces and line breaks matter).", 1, null)
             found > 1 -> Termux.Result("", "The <old> text appears more than once in $path. Include more surrounding lines so it matches only once.", 1, null)
-            else -> write(context, path, text.replaceFirst(old, new)).let { w ->
+            else -> write(context, path, text.replaceFirst(old, new), workDir).let { w ->
                 if (w.exitCode == 0) Termux.Result("edited $path (replaced 1 place)", "", 0, null) else w
             }
         }

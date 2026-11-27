@@ -64,7 +64,7 @@ object Attachments {
     private fun textBudget(provider: Provider): Int = when (provider) {
         Provider.Free -> 40_000
         Provider.Custom -> 150_000
-        Provider.Claude, Provider.Gemini, Provider.ChatGPT -> 400_000
+        Provider.Claude, Provider.Gemini, Provider.ChatGPT, Provider.ClaudeCode -> 400_000
     }
 
     private val textExtensions = setOf(

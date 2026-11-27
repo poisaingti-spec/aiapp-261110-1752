@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -108,7 +109,7 @@ fun ArinMessage(
         Spacer(Modifier.width(10.dp))
         Column(Modifier.weight(1f)) {
             if (showThinking && message.thinking.isNotBlank()) {
-                ThinkingPanel(message.thinking, message.thoughtSeconds, live = false)
+                ThinkingPanel(message.thinking, message.thoughtSeconds, live = false, who = message.by)
                 Spacer(Modifier.size(8.dp))
             }
             message.commands.forEach { CommandCard(it) }
@@ -120,9 +121,10 @@ fun ArinMessage(
                 ) {
                     Text(message.text, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(12.dp))
                 }
-            } else if (onSummary != null && com.arin.builder.BuildRunner.anyRunning && !message.text.contains("— steps**")) {
-                // A build in progress: one line with the current step; tap it for the full Summary.
-                BuildNowLine(onSummary, message.text)
+            } else if (onSummary != null && message.text.startsWith("🛠️") && com.arin.builder.BuildRunner.anyRunning && !message.text.contains("— steps**")) {
+                // Only a build's own progress message turns into the one-line step view; ordinary replies always show their text.
+                // A build in progress: shown right away with its summary and what is really happening, with Minimise / Maximise.
+                BuildProgressPanel(onSummary, message.text, message.id)
             } else {
                 SelectionContainer { MarkdownText(message.text) }
                 val artifacts = remember(message.text) { Artifacts.find(message.text) }
@@ -140,8 +142,19 @@ fun ArinMessage(
                     androidx.compose.material3.Button(onClick = { onConfirmBuild(BuildTarget.CHAT) }, modifier = Modifier.padding(top = 8.dp)) {
                         Text("Update Arin now")
                     }
+                } else if (message.pendingBuild.startsWith("where\u0000")) {
+                    // The code is written: where to build it.
+                    com.arin.selffix.WhereToBuild(onPick = { w ->
+                        onConfirmBuild(when (w) {
+                            "phone" -> BuildTarget.PHONE; "codespace" -> BuildTarget.CODESPACE; "buildtab" -> BuildTarget.BUILD_TAB
+                            "auto" -> BuildTarget.AUTO; else -> BuildTarget.CHAT
+                        })
+                    }, showChat = false)
                 } else {
-                    BuildWhere(onConfirmBuild)
+                    // Write the code first; where to build is asked once it's written.
+                    androidx.compose.material3.Button(onClick = { onConfirmBuild(BuildTarget.AUTO) }, modifier = Modifier.padding(top = 8.dp)) {
+                        Text("✍️ Write the code")
+                    }
                 }
             }
             if (onResume != null || onStartOver != null) {
@@ -267,13 +280,14 @@ fun LiveReply(
     status: String?,
     commands: List<com.arin.data.CommandRun> = emptyList(),
     onSummary: (() -> Unit)? = null,
+    who: String = "",
 ) {
     Row(Modifier.fillMaxWidth()) {
         ArinMark(size = 22.dp, modifier = Modifier.padding(top = 2.dp))
         Spacer(Modifier.width(10.dp))
         Column(Modifier.weight(1f)) {
             if (showThinking && thinking.isNotBlank()) {
-                ThinkingPanel(thinking, 0, live = text.isEmpty())
+                ThinkingPanel(thinking, 0, live = text.isEmpty(), who = who)
                 Spacer(Modifier.size(8.dp))
             }
             commands.forEach { CommandCard(it) }
@@ -414,7 +428,7 @@ fun plainStep(r: com.arin.data.CommandRun, labelIn: String): Pair<String, StepKi
 
 /** The model's reasoning: open while it streams, then folded to "Reasoned for N s" (tap to open). */
 @Composable
-fun ThinkingPanel(text: String, seconds: Int, live: Boolean) {
+fun ThinkingPanel(text: String, seconds: Int, live: Boolean, who: String = "") {
     var open by remember(live) { mutableStateOf(live) }
     val extras = LocalArinExtras.current
     Column(
@@ -429,9 +443,9 @@ fun ThinkingPanel(text: String, seconds: Int, live: Boolean) {
             Spacer(Modifier.width(8.dp))
             Text(
                 when {
-                    live -> "Reasoning…"
-                    seconds > 0 -> "Reasoned for $seconds s"
-                    else -> "Reasoning"
+                    live -> if (who.isNotBlank()) "$who is reasoning…" else "Reasoning…"
+                    seconds > 0 -> (if (who.isNotBlank()) "$who reasoned" else "Reasoned") + " for $seconds s"
+                    else -> if (who.isNotBlank()) "$who's reasoning" else "Reasoning"
                 } + if (live) "" else if (open) "  ▴" else "  ▾",
                 style = MaterialTheme.typography.labelLarge,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -532,6 +546,105 @@ private fun BuildNowLine(onOpen: () -> Unit, progressText: String) {
         Spacer(Modifier.width(12.dp))
         Text(step, style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.weight(1f, fill = false), maxLines = 2)
         Text("  ›", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    }
+}
+
+/**
+ * The build's progress, shown in the chat as soon as the build starts: a summary of the steps so far, the step running
+ * now, and (Maximise) every line of what the models and the build are actually doing, live. Minimise folds it to one line.
+ */
+@Composable
+private fun BuildProgressPanel(onOpen: () -> Unit, progressText: String, key: String) {
+    // 0 = minimised (one line), 1 = summary (default), 2 = maximised (summary + live process).
+    var mode by androidx.compose.runtime.saveable.rememberSaveable(key) { mutableStateOf(1) }
+    val accent = androidx.compose.ui.graphics.Color(0xFFD97757)
+    val started = androidx.compose.runtime.saveable.rememberSaveable(key) { System.currentTimeMillis() }
+    var now by remember { mutableStateOf(System.currentTimeMillis()) }
+    androidx.compose.runtime.LaunchedEffect(Unit) { while (true) { now = System.currentTimeMillis(); kotlinx.coroutines.delay(1_000) } }
+    fun ago(ms: Long): String { val s = (ms / 1000).coerceAtLeast(0); return if (s < 60) "$s s" else "${s / 60} min ${s % 60} s" }
+    val lines = progressText.lines()
+    val steps = lines.filter { it.startsWith("- ") }.map { it.removePrefix("- ").trim() }
+    val earlier = lines.firstOrNull { it.startsWith("_…") && it.contains("earlier steps") }?.trim('_')
+    val doing = lines.lastOrNull { it.startsWith("_") && it.endsWith("_") && !it.contains("earlier steps") }?.trim('_')?.trim()
+        ?.ifBlank { null }
+    val current = doing ?: steps.lastOrNull()?.substringAfter(' ')?.trim()?.ifBlank { null } ?: "Starting the build"
+    Surface(
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
+        shape = RoundedCornerShape(14.dp),
+        modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp).animateContentSize(),
+    ) {
+        Column(Modifier.padding(start = 12.dp, end = 4.dp, top = 6.dp, bottom = 8.dp)) {
+            // Header: what's happening now, the clock, and the Minimise / Maximise buttons.
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("🛠️ Build progress", style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
+                TextButton(onClick = { mode = if (mode == 0) 1 else 0 }) { Text(if (mode == 0) "▢ Restore" else "— Minimise") }
+                TextButton(onClick = { mode = if (mode == 2) 1 else 2 }) { Text(if (mode == 2) "⤡ Smaller" else "⤢ Maximise") }
+            }
+            BuildNowLine(onOpen, if (steps.isEmpty() && doing != null) "- • $doing" else progressText)
+            if (mode == 0) return@Column
+            Text(
+                "⏱ building for ${ago(now - started)}" + com.arin.builder.LiveFeed.lastAt.takeIf { it > 0 }
+                    ?.let { " · last activity ${ago(now - it)} ago" }.orEmpty(),
+                style = MaterialTheme.typography.labelMedium,
+                color = accent,
+                modifier = Modifier.padding(bottom = 4.dp),
+            )
+            Text("Summary", style = MaterialTheme.typography.titleSmall, modifier = Modifier.padding(top = 2.dp, bottom = 2.dp))
+            if (earlier != null) Text(earlier, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            if (steps.isEmpty()) Text("Starting the build…", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            steps.forEachIndexed { i, s ->
+                val last = i == steps.lastIndex
+                Text(
+                    s,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = if (last) accent else MaterialTheme.colorScheme.onSurface,
+                    maxLines = if (mode == 2) 6 else 2,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.padding(vertical = 1.dp),
+                )
+            }
+            Text(
+                "Now: $current",
+                style = MaterialTheme.typography.bodyMedium,
+                fontStyle = FontStyle.Italic,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = 4.dp),
+            )
+            if (mode == 2) {
+                // Everything that is really going on, word for word (models' thinking, searches, commands, files, build steps).
+                Text("What's happening — live", style = MaterialTheme.typography.titleSmall, modifier = Modifier.padding(top = 10.dp, bottom = 4.dp))
+                val feed = com.arin.builder.LiveFeed.lines
+                val feedList = androidx.compose.foundation.lazy.rememberLazyListState()
+                androidx.compose.runtime.LaunchedEffect(feed.size) { if (feed.isNotEmpty()) feedList.scrollToItem(feed.lastIndex) }
+                val fmt = remember { java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.getDefault()) }
+                Surface(
+                    color = MaterialTheme.colorScheme.surface,
+                    shape = RoundedCornerShape(10.dp),
+                    modifier = Modifier.fillMaxWidth().padding(end = 8.dp),
+                ) {
+                    androidx.compose.foundation.lazy.LazyColumn(
+                        state = feedList,
+                        modifier = Modifier.fillMaxWidth().height(320.dp),
+                        contentPadding = androidx.compose.foundation.layout.PaddingValues(8.dp),
+                    ) {
+                        if (feed.isEmpty()) item { Text("Lines appear here as soon as the build starts working.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                        items(feed.size) { i ->
+                            val l = feed[i]
+                            Text(
+                                fmt.format(java.util.Date(l.time)) + "  " + l.who + "  " + l.text,
+                                style = MaterialTheme.typography.bodySmall.copy(fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace),
+                                color = when {
+                                    l.who.startsWith("Claude") -> accent
+                                    l.who == "…" -> MaterialTheme.colorScheme.onSurfaceVariant
+                                    else -> MaterialTheme.colorScheme.onSurface
+                                },
+                                modifier = Modifier.padding(vertical = 1.dp),
+                            )
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 

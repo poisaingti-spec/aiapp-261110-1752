@@ -87,21 +87,40 @@ object LocalModel {
      * Installs llama-server in Linux: the official prebuilt Ubuntu build from llama.cpp's latest GitHub
      * release, else (if it won't run here) a build from source. Safe to run again.
      */
-    suspend fun installServer(context: Context, log: (String) -> Unit): String? = withContext(Dispatchers.IO) {
+    /** Only one install at a time: a second tap waits for the first instead of deleting its files mid-way. */
+    private val installLock = kotlinx.coroutines.sync.Mutex()
+
+    suspend fun installServer(context: Context, log: (String) -> Unit): String? = installLock.withLockSafe(log) { installServerOnce(context, log) }
+
+    private suspend fun <T> kotlinx.coroutines.sync.Mutex.withLockSafe(log: (String) -> Unit, block: suspend () -> T): T {
+        if (isLocked) log("Already installing — waiting for that to finish…")
+        lock()
+        try { return block() } finally { unlock() }
+    }
+
+    private suspend fun installServerOnce(context: Context, log: (String) -> Unit): String? = withContext(Dispatchers.IO) {
+        if (serverInstalled(context) && File(arinDir(context), "llama-server").exists()) return@withContext null
         if (!Linux.installed(context)) return@withContext "Install Linux first (Settings → Linux)."
         val arch = if (android.os.Build.SUPPORTED_ABIS.firstOrNull()?.startsWith("arm64") == true) "arm64" else "x64"
         log("Installing libraries llama.cpp needs…")
-        Linux.run(context, "apt-get update -qq >/dev/null 2>&1; apt-get install -y -qq libgomp1 ca-certificates curl tar >/dev/null 2>&1; " +
+        Linux.run(context, "dpkg --configure -a >/dev/null 2>&1; apt-get update -qq >/dev/null 2>&1; apt-get install -y -qq libgomp1 ca-certificates curl tar >/dev/null 2>&1; " +
             "apt-get install -y -qq libcurl4t64 libssl3t64 >/dev/null 2>&1 || apt-get install -y -qq libcurl4 libssl3 >/dev/null 2>&1; echo ok", timeoutMs = 15 * 60_000L)
 
         val prebuilt = runCatching {
-            log("Looking up the latest llama.cpp release…")
-            val rel = getJson("https://api.github.com/repos/ggml-org/llama.cpp/releases/latest") as JsonObject
-            val tag = (rel["tag_name"] as? JsonPrimitive)?.contentOrNull.orEmpty()
-            val asset = (rel["assets"] as JsonArray).map { it as JsonObject }.firstOrNull { a ->
-                val n = (a["name"] as JsonPrimitive).content
-                n.endsWith("bin-ubuntu-$arch.tar.gz") || n.endsWith("bin-ubuntu-$arch.zip")
-            } ?: throw IllegalStateException("No Ubuntu $arch build in release $tag")
+            log("Looking up the newest llama.cpp build…")
+            // The phone builds are in the numbered build releases (b1234…), not in "latest" (which may have no files):
+            // take the newest release that has the Ubuntu build for this phone.
+            val releases = getJson("https://api.github.com/repos/ggml-org/llama.cpp/releases?per_page=20") as JsonArray
+            var tag = ""
+            var asset: JsonObject? = null
+            for (r in releases.map { it as JsonObject }) {
+                val a = (r["assets"] as? JsonArray)?.map { it as JsonObject }?.firstOrNull { x ->
+                    val n = (x["name"] as JsonPrimitive).content
+                    n.endsWith("bin-ubuntu-$arch.tar.gz") || n.endsWith("bin-ubuntu-$arch.zip")
+                }
+                if (a != null) { asset = a; tag = (r["tag_name"] as? JsonPrimitive)?.contentOrNull.orEmpty(); break }
+            }
+            if (asset == null) throw IllegalStateException("No Ubuntu $arch build in the last 20 llama.cpp releases")
             val name = (asset["name"] as JsonPrimitive).content
             val url = (asset["browser_download_url"] as JsonPrimitive).content
             log("Downloading llama.cpp $tag ($name)…")
@@ -109,13 +128,24 @@ object LocalModel {
             download(url, archive) { done, total -> log("Downloading llama.cpp: ${pct(done, total)}") }
             val dir = serverDir(context)
             val p = linuxPath(context, archive)
+            // Unpacked by Arin itself (not tar inside Linux, which fails on some phones): files, folders and links.
+            log("Unpacking llama.cpp…")
+            val fresh = File(arinDir(context), "llama.new")
+            fresh.deleteRecursively(); fresh.mkdirs()
+            if (name.endsWith(".zip")) unzip(archive, fresh) else untarGz(archive, fresh)
+            archive.delete()
+            dir.deleteRecursively()
+            if (!fresh.renameTo(dir)) throw IllegalStateException("couldn't move the unpacked files into place")
+            val server = dir.walkTopDown().firstOrNull { it.isFile && it.name == "llama-server" }
+                ?: throw IllegalStateException("llama-server wasn't in the download")
+            server.setExecutable(true, false)
+            dir.walkTopDown().filter { it.isFile && !it.name.contains('.') }.forEach { it.setExecutable(true, false) }
+            val sPath = linuxPath(context, server)
+            val dPath = linuxPath(context, server.parentFile!!)
             val r = Linux.run(context,
-                "rm -rf ~/.arin/llama && mkdir -p ~/.arin/llama && cd ~/.arin/llama && " +
-                    (if (name.endsWith(".zip")) "(command -v unzip >/dev/null || apt-get install -y -qq unzip >/dev/null) && unzip -oq '$p'" else "tar -xzf '$p'") +
-                    " && rm -f '$p' && S=$(find ~/.arin/llama -name llama-server -type f | head -1) && chmod +x \"\$S\" && " +
-                    "D=$(dirname \"\$S\") && ln -sf \"\$S\" ~/.arin/llama-server && echo \"\$D\" > ~/.arin/llama-libdir && " +
-                    "LD_LIBRARY_PATH=\"\$D\" \"\$S\" --version 2>&1 | head -3",
-                timeoutMs = 10 * 60_000L)
+                "ln -sf '$sPath' ~/.arin/llama-server && echo '$dPath' > ~/.arin/llama-libdir && " +
+                    "LD_LIBRARY_PATH='$dPath' '$sPath' --version 2>&1",
+                timeoutMs = 5 * 60_000L)
             if (r.exitCode != 0 || !File(dir, ".").exists()) throw IllegalStateException(r.combined().takeLast(400))
             log(r.combined().trim().lines().lastOrNull().orEmpty())
             true
@@ -125,18 +155,82 @@ object LocalModel {
         }
         if (!prebuilt) {
             val r = Linux.run(context,
-                "apt-get install -y -qq build-essential cmake git >/dev/null 2>&1 && rm -rf ~/.arin/llama-src && " +
-                    "git clone --depth 1 https://github.com/ggml-org/llama.cpp ~/.arin/llama-src && cd ~/.arin/llama-src && " +
-                    "cmake -B build -DCMAKE_BUILD_TYPE=Release -DLLAMA_CURL=OFF -DBUILD_SHARED_LIBS=OFF -DGGML_NATIVE=ON >/dev/null && " +
+                "(dpkg --configure -a; apt-get update -qq; apt-get install -y -qq build-essential cmake git) >/dev/null 2>&1; " +
+                    "for t in cmake g++ git make; do command -v \$t >/dev/null || { echo \"missing tool: \$t\"; exit 1; }; done; set -o pipefail; rm -rf ~/.arin/llama-src && " +
+                    "git clone --depth 1 https://github.com/ggml-org/llama.cpp ~/.arin/llama-src 2>&1 | tail -2 && cd ~/.arin/llama-src && " +
+                    "cmake -B build -DCMAKE_BUILD_TYPE=Release -DLLAMA_CURL=OFF -DBUILD_SHARED_LIBS=OFF -DGGML_NATIVE=OFF 2>&1 | tail -3 && " +
                     "cmake --build build --target llama-server -j\$(nproc) 2>&1 | tail -3 && " +
                     "mkdir -p ~/.arin/llama && cp build/bin/llama-server ~/.arin/llama/ && ln -sf ~/.arin/llama/llama-server ~/.arin/llama-server && " +
                     "echo ~/.arin/llama > ~/.arin/llama-libdir && ~/.arin/llama-server --version 2>&1 | head -3",
                 timeoutMs = 60 * 60_000L) { line -> if (line.contains('%') || line.contains("Linking")) log(line.trim().take(120)) }
-            if (r.exitCode != 0) return@withContext "Couldn't install llama.cpp: " + (r.error ?: r.combined().takeLast(500))
+            if (r.exitCode != 0) return@withContext "Couldn't install llama.cpp: " + (r.error ?: r.combined().takeLast(500).ifBlank { "the build stopped (exit ${r.exitCode})" })
         }
         serverMarker(context).writeText(System.currentTimeMillis().toString())
         log("llama.cpp server is installed.")
         null
+    }
+
+    private fun skip(input: java.io.InputStream, n: Long) {
+        var left = n
+        val buf = ByteArray(8192)
+        while (left > 0) { val r = input.read(buf, 0, minOf(buf.size.toLong(), left).toInt()); if (r < 0) break; left -= r }
+    }
+
+    /** Unpacks a .tar.gz into [dest]: files (with their permissions), folders and symbolic links. */
+    private fun untarGz(archive: File, dest: File) {
+        java.util.zip.GZIPInputStream(archive.inputStream().buffered(), 64 * 1024).use { input ->
+            val header = ByteArray(512)
+            var longName: String? = null
+            fun readFully(buf: ByteArray, n: Int) { var o = 0; while (o < n) { val r = input.read(buf, o, n - o); if (r < 0) throw java.io.EOFException(); o += r } }
+            fun str(b: ByteArray, off: Int, len: Int) = String(b, off, len, Charsets.UTF_8).substringBefore('\u0000').trim()
+            while (true) {
+                readFully(header, 512)
+                if (header.all { it.toInt() == 0 }) break
+                var name = longName ?: run {
+                    val prefix = str(header, 345, 155); val n = str(header, 0, 100)
+                    if (prefix.isNotEmpty()) "$prefix/$n" else n
+                }
+                longName = null
+                val size = str(header, 124, 12).ifBlank { "0" }.toLong(8)
+                val mode = str(header, 100, 8).ifBlank { "644" }.toInt(8)
+                val type = header[156].toInt().toChar()
+                val link = str(header, 157, 100)
+                val padded = ((size + 511) / 512) * 512
+                fun body(): ByteArray { val b = ByteArray(padded.toInt()); readFully(b, padded.toInt()); return b.copyOf(size.toInt()) }
+                if (type == 'L') { longName = String(body(), Charsets.UTF_8).substringBefore('\u0000'); continue }
+                if (type == 'x' || type == 'g') { body(); continue }
+                name = name.removePrefix("./")
+                if (name.contains("..")) { if (size > 0) skip(input, padded); continue }
+                val out = File(dest, name)
+                when (type) {
+                    '5' -> out.mkdirs()
+                    '2' -> { out.parentFile?.mkdirs(); out.delete(); runCatching { android.system.Os.symlink(link, out.path) } }
+                    '0', '\u0000', '7' -> {
+                        out.parentFile?.mkdirs()
+                        out.outputStream().use { o ->
+                            var left = size
+                            val buf = ByteArray(64 * 1024)
+                            while (left > 0) { val r = input.read(buf, 0, minOf(buf.size.toLong(), left).toInt()); if (r < 0) throw java.io.EOFException(); o.write(buf, 0, r); left -= r }
+                        }
+                        val rest = padded - size
+                        if (rest > 0) skip(input, rest)
+                        if (mode and 0b001_001_001 != 0) out.setExecutable(true, false)
+                    }
+                    else -> if (padded > 0) skip(input, padded)
+                }
+            }
+        }
+    }
+
+    private fun unzip(archive: File, dest: File) {
+        java.util.zip.ZipInputStream(archive.inputStream().buffered()).use { z ->
+            var e = z.nextEntry
+            while (e != null) {
+                val out = File(dest, e.name)
+                if (!e.name.contains("..")) { if (e.isDirectory) out.mkdirs() else { out.parentFile?.mkdirs(); out.outputStream().use { z.copyTo(it) } } }
+                e = z.nextEntry
+            }
+        }
     }
 
     // ------------------------------------------------------------------ download a model
@@ -252,7 +346,7 @@ object LocalModel {
                         if (n < 0) break
                         f.write(buf, 0, n); have += n
                         val now = System.currentTimeMillis()
-                        if (now - last > 500) { last = now; onProgress(have, total) }
+                        if (now - last > 500) { last = now; onProgress(have, total); com.arin.selffix.InstallProgress.bytes("offline model " + out.name, have, total) }
                     }
                 }
             }

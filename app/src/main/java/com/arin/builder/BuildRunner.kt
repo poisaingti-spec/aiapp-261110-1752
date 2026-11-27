@@ -42,6 +42,19 @@ class BuildSession(val id: String) {
     var progressText by mutableStateOf("")
     /** The request the service should run next for this session. */
     @Volatile internal var pending: BuildRequest? = null
+    /** The last request started here (so a written build can continue where the owner chooses). */
+    @Volatile var lastRequest: BuildRequest? = null
+
+    /** Directions the person sent while the build runs; the agent reads them at its next step. */
+    val steering = java.util.concurrent.ConcurrentLinkedQueue<String>()
+
+    /** Steers the running build: shown in its steps, followed at the agent's next step. */
+    fun steer(text: String) {
+        val t = text.trim()
+        if (t.isEmpty()) return
+        steering += t
+        timeline += TimelineItem.Event(BuildEvent(BuildEvent.Kind.STEP, "↪ Your direction — following it now: $t"))
+    }
 }
 
 /**

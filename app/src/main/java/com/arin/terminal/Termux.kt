@@ -42,7 +42,9 @@ object Termux {
     /** What the model is shown at most, per command (start and end are kept). */
     private const val MAX_OUTPUT_FOR_MODEL = 16_000
 
-    data class Result(val stdout: String, val stderr: String, val exitCode: Int?, val error: String?) {
+    data class Result(val stdout: String, val stderr: String, val exitCode: Int?, val error: String?,
+                      /** The folder the command ended in (Linux), so the next command of the same task starts there. */
+                      val cwd: String? = null) {
         val ok: Boolean get() = error == null && exitCode == 0
 
         /** Combined output for showing and for the model. */

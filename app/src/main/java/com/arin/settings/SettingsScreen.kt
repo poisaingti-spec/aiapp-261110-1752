@@ -50,7 +50,9 @@ fun SettingsScreen(vm: ChatViewModel, onBack: () -> Unit, openClaudeCode: Boolea
     Column(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding()) {
         Row(Modifier.fillMaxWidth().padding(4.dp), verticalAlignment = Alignment.CenterVertically) {
             IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back") }
-            Text("Settings", style = MaterialTheme.typography.titleLarge)
+            Text("Settings", style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f))
+            com.arin.selffix.ModelSwitcher(vm)
+            com.arin.selffix.AiHelperButton(vm) // ARIN-PROTECTED: ai-helper in every tab
         }
         Column(
             Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 16.dp, vertical = 8.dp),
@@ -304,6 +306,13 @@ fun SettingsScreen(vm: ChatViewModel, onBack: () -> Unit, openClaudeCode: Boolea
                 vm.mcpServers.takeIf { it.isNotEmpty() }?.joinToString { it.name } ?: "Connect REA or other MCP servers",
             ) { ToolsSettings(vm) }
 
+            FoldSection("Credit saver", when (com.arin.selffix.CreditSaver.mode(androidx.compose.ui.platform.LocalContext.current)) {
+                1 -> "On · your model + Claude"; 2 -> "On · your model + offline model + Claude"; else -> "Off · tap to save credit" }) {
+                com.arin.selffix.CreditSaverSection(vm)
+            }
+            FoldSection("Storage", "One protected Arin folder · Free up space · Backup") {
+                com.arin.settings.StorageSection(vm)
+            }
             Section("Your data") {
                 OutlinedButton(onClick = { confirmClear = true }) { Text("Delete all chats and projects") }
             }
@@ -520,22 +529,48 @@ private fun LinuxSettings(vm: ChatViewModel) {
         else -> Text("Not installed.", style = MaterialTheme.typography.bodyMedium)
     }
     if (com.arin.terminal.Linux.supported() && !vm.linuxBusy) {
-        androidx.compose.foundation.layout.FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            if (!vm.linuxReady) androidx.compose.material3.Button(onClick = { vm.installLinux() }) { Text("Install Linux") }
-            if (vm.mcpServers.none { it.name == com.arin.mcp.Mcp.REA.name && com.arin.mcp.Mcp.status(it.name) != null }) {
-                OutlinedButton(onClick = { vm.setUpRea() }) { Text(if (vm.linuxReady) "Install REA" else "Install Linux + REA") }
+        // Every tool: Installed or not, with Install / Uninstall.
+        val reaOn = vm.mcpServers.any { it.name == com.arin.mcp.Mcp.REA.name }
+        ToolRow("Linux", "Ubuntu 24.04 with Node.js, npm, git and Python", vm.linuxReady) {
+            if (!vm.linuxReady) androidx.compose.material3.Button(onClick = { vm.installLinux() }) { Text("Install") }
+            if (vm.linuxInstalled) TextButton(onClick = { confirmRemove = true }) { Text("Uninstall", color = MaterialTheme.colorScheme.error) }
+        }
+        com.arin.terminal.Linux.Tool.entries.forEach { tool ->
+            val on = vm.toolInstalled(tool)
+            ToolRow(tool.label, tool.detail, on) {
+                if (on) TextButton(onClick = { vm.uninstallTool(tool) }) { Text("Uninstall", color = MaterialTheme.colorScheme.error) }
+                else OutlinedButton(onClick = { vm.installDevTools() }) { Text("Install") }
             }
-            if (vm.linuxReady || !vm.androidBuildReady) {
-                OutlinedButton(onClick = { vm.installDevTools() }) {
-                    Text(if (vm.androidBuildReady) "Update Android build tools" else "Install Android build tools (JDK, Gradle, SDK)")
+        }
+        ToolRow("REA", "Reverse Engineer Anything (AI agent for apps and APKs)", reaOn) {
+            if (reaOn) {
+                TextButton(onClick = { vm.repairRea() }) { Text("Repair") }
+                TextButton(onClick = { vm.uninstallRea() }) { Text("Uninstall", color = MaterialTheme.colorScheme.error) }
+            } else OutlinedButton(onClick = { vm.setUpRea() }) { Text("Install") }
+        }
+        if (vm.linuxReady && com.arin.terminal.Linux.Tool.entries.all { vm.toolInstalled(it) }) {
+            OutlinedButton(onClick = { vm.installDevTools() }) { Text("Update all APK & build tools (newest)") }
+        }
+        if (vm.linuxReady) {
+            // ARIN-PROTECTED: terminal-self-test — checks working folders, separate chats, simultaneous commands,
+            // exit codes, a missing folder and the retry limit on this phone's real terminal.
+            val scope = androidx.compose.runtime.rememberCoroutineScope()
+            var testing by remember { mutableStateOf(false) }
+            var result by remember { mutableStateOf("") }
+            OutlinedButton(enabled = !testing, onClick = {
+                testing = true; result = "Testing the terminal…"
+                scope.launch {
+                    result = runCatching { com.arin.terminal.TerminalSelfTest.report(com.arin.terminal.TerminalSelfTest.run(vm.getApplication<android.app.Application>())) }
+                        .getOrElse { "Terminal test couldn't run: ${it.message}" }
+                    testing = false
                 }
+            }) { Text(if (testing) "Testing…" else "Test the terminal") }
+            if (result.isNotBlank()) androidx.compose.foundation.text.selection.SelectionContainer {
+                Text(result, style = MaterialTheme.typography.bodySmall)
             }
-            if (vm.linuxReady && vm.mcpServers.any { it.name == com.arin.mcp.Mcp.REA.name }) {
-                OutlinedButton(onClick = { vm.repairRea() }) { Text("Repair REA") }
-            }
-            if (vm.linuxInstalled) TextButton(onClick = { confirmRemove = true }) { Text("Remove Linux") }
         }
     }
+    if (vm.linuxBusy) com.arin.selffix.InstallProgressPanel()
     if (vm.linuxLog.isNotEmpty()) {
         Surface(color = MaterialTheme.colorScheme.surfaceContainerHigh, shape = MaterialTheme.shapes.small) {
             Text(
@@ -549,11 +584,30 @@ private fun LinuxSettings(vm: ChatViewModel) {
     if (confirmRemove) {
         AlertDialog(
             onDismissRequest = { confirmRemove = false },
-            title = { Text("Remove Linux?") },
+            title = { Text("Uninstall Linux?") },
             text = { Text("Everything installed in it, including REA and files in /root, is deleted. Your chats stay.") },
-            confirmButton = { TextButton(onClick = { vm.removeLinux(); confirmRemove = false }) { Text("Remove") } },
+            confirmButton = { TextButton(onClick = { vm.removeLinux(); confirmRemove = false }) { Text("Uninstall") } },
             dismissButton = { TextButton(onClick = { confirmRemove = false }) { Text("Cancel") } },
         )
+    }
+}
+
+/** One installable tool: name, what it is, ✓ Installed / Not installed, and its buttons. */
+@Composable
+private fun ToolRow(name: String, detail: String, installed: Boolean, buttons: @Composable () -> Unit) {
+    Surface(color = MaterialTheme.colorScheme.surfaceContainerHigh, shape = MaterialTheme.shapes.medium, modifier = Modifier.fillMaxWidth()) {
+        Row(Modifier.padding(start = 12.dp, top = 6.dp, bottom = 6.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text(name, style = MaterialTheme.typography.bodyLarge)
+                Text(detail, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(
+                    if (installed) "✓ Installed" else "Not installed",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = if (installed) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Column(horizontalAlignment = Alignment.End) { buttons() }
+        }
     }
 }
 

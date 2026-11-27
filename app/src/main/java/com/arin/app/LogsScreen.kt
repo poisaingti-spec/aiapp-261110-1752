@@ -43,7 +43,7 @@ import java.util.Locale
 /** Crashes and errors saved on the phone, ready to copy or share so they can be fixed. */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun LogsScreen(onBack: () -> Unit) {
+fun LogsScreen(onBack: () -> Unit, vm: com.arin.chat.ChatViewModel? = null) {
     val context = LocalContext.current
     val clipboard = LocalClipboardManager.current
     var version by remember { mutableStateOf(0) }
@@ -66,6 +66,7 @@ fun LogsScreen(onBack: () -> Unit) {
             TopAppBar(
                 title = { Text("Logs") },
                 navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back") } },
+                actions = { if (vm != null) com.arin.selffix.AiHelperButton(vm) }, // ARIN-PROTECTED: ai-helper in every tab
             )
         },
     ) { padding ->

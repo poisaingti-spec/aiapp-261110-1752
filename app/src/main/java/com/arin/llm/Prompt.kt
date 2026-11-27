@@ -254,7 +254,7 @@ object Prompt {
             .replace(Regex("""0x[0-9a-fA-F]+|\b\d{4,}\b"""), " ")
             .replace(Regex("""\s+"""), " ")
             .trim().take(160)
-        val tool = command.trim().split(Regex("""\s+""")).firstOrNull { it.isNotBlank() && it != "cd" && !it.contains('=') && !it.startsWith("sudo") }.orEmpty()
+        val tool = command.trim().split(Regex("""\s+""")).firstOrNull { it.isNotBlank() && it != "cd" && it != "set" && !it.startsWith("-") && it != "pipefail;" && !it.contains('=') && !it.startsWith("sudo") }.orEmpty()
         return (if (tool.isNotBlank() && !cleaned.contains(tool, true)) "$tool " else "") + cleaned
     }
     private val rememberTag = Regex("""<remember>(.{1,300}?)</remember>""", RegexOption.DOT_MATCHES_ALL)
@@ -456,6 +456,14 @@ object Prompt {
         append("(searching the web and downloading files or libraries as needed), builds a new version on GitHub, fixes build ")
         append("errors, and offers to install the update. Agree on the change first if it's unclear.\n\n")
         } else append("Arin can update its own code with <update_arin>…</update_arin>; full rules are given when the person asks to change Arin.\n\n")
+        // Any model can call Claude for help; errors are always researched on the internet first (protected rules).
+        // AI helper (Claude, ChatGPT, Gemini or a Custom API model): only when it is switched on.
+        append(runCatching { com.arin.selffix.ClaudeHelper.instructions(com.arin.ArinApp.instance) }.getOrDefault("")) // ARIN-PROTECTED: ai-helper
+        append(runCatching { com.arin.selffix.Worker.instructions(com.arin.ArinApp.instance) }.getOrDefault("")) // ARIN-PROTECTED: worker-mode
+        append(runCatching { com.arin.selffix.TeamWork.instructions(com.arin.ArinApp.instance) }.getOrDefault("")) // ARIN-PROTECTED: team-work in every tab
+        append(com.arin.selffix.TaskSummary.RULE).append('\n') // ARIN-PROTECTED: task-summary in every tab
+        append(com.arin.selffix.TabIsolation.RULE).append('\n') // ARIN-PROTECTED: tab-isolation
+        append(com.arin.selffix.AutoFix.RULE_GENERAL).append("\n\n") // ARIN-PROTECTED: research-first auto-fix rule for every model
 
         if (!need("build")) {
             append("Building apps: Arin can turn a conversation into an Android APK built on GitHub. Never build or send a <build> ")
@@ -500,6 +508,7 @@ object Prompt {
         if (memoryOn) {
             append("Memory: when the person tells you a lasting fact about themselves or a preference for how you should ")
             append("answer, add <remember>the fact, in a short sentence</remember> at the end of your reply. ")
+            append(com.arin.selffix.TabIsolation.MEMORY_RULE) // ARIN-PROTECTED: tab-isolation
             append("Never remember passwords, card or ID numbers, or health, money or other sensitive details. ")
             append("Don't mention this tag in your answer.\n")
             if (memories.isNotEmpty()) {
@@ -508,15 +517,17 @@ object Prompt {
             }
             append('\n')
             if (!need("recall")) {
-                append("Past chats: to look something up from an earlier chat, reply with ONLY <recall>a few keywords</recall>.\n")
+                append("Earlier in this tab: to look something up from earlier in THIS conversation, reply with ONLY <recall>a few keywords</recall>. Other tabs are never read.\n")
             } else {
-            append("Past conversations: every chat with the person is saved on this phone and you can read them. ")
+            append("Past conversation (THIS TAB ONLY — owner's rule): when the person says \"remember our past conversation\" or refers to " +
+                "something from before, it means earlier in THIS tab, never another tab or what was built there. The whole history of " +
+                "this tab is saved and you can read it. ")
             append("When they refer to something from before (\"my app\", \"the error we fixed\", \"what you suggested\", ")
             append("\"continue where we left off\", \"do you remember…\"), or it would help to know what was said earlier, reply with ")
             append("ONLY <recall>a few keywords</recall> (topic words that were likely said, not words like \"discussed\"). ")
             append("The app sends you the matching parts of past chats; then answer from them. Never say you can't remember ")
             append("past chats or that you have no memory before recalling.\n")
-            if (pastChats.isNotBlank()) append("Most recent past chats (title, date):\n").append(pastChats).append('\n')
+            // Other tabs' titles are not listed: their conversations are never used here.
             }
             append('\n')
         }
@@ -600,7 +611,7 @@ object Prompt {
     /** An unfinished tag at the end of a reply: on its own line, or with attributes, so prose mentions stay. */
     private fun openTail(tag: String) = Regex("""(?:(?m:^)[ \t]*<$tag\b|<$tag\s+\w+=)[\s\S]*$""")
 
-    fun clean(reply: String): String = withCodeMasked(reply, { cleanTags(it) }) { r, unmask -> unmask(r) }
+    fun clean(reply: String): String = withCodeMasked(reply, { cleanTags(com.arin.selffix.TeamWork.clean(com.arin.selffix.ClaudeHelper.clean(it))) }) { r, unmask -> unmask(r) }
 
     private fun cleanTags(reply: String): String =
         reply.replace(rememberTag, "").replace(Regex("""<remember>[^<]*$"""), "")

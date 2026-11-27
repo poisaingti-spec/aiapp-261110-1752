@@ -10,6 +10,10 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.width
@@ -18,9 +22,11 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Build
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Create
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
@@ -62,6 +68,8 @@ fun ChatsDrawer(
     onFree: () -> Unit = {},
     onClaudeCode: () -> Unit = {},
     onMovieMaker: () -> Unit = {},
+    onSecurity: () -> Unit = {},
+    onArinUpdate: () -> Unit = {},
     onProject: (com.arin.data.Project) -> Unit,
 ) {
     var renaming by remember { mutableStateOf<ChatSummary?>(null) }
@@ -153,21 +161,42 @@ fun ChatsDrawer(
                     }
                 }
             }
-            DrawerRow(icon = { Icon(Icons.Filled.Star, contentDescription = null) }, label = "Free tokens", onClick = onFree)
-            DrawerRow(icon = { Icon(Icons.Filled.Build, contentDescription = null) }, label = "Claude Code (your Pro login)", onClick = onClaudeCode)
-            DrawerRow(icon = { Icon(Icons.Filled.PlayArrow, contentDescription = null) }, label = "Movie Maker", onClick = onMovieMaker)
-            DrawerRow(icon = { Icon(Icons.Filled.Build, contentDescription = null) }, label = "Build an app (APK)", onClick = onBuild)
+            // Tools fold into one row (tap the arrow), so they never crowd out projects and chats.
+            var toolsOpen by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf(false) }
+            androidx.compose.material3.HorizontalDivider(Modifier.padding(horizontal = 16.dp))
             DrawerRow(
-                icon = { Icon(Icons.Filled.Build, contentDescription = null) },
-                label = "Reverse engineering (REA)",
-                onClick = { vm.openReverseEngineering(); onPick() },
+                icon = {
+                    Icon(
+                        if (toolsOpen) Icons.Filled.KeyboardArrowDown else Icons.Filled.KeyboardArrowUp,
+                        contentDescription = if (toolsOpen) "Hide tools" else "Show tools",
+                    )
+                },
+                label = if (toolsOpen) "Tools" else "Tools (Build, Claude Code, Arin Update…)",
+                onClick = { toolsOpen = !toolsOpen },
             )
-            DrawerRow(
-                icon = { Icon(Icons.Filled.Build, contentDescription = null) },
-                label = "Rebuild APK (change & reinstall)",
-                onClick = { vm.openRebuild(); onPick() },
-            )
-            DrawerRow(icon = { Icon(Icons.Filled.Info, contentDescription = null) }, label = "Logs", onClick = onLogs)
+            if (toolsOpen) {
+                Column(
+                    Modifier.heightIn(max = 300.dp).verticalScroll(androidx.compose.foundation.rememberScrollState()),
+                ) {
+                    DrawerRow(icon = { Icon(Icons.Filled.Star, contentDescription = null) }, label = "Free tokens", onClick = onFree)
+                    DrawerRow(icon = { Icon(Icons.Filled.Build, contentDescription = null) }, label = "Claude Code (your Pro login)", onClick = onClaudeCode)
+                    DrawerRow(icon = { Icon(Icons.Filled.PlayArrow, contentDescription = null) }, label = "Movie Maker", onClick = onMovieMaker)
+                    DrawerRow(icon = { Icon(Icons.Filled.Lock, contentDescription = null) }, label = "Security", onClick = onSecurity)
+                    DrawerRow(icon = { Icon(Icons.Filled.Build, contentDescription = null) }, label = "Build an app (APK)", onClick = onBuild)
+                    DrawerRow(icon = { Icon(Icons.Filled.Refresh, contentDescription = null) }, label = "Arin Update (updates Arin only)", onClick = onArinUpdate)
+                    DrawerRow(
+                        icon = { Icon(Icons.Filled.Build, contentDescription = null) },
+                        label = "Reverse engineering (REA)",
+                        onClick = { vm.openReverseEngineering(); onPick() },
+                    )
+                    DrawerRow(
+                        icon = { Icon(Icons.Filled.Build, contentDescription = null) },
+                        label = "Rebuild APK (change & reinstall)",
+                        onClick = { vm.openRebuild(); onPick() },
+                    )
+                    DrawerRow(icon = { Icon(Icons.Filled.Info, contentDescription = null) }, label = "Logs", onClick = onLogs)
+                }
+            }
             DrawerRow(icon = { Icon(Icons.Filled.Settings, contentDescription = null) }, label = "Settings", onClick = onSettings)
         }
     }

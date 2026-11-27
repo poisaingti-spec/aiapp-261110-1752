@@ -22,11 +22,182 @@ jobs:
 
       - uses: gradle/actions/setup-gradle@v4
 
+      # ARIN-PROTECTED-RULE: protected-rules-check. Fails the build if a protected rule was removed.
+      - name: Check protected rules are still in place
+        run: |
+          set -e
+          D=app/src/main/java/com/arin
+          grep -q "ARIN-PROTECTED-RULE: research-first-autofix" $D/selffix/AutoFix.kt
+          grep -q "ARIN-PROTECTED-RULE: self-update-only-arin" $D/selffix/SelfUpdateRules.kt
+          grep -q "ARIN-PROTECTED-RULE: arin-update-tab" $D/selffix/ArinUpdateScreen.kt
+          grep -q "ARIN-PROTECTED: research the internet before every fix" $D/builder/BuildAgent.kt
+          grep -q "ARIN-PROTECTED: never change the Custom API" $D/builder/BuildAgent.kt
+          grep -q "ARIN-PROTECTED: self-updates change only Arin" $D/builder/BuildAgent.kt
+          grep -q "ARIN-PROTECTED: research-first auto-fix rule for every model" $D/llm/Prompt.kt
+          grep -q "ARIN-PROTECTED-RULE: research-first-error-help" $D/selffix/ErrorDoctor.kt
+          grep -q "ARIN-PROTECTED: never give up" $D/builder/BuildService.kt
+          grep -q "ARIN-PROTECTED-RULE: ai-helper" $D/selffix/AiHelperUi.kt
+          grep -q "ARIN-PROTECTED-RULE: ai-helper" $D/selffix/ClaudeHelper.kt
+          grep -q "ARIN-PROTECTED: ai-helper in every tab" $D/app/AppShell.kt
+          grep -q "ARIN-PROTECTED-RULE: team-work" $D/selffix/TeamWork.kt
+          grep -q "ARIN-PROTECTED-RULE: task-summary" $D/selffix/TaskSummary.kt
+          grep -q "ARIN-PROTECTED-RULE: tab-isolation" $D/selffix/TabIsolation.kt
+          grep -q "ARIN-PROTECTED: apk-toolkit" $D/terminal/Linux.kt
+          grep -q "ARIN-PROTECTED: explain-after-coding" $D/builder/BuildAgent.kt
+          grep -q "ARIN-PROTECTED: complete-project" $D/builder/BuildAgent.kt
+          grep -q "ARIN-PROTECTED: test-before-handover" $D/builder/BuildAgent.kt
+          grep -q "ARIN-PROTECTED: test-before-handover" $D/builder/ProjectTemplate.kt
+          grep -q "ARIN-PROTECTED: exact-request" $D/selffix/TaskSummary.kt
+          grep -q "ARIN-PROTECTED: test-before-handover" $D/selffix/TaskSummary.kt
+          test -f .github/arin-test.sh
+          grep -q "ARIN-PROTECTED: heavy-work-off-the-boss" $D/builder/BuildAgent.kt
+          grep -q "ARIN-PROTECTED: boss-minimum-credit" $D/llm/Llm.kt
+          grep -q "ARIN-PROTECTED: boss-memory" $D/selffix/ChatMemory.kt
+          grep -q "ARIN-PROTECTED: never-stuck" $D/builder/BuildAgent.kt
+          grep -q "ARIN-PROTECTED: tab-memory" $D/chat/ChatViewModel.kt
+          grep -q "ARIN-PROTECTED: ask-before-building" $D/builder/BuildService.kt
+          grep -q "ARIN-PROTECTED: smart-thinking" $D/builder/BuildAgent.kt
+          grep -q "ARIN-PROTECTED: claude-lean" $D/claudecode/ClaudeCodeModel.kt
+          grep -q "ARIN-PROTECTED: project-memory" $D/builder/ProjectMemory.kt
+          grep -q "ARIN-PROTECTED: impact-analysis" $D/builder/BuildAgent.kt
+          grep -q "ARIN-PROTECTED: orchestration" $D/selffix/TaskSummary.kt
+          grep -q "ARIN-PROTECTED: watchdog" $D/builder/BuildAgent.kt
+          grep -q "ARIN-PROTECTED: budgets" $D/builder/BuildAgent.kt
+          grep -q "ARIN-PROTECTED: safe rollback" $D/builder/GitHubClient.kt
+          grep -q "ARIN-PROTECTED: release-gating" $D/builder/ProjectTemplate.kt
+          grep -q "ARIN-PROTECTED: ask-before-building" $D/selffix/TaskSummary.kt
+          grep -q "ARIN-PROTECTED: whole-problem-consultation" $D/builder/BuildAgent.kt
+          grep -q "ARIN-PROTECTED: whole-problem-consultation" $D/selffix/TaskSummary.kt
+          grep -q "ARIN-PROTECTED: boss-memory" $D/chat/ChatViewModel.kt
+          grep -q "ARIN-PROTECTED: explain-after-coding" $D/selffix/TaskSummary.kt
+          test -s app/src/main/assets/apk-toolkit-setup.sh
+          for f in llm/Prompt.kt llm/Llm.kt chat/ChatViewModel.kt; do
+            grep -q "ARIN-PROTECTED: tab-isolation" $D/$f || { echo "Tab isolation missing in $f"; exit 1; }
+          done
+          for f in llm/Prompt.kt chat/ChatViewModel.kt selffix/ArinUpdateChat.kt builder/BuildScreen.kt claudecode/ClaudeCode.kt; do
+            grep -q "ARIN-PROTECTED: task-summary in every tab" $D/$f || { echo "Task summary missing in $f"; exit 1; }
+          done
+          grep -q "ARIN-PROTECTED: team-work in every tab" $D/chat/ChatViewModel.kt
+          grep -q "ARIN-PROTECTED: team-work in every tab" $D/selffix/ArinUpdateChat.kt
+          grep -q "ARIN-PROTECTED: ai-helper in every tab" $D/chat/ChatScreen.kt
+          for f in builder/BuildScreen.kt claudecode/ClaudeCodeScreen.kt movie/MovieMakerScreen.kt settings/SettingsScreen.kt \
+                   free/FreeTokensScreen.kt project/ProjectScreens.kt app/LogsScreen.kt selffix/ArinUpdateScreen.kt voice/VoiceScreen.kt; do
+            grep -q "ARIN-PROTECTED: ai-helper in every tab" $D/$f || { echo "AI helper missing in $f"; exit 1; }
+          done
+          grep -q "ARIN-PROTECTED: toolchain-guard" $D/builder/BuildAgent.kt
+          grep -q "ARIN-PROTECTED: toolchain-guard" $D/builder/ProjectTemplate.kt
+          grep -q "ARIN-PROTECTED: github-auth-check" $D/builder/GitHubClient.kt
+          grep -q "ARIN-PROTECTED: research-fallback" $D/builder/BuildAgent.kt
+          grep -q "ARIN-PROTECTED: batch-fix" $D/builder/BuildAgent.kt
+          grep -q "ARIN-PROTECTED: git-in-repo" $D/claudecode/Harness.kt
+          grep -q "ARIN-PROTECTED: syntax-guard" $D/builder/KotlinSyntax.kt
+          grep -q "ARIN-PROTECTED: syntax-guard" $D/builder/BuildAgent.kt
+          grep -q "ARIN-PROTECTED: import-guard" $D/builder/KotlinImports.kt
+          grep -q "ARIN-PROTECTED: import-guard" $D/builder/BuildAgent.kt
+          grep -q "ARIN-PROTECTED: duplicate-guard" $D/builder/KotlinDuplicates.kt
+          grep -q "ARIN-PROTECTED: compiler-fixes" $D/builder/KotlinFixes.kt
+          # ARIN-PROTECTED: rule-baseline — every protected rule that existed when the owner approved the baseline must still
+          # be in its file (new rules may be added; removing one fails the build).
+          bash .github/protected-markers.sh > /tmp/now.txt
+          MISSING=$(grep -vxFf /tmp/now.txt .github/protected-baseline.txt || true)
+          if [ -n "$MISSING" ]; then echo "Protected rules removed:"; echo "$MISSING"; exit 1; fi
+          grep -q "ARIN-PROTECTED: per-run-workdir" $D/terminal/Linux.kt
+          grep -q "ARIN-PROTECTED: bounded-retry" $D/terminal/RetryGuard.kt
+          grep -q "ARIN-PROTECTED: outcome-classes" $D/selffix/Outcome.kt
+          grep -q "ARIN-PROTECTED: refusal-provenance" $D/selffix/Delegation.kt
+          grep -q "ARIN-PROTECTED: worker-results" $D/selffix/Worker.kt
+          grep -q "ARIN-PROTECTED: requirement-coverage" $D/selffix/Requirements.kt
+          grep -q "ARIN-PROTECTED: api-index" $D/builder/BuildAgent.kt
+          grep -q "ARIN-PROTECTED: owner-words-only-to-main" $D/selffix/Delegation.kt
+          grep -q "ARIN-PROTECTED: owner-words-only-to-main" $D/builder/BuildAgent.kt
+          grep -q "ARIN-PROTECTED: owner-words-only-to-main" $D/chat/ChatViewModel.kt
+          grep -q "ARIN-PROTECTED: owner-words-only-to-main" $D/selffix/ArinUpdateChat.kt
+          grep -q "ARIN-PROTECTED: owner-words-only-to-main" $D/selffix/VisionBridge.kt
+          grep -q "ARIN-PROTECTED: duplicate-guard" $D/builder/BuildAgent.kt
+          grep -q "ARIN-PROTECTED: delegation-firewall" $D/selffix/Delegation.kt
+          grep -q "ARIN-PROTECTED: delegation-firewall" $D/selffix/Worker.kt
+          grep -q "ARIN-PROTECTED: delegation-firewall" $D/selffix/ClaudeHelper.kt
+          grep -q "ARIN-PROTECTED: bounded-scroll" $D/security/SecurityScreen.kt
+          grep -q "ARIN-PROTECTED: tests-gate" .github/arin-test.sh
+          grep -q "ARIN-PROTECTED: orchestrator" $D/selffix/Orchestrator.kt
+          grep -q "ARIN-PROTECTED: run-context" $D/selffix/Orchestrator.kt
+          grep -q "ARIN-PROTECTED: project-graph" $D/selffix/ProjectGraph.kt
+          grep -q "ARIN-PROTECTED: evidence-check" $D/chat/ChatViewModel.kt
+          grep -q "ARIN-PROTECTED: proot-fallback" $D/terminal/Linux.kt
+          grep -q "ARIN-PROTECTED: strict-tab-scope" $D/selffix/TabScope.kt
+          grep -q "ARIN-PROTECTED: project-map " $D/selffix/ProjectGraph.kt
+          grep -q "ARIN-PROTECTED: project-map-in-chat" $D/chat/ChatViewModel.kt
+          grep -q "ARIN-PROTECTED: project-map-in-build" $D/builder/BuildAgent.kt
+          grep -q 'applicationId = "com.arin.app"' app/build.gradle.kts
+          grep -q 'arin-debug.keystore' app/build.gradle.kts
+          echo "Protected rules OK"
+
+      # Private signing key from GitHub Secrets, if set (never stored in the repo or printed). See SIGNING.md.
+      - name: Use the private signing key if one is set
+        env:
+          KS: ${{ secrets.ARIN_KEYSTORE_B64 }}
+        run: |
+          if [ -n "$KS" ]; then echo "$KS" | base64 -d > "$RUNNER_TEMP/arin-release.jks"; echo "ARIN_KEYSTORE_FILE=$RUNNER_TEMP/arin-release.jks" >> "$GITHUB_ENV"; echo "Signing with the private key"; else echo "No private key set: using the bundled key (see SIGNING.md)"; fi
+
       - name: Build debug APK
+        env:
+          ARIN_STORE_PASSWORD: ${{ secrets.ARIN_STORE_PASSWORD }}
+          ARIN_KEY_ALIAS: ${{ secrets.ARIN_KEY_ALIAS }}
+          ARIN_KEY_PASSWORD: ${{ secrets.ARIN_KEY_PASSWORD }}
         run: |
           chmod +x gradlew
           set -o pipefail
-          ./gradlew assembleDebug --stacktrace 2>&1 | tee build.log
+          ./gradlew assembleDebug assembleDebugAndroidTest testDebugUnitTest --stacktrace 2>&1 | tee build.log
+
+      - name: Summarize the unit tests
+        if: always()
+        run: |
+          python3 - <<'PY'
+          import glob, xml.etree.ElementTree as ET
+          t=f=e=s=0; bad=[]
+          for p in glob.glob("app/build/test-results/testDebugUnitTest/*.xml"):
+              r=ET.parse(p).getroot()
+              t+=int(r.get("tests",0)); f+=int(r.get("failures",0)); e+=int(r.get("errors",0)); s+=int(r.get("skipped",0))
+              for c in r.iter("testcase"):
+                  if c.find("failure") is not None or c.find("error") is not None: bad.append(c.get("classname")+"."+c.get("name"))
+          open("unit-test-report.txt","w").write(f"UNIT TESTS: {t} run, {t-f-e-s} passed, {f+e} failed, {s} skipped\n" + "".join("FAILED: "+b+"\n" for b in bad))
+          print(open("unit-test-report.txt").read())
+          PY
+
+      - name: Lint (report only)
+        if: success()
+        continue-on-error: true
+        run: |
+          ./gradlew lintDebug > lint.log 2>&1 || true
+          X=$(ls app/build/reports/lint-results-debug.xml 2>/dev/null)
+          if [ -n "$X" ]; then
+            python3 - "$X" <<'PY'
+          import sys, xml.etree.ElementTree as ET
+          r = ET.parse(sys.argv[1]).getroot()
+          issues = list(r.iter("issue"))
+          err = [i for i in issues if i.get("severity") in ("Error", "Fatal")]
+          warn = [i for i in issues if i.get("severity") == "Warning"]
+          out = [f"LINT: {len(err)} errors, {len(warn)} warnings"]
+          for i in err:
+              loc = i.find("location")
+              where = (loc.get("file", "").split("/app/")[-1] + ":" + loc.get("line", "?")) if loc is not None else "?"
+              out.append(f"LINT ERROR {i.get('id')}: {where} — {i.get('message', '')[:220]}")
+          open("lint-report.txt", "w").write("\n".join(out) + "\n")
+          PY
+          else echo "LINT: did not produce a report" > lint-report.txt; fi
+          cat lint-report.txt
+
+      - name: Keep the test APK and reports for the emulator job
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: arin-tests
+          path: |
+            app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
+            unit-test-report.txt
+            lint-report.txt
+            app/build/rule-integrity/instruction-baseline.txt
+          if-no-files-found: warn
 
       - name: Report compile errors
         if: failure()
@@ -53,5 +224,120 @@ jobs:
           tag_name: arin-${{ github.run_number }}
           name: Arin v${{ steps.ver.outputs.version }} (build ${{ github.run_number }})
           files: Arin-*.apk
-          # Only main marks the newest release, so a build on the arin branch doesn't replace another app's latest release.
-          make_latest: ${{ github.ref_name == 'main' }}
+          # Published as NOT VERIFIED; the test job marks it verified (and newest on main) only if Arin passes the emulator test.
+          prerelease: true
+          make_latest: false
+
+      # One fixed link per branch that always gives the newest APK and source (the owner taps it, it downloads):
+      # https://github.com/<owner>/<repo>/releases/download/latest-<branch>/Arin-latest.apk  (and Arin-source.zip)
+      - name: Same-name copies for the fixed links
+        run: |
+          cp Arin-v*.apk Arin-latest.apk
+          git archive --format=zip -o Arin-source.zip HEAD
+
+      - name: Update the fixed download links
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest-${{ github.ref_name }}
+          name: Latest Arin (${{ github.ref_name }}) — always the newest build
+          files: |
+            Arin-latest.apk
+            Arin-source.zip
+          make_latest: false
+
+  # ARIN-PROTECTED: test-before-handover — the APK is installed on an Android emulator, opened and tapped
+  # around; Arin hands the download link over only when this test passes. (Its own job: a test problem
+  # never breaks the build itself.)
+  test:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v5
+      - name: Get the APK that was just built
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release download "arin-${{ github.run_number }}" --pattern 'Arin-v*.apk' --output app.apk --clobber
+      - name: Get the test APK and reports
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: arin-tests
+          path: tests
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Open the app on an Android emulator and tap around
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 34
+          target: google_apis
+          arch: x86_64
+          disable-animations: true
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -no-snapshot
+          script: bash .github/arin-test.sh app.apk tests/app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
+      - name: Make sure there is a report
+        if: always()
+        run: '[ -f arin-test-report.txt ] || echo "RESULT: NO_TEST" > arin-test-report.txt'
+      - uses: softprops/action-gh-release@v2
+        if: always()
+        with:
+          tag_name: arin-${{ github.run_number }}
+          files: |
+            arin-test-report.txt
+            arin-test-screen.png
+          fail_on_unmatched_files: false
+      # ARIN-PROTECTED: release-gating — verified (and newest) only if the emulator test passed.
+      - name: Mark the release verified only if Arin passed the test
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          T="arin-${{ github.run_number }}"
+          if grep -q "RESULT: PASS" arin-test-report.txt; then
+            gh release edit "$T" -R "${{ github.repository }}" --prerelease=false $([ "${{ github.ref_name }}" = main ] && echo --latest)
+          else
+            gh release edit "$T" -R "${{ github.repository }}" --prerelease=true --latest=false
+          fi
+
+  # Newer Android versions (report only — doesn't gate the release): does Arin install, open and survive the tap test?
+  test-newer-android:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        api: [35, 36, 37]
+    steps:
+      - uses: actions/checkout@v5
+      - name: Get the APK that was just built
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release download "arin-${{ github.run_number }}" --pattern 'Arin-v*.apk' --output app.apk --clobber
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Open the app on Android API ${{ matrix.api }} and tap around
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: ${{ matrix.api }}
+          target: google_apis
+          arch: x86_64
+          disable-animations: true
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -no-snapshot
+          script: bash .github/arin-test.sh app.apk
+      - name: Keep the report
+        if: always()
+        run: '[ -f arin-test-report.txt ] || echo "RESULT: NO_TEST (the API ${{ matrix.api }} emulator image may not be available)" > arin-test-report.txt; cp arin-test-report.txt report-api-${{ matrix.api }}.txt'
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: newer-android-${{ matrix.api }}
+          path: report-api-${{ matrix.api }}.txt

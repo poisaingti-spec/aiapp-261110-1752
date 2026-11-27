@@ -17,6 +17,9 @@ import okhttp3.RequestBody.Companion.toRequestBody
  */
 object ClaudeCode {
     private const val TOKEN_FILE = "/root/.cc_token"
+
+    /** Where the signed-in Claude account's token is kept (inside Arin's Linux). */
+    fun tokenFile(): String = TOKEN_FILE
     private const val OUT = "/root/.cc_login_out"
     private const val FIFO = "/root/.cc_login_fifo"
 
@@ -37,7 +40,9 @@ object ClaudeCode {
      * fall back to Anthropic's official native installer.
      */
     suspend fun install(context: Context, log: (String) -> Unit): String? {
-        log("Installing Claude Code (about 100 MB download, a few minutes)…")
+        log("Installing Claude Code (about 185 MB download, needs about 700 MB free; a few minutes)…")
+        // The download resumes where it stopped (mobile data drops), is checked against the registry's checksum, and
+        // the program is unpacked straight into place (no second copy). Other methods are tried if it still fails.
         val script = """
             set -o pipefail
             case "${'$'}(uname -m)" in
@@ -45,32 +50,78 @@ object ClaudeCode {
               x86_64|amd64) P=linux-x64 ;;
               *) echo "This phone's CPU (${'$'}(uname -m)) has no Claude Code build."; echo ARIN_FAIL; exit 0 ;;
             esac
-            V=${'$'}(curl -fsSL --retry 3 https://registry.npmjs.org/@anthropic-ai/claude-code/latest | grep -o '"version":"[^"]*"' | head -1 | cut -d'"' -f4)
+            mkdir -p /root/.arin/cc-dl /usr/local/lib/arin-claude
+            FREE=${'$'}(df -Pk /root 2>/dev/null | awk 'NR==2{print ${'$'}4}')
+            if [ -n "${'$'}FREE" ] && [ "${'$'}FREE" -lt 700000 ]; then
+              echo "Not enough free space on the phone: Claude Code needs about 700 MB, only ${'$'}((FREE/1024)) MB is free. Free up space and tap Install again."
+              echo ARIN_FAIL; exit 0
+            fi
+            command -v python3 >/dev/null || apt-get install -y python3 >/dev/null 2>&1
             ok=0
-            if [ -n "${'$'}V" ]; then
-              echo "Downloading Claude Code ${'$'}V (${'$'}P)…"
-              rm -rf /tmp/cc && mkdir -p /tmp/cc
-              if curl -fL --retry 3 --retry-delay 3 -sS "https://registry.npmjs.org/@anthropic-ai/claude-code-${'$'}P/-/claude-code-${'$'}P-${'$'}V.tgz" \
-                   | tar -xz -C /tmp/cc package/claude; then
-                mkdir -p /usr/local/lib/arin-claude && install -m 755 /tmp/cc/package/claude /usr/local/lib/arin-claude/claude && ok=1
+            META=${'$'}(curl -fsSL --retry 5 --retry-delay 3 "https://registry.npmjs.org/@anthropic-ai/claude-code-${'$'}P/latest")
+            V=${'$'}(printf '%s' "${'$'}META" | python3 -c 'import sys,json;print(json.load(sys.stdin)["version"])' 2>/dev/null)
+            TB=${'$'}(printf '%s' "${'$'}META" | python3 -c 'import sys,json;print(json.load(sys.stdin)["dist"]["tarball"])' 2>/dev/null)
+            SUM=${'$'}(printf '%s' "${'$'}META" | python3 -c 'import sys,json;print(json.load(sys.stdin)["dist"].get("integrity",""))' 2>/dev/null)
+            if [ -n "${'$'}TB" ]; then
+              F=/root/.arin/cc-dl/claude-${'$'}P-${'$'}V.tgz
+              ls /root/.arin/cc-dl/*.tgz 2>/dev/null | grep -v "${'$'}F" | xargs rm -f 2>/dev/null
+              echo "Downloading Claude Code ${'$'}V (${'$'}P)… it resumes if the connection drops"
+              if command -v arin-fetch >/dev/null 2>&1 && [ ! -s "${'$'}F" ]; then
+                # Shows MB, %, speed and time left in Arin; resumes after a dropped connection.
+                arin-fetch "${'$'}TB" "${'$'}F" "Claude Code ${'$'}V"
+              else
+                for i in ${'$'}(seq 1 40); do
+                  curl -fL --retry 5 --retry-delay 3 --connect-timeout 30 -C - -sS -o "${'$'}F" "${'$'}TB" && break
+                  echo "Download interrupted — resuming (try ${'$'}i)…"; sleep 4
+                done
               fi
-              rm -rf /tmp/cc
+              GOOD=${'$'}(python3 - "${'$'}F" "${'$'}SUM" <<'PY'
+import sys, hashlib, base64
+f, want = sys.argv[1], sys.argv[2]
+if not want.startswith("sha512-"):
+    print("yes"); raise SystemExit
+h = hashlib.sha512()
+with open(f, "rb") as fh:
+    for chunk in iter(lambda: fh.read(1 << 20), b""):
+        h.update(chunk)
+print("yes" if base64.b64encode(h.digest()).decode() == want[7:] else "no")
+PY
+)
+              if [ "${'$'}GOOD" = yes ]; then
+                echo "Download complete and checked. Unpacking…"
+                if tar -xzf "${'$'}F" -C /usr/local/lib/arin-claude --strip-components=1 package/claude; then
+                  chmod 755 /usr/local/lib/arin-claude/claude && ok=1
+                fi
+                rm -f "${'$'}F"
+              else
+                echo "The download was damaged; it will start again next time."
+                rm -f "${'$'}F"
+              fi
             fi
             if [ "${'$'}ok" != 1 ]; then
-              echo "Registry download failed — trying Anthropic's installer…"
-              curl -fsSL https://claude.ai/install.sh | bash 2>&1 | tail -n 5
-              [ -x /root/.local/bin/claude ] && mkdir -p /usr/local/lib/arin-claude && ln -sf /root/.local/bin/claude /usr/local/lib/arin-claude/claude
+              echo "Trying Anthropic's own installer…"
+              curl -fsSL --retry 5 https://claude.ai/install.sh -o /tmp/cc-install.sh && bash /tmp/cc-install.sh 2>&1 | tail -n 5
+              for c in /root/.local/bin/claude /root/.claude/local/claude; do
+                [ -x "${'$'}c" ] && ln -sf "${'$'}c" /usr/local/lib/arin-claude/claude && ok=1 && break
+              done
+            fi
+            if [ "${'$'}ok" != 1 ] && command -v npm >/dev/null; then
+              echo "Trying npm…"
+              NODE_OPTIONS=--max-old-space-size=4096 npm install -g --no-audit --no-fund @anthropic-ai/claude-code 2>&1 | tail -n 3
+              for c in /usr/local/lib/node_modules/@anthropic-ai/claude-code/bin/claude.exe /usr/local/lib/node_modules/@anthropic-ai/claude-code/bin/claude; do
+                [ -x "${'$'}c" ] && ln -sf "${'$'}c" /usr/local/lib/arin-claude/claude && ok=1 && break
+              done
             fi
             # Remove a broken npm attempt so it can't shadow the working binary.
-            rm -f /usr/local/lib/node_modules/.bin/claude 2>/dev/null
-            apt-get install -y ripgrep python3 >/dev/null 2>&1 || true
-            if /usr/local/lib/arin-claude/claude --version 2>&1 | head -n 2; then echo ARIN_OK; else echo ARIN_FAIL; fi
+            [ "${'$'}ok" = 1 ] && rm -f /usr/local/lib/node_modules/.bin/claude 2>/dev/null
+            apt-get install -y ripgrep >/dev/null 2>&1 || true
+            if [ -x /usr/local/lib/arin-claude/claude ] && timeout 180 /usr/local/lib/arin-claude/claude --version 2>&1 | head -n 2; then echo ARIN_OK; else echo ARIN_FAIL; fi
         """.trimIndent()
-        val r = Shell.run(context, script, timeoutMs = 25 * 60_000L)
+        val r = Shell.run(context, script, timeoutMs = 45 * 60_000L)
         r.stdout.lines().filter { it.isNotBlank() && !it.contains("ARIN_OK") && !it.contains("ARIN_FAIL") }
-            .takeLast(12).forEach(log)
+            .takeLast(14).forEach(log)
         return if (r.stdout.contains("ARIN_OK")) { log("Claude Code installed ✓"); null }
-        else "Install failed. " + (r.stdout.ifBlank { r.stderr }).trim().takeLast(300)
+        else "Install failed. " + (r.stdout.lines().lastOrNull { it.isNotBlank() && !it.contains("ARIN_") } ?: r.stderr).trim().takeLast(300)
     }
 
     /** Start the browser login in the background. Returns the current output (should hold the OAuth URL). */
@@ -80,9 +131,12 @@ object ClaudeCode {
         Shell.run(
             context,
             "command -v script >/dev/null || apt-get install -y bsdutils >/dev/null 2>&1; " +
-                "pkill -f 'claude setup-[t]oken' 2>/dev/null; rm -f $OUT $FIFO; mkfifo $FIFO; " +
+                "pkill -f 'claude setup-[t]oken' 2>/dev/null; rm -f $OUT $FIFO $URL_FILE; mkfifo $FIFO; " +
+                // Claude Code "opens a browser" with the full sign-in link: catch it exactly, instead of reading it off the screen.
+                "mkdir -p /root/.arin/bin; printf '#!/bin/sh\\necho \"$1\" > $URL_FILE\\n' > /root/.arin/bin/xdg-open; " +
+                "chmod +x /root/.arin/bin/xdg-open; cp /root/.arin/bin/xdg-open /root/.arin/bin/arin-browser; " +
                 "( sleep 1800 > $FIFO & ) ; " +
-                "setsid bash -c 'COLUMNS=500 LINES=40 TERM=xterm-256color DISABLE_AUTOUPDATER=1 " +
+                "setsid bash -c 'PATH=/root/.arin/bin:\$PATH BROWSER=/root/.arin/bin/arin-browser COLUMNS=500 LINES=40 TERM=xterm-256color DISABLE_AUTOUPDATER=1 " +
                 "script -qfc \"stty cols 500 rows 40 2>/dev/null; claude setup-token\" /dev/null < $FIFO > $OUT 2>&1' " +
                 ">/dev/null 2>&1 & echo started",
             60_000,
@@ -101,29 +155,73 @@ object ClaudeCode {
         .replace(Regex("\u001B[()][0-9A-Za-z]"), "")
         .replace("\r", "")
 
+    private const val URL_FILE = "/root/.cc_login_url"
+
+    /**
+     * The full sign-in link: the one Claude Code tried to open in a browser, or the link inside its terminal hyperlink.
+     * (Reading it off the screen can give a broken, cut link — that sends you to the wrong account.)
+     */
+    suspend fun loginUrl(context: Context): String? {
+        val r = Shell.run(context, "cat $URL_FILE 2>/dev/null; echo; echo ===; cat $OUT 2>/dev/null", 30_000).stdout
+        val opened = r.substringBefore("===").trim()
+        if (opened.startsWith("https://") && opened.contains("client_id")) return opened
+        val raw = r.substringAfter("===")
+        // Terminal hyperlinks: ESC ] 8 ; ; URL BEL
+        Regex("\u001B]8;[^;]*;(https://[^\u0007\u001B]+)").findAll(raw).map { it.groupValues[1] }
+            .firstOrNull { it.contains("oauth") && it.contains("client_id") }?.let { return it }
+        // Last resort: the plain text, joined across line breaks, but only if it is complete.
+        val joined = plain(raw).replace(Regex("\\s*\\n\\s*"), "")
+        return urlIn(joined)?.takeIf { it.contains("client_id") && it.contains("redirect_uri") }
+    }
+
     /** The OAuth URL printed by the login, if any. */
     fun urlIn(output: String): String? =
-        Regex("https://claude\\.ai/oauth/authorize\\S*").find(output)?.value
+        Regex("https://claude\\.(ai|com)/(cai/)?oauth/authorize\\S*").find(output)?.value
             ?: Regex("https://[\\w.-]*(claude|anthropic)[\\w.-]*/[\\w./?=&%+~-]*oauth[\\w./?=&%+~-]*", RegexOption.IGNORE_CASE).find(output)?.value
 
-    /** Feed the pasted code into the waiting login process. */
+    /** True while the sign-in program is still running and waiting. */
+    suspend fun loginRunning(context: Context): Boolean =
+        Shell.run(context, "pgrep -f 'claude setup-[t]oken' >/dev/null && echo yes || echo no", 30_000).stdout.contains("yes")
+
+    /**
+     * Feed the pasted code into the waiting login process: typed in, then Enter (and a second Enter in case the first is
+     * taken by the paste). Spaces and line breaks a phone adds when copying are removed first.
+     */
     suspend fun pasteCode(context: Context, code: String) {
-        Shell.run(context, "printf '%s\\r' '${esc(code.trim())}' > $FIFO 2>/dev/null; echo ok", 30_000)
+        val c = code.trim().replace(Regex("\\s+"), "")
+        Shell.run(context, "printf '%s' '${esc(c)}' > $FIFO 2>/dev/null; sleep 0.6; printf '\\r' > $FIFO 2>/dev/null; " +
+            "sleep 1.5; printf '\\r' > $FIFO 2>/dev/null; echo ok", 30_000)
     }
+
+    /** What the sign-in program says now, in plain words (its last meaningful lines). */
+    suspend fun loginSays(context: Context): String =
+        loginOutput(context).lines().map { it.trim() }
+            .filter { it.length > 3 && it.any(Char::isLetter) && !it.all { ch -> ch in "─│╭╮╰╯ ▐▛▜▌▝▘█" } }
+            .takeLast(3).joinToString(" · ").take(300)
 
     /** Look for the one-year token in the login output and save it. Returns true if captured. */
     suspend fun captureToken(context: Context): Boolean {
-        val token = tokenIn(loginOutput(context)) ?: return false
+        val raw = Shell.run(context, "cat $OUT 2>/dev/null", 30_000).stdout
+        val token = tokenIn(raw) ?: return false
         return saveToken(context, token)
     }
 
-    private fun tokenIn(output: String): String? =
-        Regex("sk-ant-[A-Za-z0-9_-]{20,}").find(output)?.value
+    /**
+     * The token in [output]. Terminal colour and cursor codes can sit inside it, so they are removed first (the sign-in
+     * screen is 500 columns wide, so the token isn't wrapped); the longest match wins.
+     */
+    fun tokenIn(output: String): String? {
+        val clean = output
+            .replace(Regex("\u001B\\][^\u0007\u001B]*(\u0007|\u001B\\\\)"), "")
+            .replace(Regex("\u001B\\[[0-9;?>]*[ -/]*[@-~]"), "")
+            .replace(Regex("\u001B[()][0-9A-Za-z]"), "")
+        val re = Regex("sk-ant-[A-Za-z0-9_-]{20,}")
+        return re.findAll(clean).map { it.value }.maxByOrNull { it.length }
+    }
 
-    /** Save a token the person pasted (from `claude setup-token` run anywhere). */
+    /** Save a token the person pasted (from `claude setup-token` run anywhere). Only a real token is saved. */
     suspend fun saveToken(context: Context, token: String): Boolean {
-        val t = tokenIn(token) ?: token.trim()
-        if (t.isBlank()) return false
+        val t = tokenIn(token.replace(Regex("\\s+"), "")) ?: return false
         return Shell.run(context, "printf '%s' '${esc(t)}' > $TOKEN_FILE && echo ok", 30_000).stdout.contains("ok")
     }
 
@@ -290,8 +388,12 @@ object ClaudeCode {
         #!/bin/bash
         # ARIN_WRAPPER — written by Arin. Your brain (API and model) is set in Arin: Settings → Claude Code.
         if [ -f $BRIDGE_ENV ] && ! curl -s -m 2 http://127.0.0.1:8787/health >/dev/null 2>&1; then
-          ( set -a; . $BRIDGE_ENV; set +a; setsid python3 /root/.arin/cc-bridge.py >/dev/null 2>&1 & )
+          ( set -a; . $BRIDGE_ENV; set +a; setsid python3 /root/.arin/cc-bridge.py 8787 >/dev/null 2>&1 & )
           for i in 1 2 3 4 5 6 7 8 9 10; do curl -s -m 1 http://127.0.0.1:8787/health >/dev/null 2>&1 && break; sleep 0.3; done
+        fi
+        # The Claude account in use NOW (switching accounts in Arin takes effect on the next start; never a stale copy).
+        if [ -z "${'$'}CLAUDE_CODE_OAUTH_TOKEN" ] && [ -z "${'$'}ANTHROPIC_BASE_URL" ] && [ ! -f $BRIDGE_ENV ] && [ -s $TOKEN_FILE ]; then
+          export CLAUDE_CODE_OAUTH_TOKEN="${'$'}(cat $TOKEN_FILE)"
         fi
         exec $REAL_BIN "${'$'}@"
     """.trimIndent() + "\n"
@@ -340,8 +442,8 @@ object ClaudeCode {
         val bridgeBefore = runCatching { bridgeEnv.readText() }.getOrDefault("")
         when (b?.kind) {
             "pro" -> {
-                val token = runCatching { java.io.File(root, TOKEN_FILE.removePrefix("/")).readText().trim() }.getOrDefault("")
-                if (token.isNotEmpty()) env.put("CLAUDE_CODE_OAUTH_TOKEN", token)
+                // The sign-in is NOT copied into settings.json (a copy there pinned the old account after a switch and
+                // overrode the one chosen): the launcher reads the current account's token on every start.
                 if (b.model.isNotBlank()) env.put("ANTHROPIC_MODEL", b.model)
                 env.put("DISABLE_AUTOUPDATER", "1")
                 bridgeEnv.delete()
@@ -372,25 +474,37 @@ object ClaudeCode {
 
         // 4. Restart the bridge only if its API or key changed (so a running reply isn't cut off).
         val bridgeAfter = runCatching { bridgeEnv.readText() }.getOrDefault("")
-        if (bridgeAfter != bridgeBefore) Shell.run(context, "pkill -f 'cc-[b]ridge.py' 2>/dev/null; echo ok", 30_000)
+        // Only this tab's bridge (port 8787); other tabs' bridges keep running.
+        if (bridgeAfter != bridgeBefore) Shell.run(context, "pkill -f 'cc-[b]ridge.py( 8787)?$' 2>/dev/null; echo ok", 30_000)
     }
 
     // ---------- the local bridge (Anthropic format -> OpenAI format) ----------
 
     private const val BRIDGE_PORT = 8787
+    const val BRIDGE_PORT_PUBLIC = BRIDGE_PORT
+    /**
+     * A bridge of its own for each OpenAI-style API (its own port), started only if it isn't running yet — so tabs using
+     * different APIs at the same time never restart each other's. Returns its port, or null if it didn't start.
+     */
+    suspend fun ensureBridge(context: Context, base: String, key: String): Int? {
+        val port = 8800 + Math.floorMod((base + "|" + key).hashCode(), 150)
+        if (Shell.run(context, "curl -s -m 2 http://127.0.0.1:$port/health >/dev/null && echo up", 20_000).stdout.contains("up")) return port
+        return if (startBridge(context, Backend("openai", base, key, ""), port = port)) port else null
+    }
     private const val BRIDGE = "/root/.arin/cc-bridge.py"
 
     /** (Re)start the bridge for this API. Its key goes in through the environment, never to disk. */
-    private suspend fun startBridge(context: Context, b: Backend, thinkLess: Boolean = false): Boolean {
+    private suspend fun startBridge(context: Context, b: Backend, thinkLess: Boolean = false, port: Int = BRIDGE_PORT): Boolean {
         val dir = java.io.File(com.arin.terminal.Linux.rootfs(context), "root/.arin").apply { mkdirs() }
         context.assets.open("cc-bridge.py").use { input -> java.io.File(dir, "cc-bridge.py").outputStream().use { input.copyTo(it) } }
         val r = Shell.run(
             context,
             "command -v python3 >/dev/null || apt-get install -y python3 >/dev/null 2>&1; " +
-                "pkill -f 'cc-[b]ridge.py' 2>/dev/null; sleep 0.3; " +
-                "ARIN_UPSTREAM='${esc(b.base)}' ARIN_KEY='${esc(b.key)}' ARIN_PORT=$BRIDGE_PORT ARIN_THINK_LESS=${if (thinkLess) 1 else 0} " +
-                    "setsid python3 $BRIDGE >/dev/null 2>&1 & " +
-                "for i in 1 2 3 4 5 6 7 8 9 10; do curl -s http://127.0.0.1:$BRIDGE_PORT/health >/dev/null && { echo up; break; }; sleep 0.5; done",
+                // Only the bridge on THIS port is restarted (each API/tab has its own).
+                (if (port == BRIDGE_PORT) "pkill -f 'cc-[b]ridge.py( $port)?$' 2>/dev/null; " else "pkill -f 'cc-[b]ridge.py $port$' 2>/dev/null; ") + "sleep 0.3; " +
+                "ARIN_UPSTREAM='${esc(b.base)}' ARIN_KEY='${esc(b.key)}' ARIN_PORT=$port ARIN_THINK_LESS=${if (thinkLess) 1 else 0} " +
+                    "setsid python3 $BRIDGE $port >/dev/null 2>&1 & " +
+                "for i in 1 2 3 4 5 6 7 8 9 10; do curl -s http://127.0.0.1:$port/health >/dev/null && { echo up; break; }; sleep 0.5; done",
             90_000,
         )
         return r.stdout.contains("up")
@@ -476,13 +590,15 @@ object ClaudeCode {
             (if (pro) listOf("WebSearch") else emptyList()) + extras.mcpServers.map { "mcp__$it" }).joinToString(" ")
         val dropped = (HEAVY_TOOLS + if (pro) emptyList() else listOf("WebSearch")).joinToString(" ")
         val flags = (if (continueChat) "--continue " else "") +
-            "--model '$m' --output-format stream-json --verbose --include-partial-messages " + mcpFlag +
-            "--disallowedTools $dropped --allowedTools $tools"
+            "--model '$m' --output-format stream-json --verbose --include-partial-messages --add-dir /root/.arin/cc-tab " + mcpFlag +
+            "--disallowedTools $dropped --allowedTools $tools" +
+            // ARIN-PROTECTED: task-summary in every tab — the Claude Code tab ends every task with what it did and what to do next.
+            " --append-system-prompt '" + (com.arin.selffix.TaskSummary.RULE + com.arin.terminal.Linux.TOOLS_NOTE).replace(Regex("[\\n'\"$`\\\\*]"), " ") + "'"
         val thinking = if (extras.thinkLess) "export MAX_THINKING_TOKENS=0; " else ""
         val r = Shell.run(
             context,
-            "pkill -f 'claude -[p]' 2>/dev/null; echo '$b64' | base64 -d > $RUN_PROMPT; rm -f $RUN_OUT; " +
-                "mkdir -p /root/files; cd /root/files; " + gitSetup +
+            "pkill -f '[a]dd-dir /root/.arin/cc-tab' 2>/dev/null; echo '$b64' | base64 -d > $RUN_PROMPT; rm -f $RUN_OUT; " +
+                "mkdir -p /root/files /root/.arin/cc-tab; cd /root/files; " + gitSetup +
                 "setsid bash -c \"$env $gh $thinking claude -p $flags < $RUN_PROMPT > $RUN_OUT 2>&1; echo '{\\\"type\\\":\\\"arin_end\\\"}' >> $RUN_OUT\" >/dev/null 2>&1 & echo started",
             60_000,
         )
@@ -491,7 +607,7 @@ object ClaudeCode {
 
     /** Stop the running turn. Writes the end marker itself, since the wrapper that would is stopped too. */
     suspend fun stopTurn(context: Context) {
-        Shell.run(context, "pkill -f 'claude -[p]' 2>/dev/null; sleep 0.5; echo '{\"type\":\"arin_end\"}' >> $RUN_OUT; echo ok", 30_000)
+        Shell.run(context, "pkill -f '[a]dd-dir /root/.arin/cc-tab' 2>/dev/null; sleep 0.5; echo '{\"type\":\"arin_end\"}' >> $RUN_OUT; echo ok", 30_000)
     }
 
     /** What the running turn has produced so far: like a chat reply (text, thinking, the steps it ran). */
@@ -575,8 +691,10 @@ object ClaudeCode {
                         status = "Working…"
                     }
                 }
+                "rate_limit_event" -> UsageMeter.fromRateLimit(o.optJSONObject("rate_limit_info")) // real plan usage
                 "result" -> {
                     done = true
+                    UsageMeter.fromResult(o)
                     error = o.optBoolean("is_error")
                     result = o.optString("result").takeIf { it.isNotBlank() }
                 }

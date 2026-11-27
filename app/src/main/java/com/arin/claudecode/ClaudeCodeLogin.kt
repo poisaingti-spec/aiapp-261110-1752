@@ -24,6 +24,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -49,10 +50,11 @@ fun ClaudeCodeLogin(vm: ChatViewModel) {
     Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         if (!vm.ccInstalled) {
             Text(
-                "Installs Anthropic's Claude Code in Arin's Linux (about 100 MB download, 400 MB space).",
+                "Installs Anthropic's Claude Code in Arin's Linux (about 185 MB download, needs about 700 MB free; the download resumes if the connection drops).",
                 style = small, color = colors.onSurfaceVariant,
             )
             Button(onClick = { vm.installClaudeCode() }, enabled = !vm.ccBusy) { Text(if (vm.ccBusy) "Installing…" else "Install Claude Code") }
+            if (vm.ccInstalling) com.arin.selffix.InstallProgressPanel()
             vm.ccLog.takeLast(8).forEach { Text(it, style = small, color = colors.onSurfaceVariant) }
             return@Column
         }
@@ -72,9 +74,51 @@ private fun ProLogin(vm: ChatViewModel) {
     val uri = LocalUriHandler.current
     val colors = MaterialTheme.colorScheme
     val small = MaterialTheme.typography.bodySmall
-    if (vm.ccConnected) {
+    val ctx = androidx.compose.ui.platform.LocalContext.current
+    var adding by rememberSaveable { mutableStateOf(false) }
+    var newName by rememberSaveable { mutableStateOf("") }
+    if (vm.ccConnected && !adding && vm.ccAddingAccount == null) {
         Text("Signed in with your Claude subscription ✓", color = colors.primary)
+        Text("Each account has its own sign-in. Only the ACTIVE account is used — here, by the helper, workers and every chat.",
+            style = small, color = colors.onSurfaceVariant)
+        // Your Claude accounts: each has its own sign-in; pick one per chat from the model menu at the top.
+        vm.ccAccountsTick
+        val accounts = remember(vm.ccAccountsTick) { com.arin.claudecode.ClaudeAccounts.migrate(ctx); com.arin.claudecode.ClaudeAccounts.list(ctx) }
+        val activeId = remember(vm.ccAccountsTick) { com.arin.claudecode.ClaudeAccounts.active(ctx) ?: accounts.firstOrNull()?.id }
+        accounts.forEach { a ->
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                androidx.compose.material3.Switch(checked = a.id == activeId, onCheckedChange = { on -> if (on) vm.makeCcAccountMain(a.id) })
+                androidx.compose.foundation.layout.Spacer(Modifier.width(6.dp))
+                var email by remember(a.id) { mutableStateOf<String?>(null) }
+                androidx.compose.runtime.LaunchedEffect(a.id) { email = com.arin.claudecode.ClaudeAccounts.email(ctx, a.id) }
+                Text("• ${a.name}" + (email?.let { " ($it)" } ?: ""), modifier = Modifier.weight(1f))
+                var renaming by rememberSaveable(a.id) { mutableStateOf(false) }
+                TextButton(onClick = { renaming = true }) { Text("Rename") }
+                if (renaming) {
+                    var name by rememberSaveable(a.id) { mutableStateOf(a.name) }
+                    androidx.compose.material3.AlertDialog(
+                        onDismissRequest = { renaming = false },
+                        title = { Text("Rename Claude account") },
+                        text = { OutlinedTextField(name, { name = it }, singleLine = true, placeholder = { Text("Account name") }) },
+                        confirmButton = { TextButton(enabled = name.isNotBlank(), onClick = { renaming = false; vm.renameCcAccount(a.id, name.trim()) }) { Text("Save") } },
+                        dismissButton = { TextButton(onClick = { renaming = false }) { Text("Cancel") } },
+                    )
+                }
+                if (a.id == activeId) Text("Active ", color = colors.primary, style = small)
+                TextButton(onClick = { vm.removeCcAccount(a.id) }) { Text("Remove") }
+            }
+        }
+        OutlinedButton(onClick = { adding = true }) { Text("+ Add another Claude account") }
         TextButton(onClick = { vm.ccLogout() }) { Text("Sign out") }
+        return
+    }
+    if (adding && vm.ccAddingAccount == null) {
+        Text("Name this account (for example \"Work\" or \"Account 2\"), then sign in to it on a fresh page.", style = small, color = colors.onSurfaceVariant)
+        OutlinedTextField(newName, { newName = it }, placeholder = { Text("Account name") }, singleLine = true)
+        Row {
+            Button(onClick = { adding = false; vm.startCcLogin(newName.trim().ifBlank { "Account ${com.arin.claudecode.ClaudeAccounts.list(ctx).size + 1}" }); newName = "" }) { Text("Sign in") }
+            TextButton(onClick = { adding = false }) { Text("Cancel") }
+        }
         return
     }
     Text(
@@ -89,7 +133,21 @@ private fun ProLogin(vm: ChatViewModel) {
         Text(vm.ccLoginStatus, style = small, color = if (bad) colors.error else colors.onSurfaceVariant)
     }
     vm.ccLoginUrl?.let { url ->
-        OutlinedButton(onClick = { uri.openUri(url) }) { Text("Open sign-in page") }
+        // Fresh sign-in inside Arin: no saved logins, so it signs in to exactly the account you choose.
+        var fresh by rememberSaveable { mutableStateOf(false) }
+        var pageError by rememberSaveable { mutableStateOf("") }
+        val clip = androidx.compose.ui.platform.LocalClipboardManager.current
+        Button(onClick = { pageError = ""; fresh = true }) { Text("Sign in here (fresh page)") }
+        if (fresh) com.arin.claudecode.FreshSignInDialog(url, onCode = { c -> fresh = false; if (c != com.arin.claudecode.LOCAL_DONE) vm.pasteCcCode(c) }, onClose = { fresh = false },
+            onError = { e -> pageError = e })
+        if (pageError.isNotBlank()) Text(pageError, style = small, color = colors.error)
+        // Always works: a private tab remembers no account, so it signs in to exactly the one you type.
+        OutlinedButton(onClick = { clip.setText(androidx.compose.ui.text.AnnotatedString(url)); vm.notice = "Sign-in link copied — paste it in a Firefox private tab" }) {
+            Text("Copy link for a private tab")
+        }
+        Text("Firefox: ⋮ → New private tab → paste the link → sign in → Authorize. Arin finishes by itself (if a code shows instead, paste it below).",
+            style = small, color = colors.onSurfaceVariant)
+        OutlinedButton(onClick = { uri.openUri(url) }) { Text("Or open in your browser") }
         var code by rememberSaveable { mutableStateOf("") }
         Row(verticalAlignment = Alignment.CenterVertically) {
             OutlinedTextField(code, { code = it }, placeholder = { Text("Paste the code from the sign-in page") }, singleLine = true, modifier = Modifier.weight(1f))

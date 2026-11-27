@@ -90,7 +90,7 @@ class MovieService : Service() {
         fun update(context: Context, text: String, fraction: Float?) {
             if (!canNotify(context)) return
             val n = build(context, text, fraction?.let { (it.coerceIn(0f, 1f) * 1000).toInt() } ?: -1)
-            runCatching { NotificationManagerCompat.from(context).notify(ID, n) }
+            try { NotificationManagerCompat.from(context).notify(ID, n) } catch (e: SecurityException) { /* notifications not allowed */ }
         }
 
         fun stop(context: Context) {
@@ -107,7 +107,7 @@ class MovieService : Service() {
                 .setAutoCancel(true)
                 .setContentIntent(ReplyService.openApp(context, null))
                 .build()
-            runCatching { NotificationManagerCompat.from(context).notify(DONE_ID, n) }
+            try { NotificationManagerCompat.from(context).notify(DONE_ID, n) } catch (e: SecurityException) { /* notifications not allowed */ }
         }
     }
 }

@@ -1,5 +1,7 @@
 set -e
 export DEBIAN_FRONTEND=noninteractive
+# Downloads go through arin-fetch so Arin shows MB, %, speed and time left (falls back to plain curl).
+fetch(){ if command -v arin-fetch >/dev/null 2>&1; then arin-fetch "$@"; else curl -fL --retry 5 -sS -o "$2" "$1"; fi; }
 ARCH=$(uname -m)
 
 # 1. JDK 21, Gradle, and the small tools the rest of this script needs
@@ -10,7 +12,7 @@ fi
 G=@@GRADLE@@
 if [ ! -x /opt/gradle-$G/bin/gradle ]; then
   echo "Downloading Gradle $G…"
-  curl -fsSL -o /tmp/gradle.zip https://services.gradle.org/distributions/gradle-$G-bin.zip
+  fetch https://services.gradle.org/distributions/gradle-$G-bin.zip /tmp/gradle.zip "Gradle $G"
   mkdir -p /opt && unzip -q -o /tmp/gradle.zip -d /opt && rm /tmp/gradle.zip
 fi
 ln -sf /opt/gradle-$G/bin/gradle /usr/local/bin/gradle
@@ -22,7 +24,7 @@ if [ ! -x $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager ]; then
   echo "Downloading the Android SDK command-line tools…"
   Z=$(curl -fsSL https://dl.google.com/android/repository/repository2-3.xml | grep -o 'commandlinetools-linux-[0-9]*_latest.zip' | sort -V | tail -1)
   [ -n "$Z" ] || Z=commandlinetools-linux-13114758_latest.zip
-  curl -fsSL -o /tmp/clt.zip "https://dl.google.com/android/repository/$Z"
+  fetch "https://dl.google.com/android/repository/$Z" /tmp/clt.zip "Android SDK command-line tools"
   rm -rf /tmp/clt && unzip -q /tmp/clt.zip -d /tmp/clt && rm /tmp/clt.zip
   mkdir -p $ANDROID_HOME/cmdline-tools && rm -rf $ANDROID_HOME/cmdline-tools/latest
   mv /tmp/clt/cmdline-tools $ANDROID_HOME/cmdline-tools/latest
@@ -54,7 +56,7 @@ if [ "$NEED" = 1 ]; then
     URL=$(curl -fsSL "https://api.github.com/repos/$REPO/releases" | grep -o 'https://[^"]*\.\(zip\|tar\.gz\|tar\.xz\)' | grep -i "$ARCH" | grep -iv 'windows\|darwin\|macos' | head -1 || true)
     [ -n "$URL" ] || continue
     rm -rf /tmp/a2 && mkdir -p /tmp/a2
-    curl -fsSL -o /tmp/a2/pkg "$URL" || continue
+    fetch "$URL" /tmp/a2/pkg "native aapt2 tools" || continue
     case "$URL" in *.zip) unzip -q -o /tmp/a2/pkg -d /tmp/a2 ;; *) tar -xf /tmp/a2/pkg -C /tmp/a2 ;; esac
     for T in aapt2 aidl zipalign; do
       [ -x "$ANDROID_HOME/arin/$T" ] && continue

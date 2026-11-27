@@ -76,6 +76,51 @@ class GitHubClient(private val token: String) {
 
     suspend fun login(): String = call("GET", "/user").str("login") ?: throw ProviderException(401, "GitHub: bad token")
 
+    // ARIN-PROTECTED: github-auth-check — before a build Arin finds out exactly what is wrong with GitHub access, once,
+    // and says it in plain words: no/invalid/expired token, a token without write (repo/workflow) permission, a wrong
+    // owner or repository name, a private repository the token can't see, or a missing branch. A bad credential is
+    // never retried, and the token itself is never shown or logged.
+    suspend fun diagnose(owner: String? = null, repo: String? = null, branch: String? = null): String = withContext(Dispatchers.IO) {
+        if (token.isBlank()) throw ProviderException(401, "GitHub: not signed in. Sign in with GitHub in Settings.")
+        fun get(path: String) = runCatching {
+            Http.client.newCall(request("$api$path").get().build()).execute().use { r -> Triple(r.code, r.header("X-OAuth-Scopes"), r.body?.string().orEmpty()) }
+        }.getOrElse { throw ProviderException(0, "GitHub couldn't be reached (${it.javaClass.simpleName}) — check the internet connection.") }
+        val (code, scopes, body) = get("/user")
+        when (code) {
+            401 -> throw ProviderException(401, "GitHub: the saved token is invalid or has expired (or was revoked). Sign out of GitHub in Settings and sign in again.")
+            403 -> throw ProviderException(403, "GitHub refused the token (rate limit or blocked token). Wait a few minutes or sign in again.")
+        }
+        if (code !in 200..299) throw ProviderException(code, "GitHub answered HTTP $code when checking the token.")
+        val login = runCatching { Http.json.parseToJsonElement(body).str("login") }.getOrNull() ?: throw ProviderException(401, "GitHub: bad token")
+        // Classic tokens list their scopes; fine-grained tokens and app tokens send none (their permissions are checked on the repo below).
+        val sc = scopes?.split(',')?.map { it.trim() }?.filter { it.isNotEmpty() }
+        if (sc != null && sc.isNotEmpty()) {
+            val missing = listOf("repo", "workflow").filter { need -> need !in sc && !(need == "repo" && "public_repo" in sc) }
+            if (missing.isNotEmpty()) throw ProviderException(403, "GitHub: the token (user $login) can't write code or workflows — it is missing the " +
+                missing.joinToString(" and ") + " permission. Sign in again with \"Sign in with GitHub\" (it asks for the right permissions).")
+        }
+        if (owner.isNullOrBlank() || repo.isNullOrBlank()) return@withContext login
+        val (rc, _, rb) = get("/repos/$owner/$repo")
+        if (rc == 404) {
+            val (oc, _, _) = get("/users/$owner")
+            throw ProviderException(404, when {
+                oc == 404 -> "GitHub: there is no account or organisation called \"$owner\" — the repository owner in the project is wrong."
+                !owner.equals(login, true) -> "GitHub: repository $owner/$repo not found. Either the name is wrong, or it is private and your account ($login) has no access to it."
+                else -> "GitHub: repository $owner/$repo not found in your account — it was deleted or renamed, or the name is wrong."
+            })
+        }
+        if (rc == 403) throw ProviderException(403, "GitHub: your account ($login) isn't allowed to open $owner/$repo (organisation rules or token permissions).")
+        if (rc !in 200..299) throw ProviderException(rc, "GitHub answered HTTP $rc for $owner/$repo.")
+        val perm = runCatching { Http.json.parseToJsonElement(rb).obj("permissions") }.getOrNull()
+        val push = (perm?.get("push") as? JsonPrimitive)?.contentOrNull
+        if (push == "false") throw ProviderException(403, "GitHub: your account ($login) can read $owner/$repo but not write to it. Ask the owner for write access, or build it in your own account.")
+        if (!branch.isNullOrBlank()) {
+            val (bc, _, _) = get("/repos/$owner/$repo/branches/$branch")
+            if (bc == 404) throw ProviderException(404, "GitHub: branch \"$branch\" doesn't exist in $owner/$repo.")
+        }
+        login
+    }
+
     data class Repo(val owner: String, val name: String, val branch: String, val url: String)
 
     suspend fun createRepo(name: String, description: String): Repo {
@@ -118,6 +163,22 @@ class GitHubClient(private val token: String) {
             branch = r.str("default_branch") ?: "main",
             url = r.str("html_url") ?: "https://github.com",
         )
+    }
+
+    /**
+     * ARIN-PROTECTED: safe rollback — puts the files back exactly as they were at [toSha] by adding a NEW commit on top
+     * (nothing is deleted from history, so the rollback itself can be undone). Returns the new commit's SHA.
+     */
+    suspend fun restore(repo: Repo, toSha: String, message: String): String {
+        val base = "/repos/${repo.owner}/${repo.name}"
+        val head = call("GET", "$base/git/ref/heads/${repo.branch}").obj("object")!!.str("sha")!!
+        val tree = call("GET", "$base/git/commits/$toSha").obj("tree")!!.str("sha")!!
+        val commit = call("POST", "$base/git/commits", buildJsonObject {
+            put("message", JsonPrimitive(message)); put("tree", JsonPrimitive(tree))
+            put("parents", JsonArray(listOf(JsonPrimitive(head))))
+        }).str("sha")!!
+        call("PATCH", "$base/git/refs/heads/${repo.branch}", buildJsonObject { put("sha", JsonPrimitive(commit)) })
+        return commit
     }
 
     /**

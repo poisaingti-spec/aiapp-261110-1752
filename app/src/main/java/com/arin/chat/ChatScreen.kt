@@ -96,6 +96,8 @@ fun ChatScreen(
     onOpenFree: () -> Unit = {},
     onOpenClaudeCode: () -> Unit = {},
     onOpenMovieMaker: () -> Unit = {},
+    onOpenSecurity: () -> Unit = {},
+    onOpenArinUpdate: () -> Unit = {},
     startVoice: Boolean = false,
     onVoiceStarted: () -> Unit = {},
 ) {
@@ -104,7 +106,7 @@ fun ChatScreen(
     val snackbar = remember { SnackbarHostState() }
     var input by rememberSaveable { mutableStateOf("") }
     val pickFiles = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { vm.attach(it) }
-    val pickPhotos = rememberLauncherForActivityResult(ActivityResultContracts.PickMultipleVisualMedia(6)) { vm.attach(it) }
+    val pickPhotos = rememberLauncherForActivityResult(ActivityResultContracts.PickMultipleVisualMedia()) { vm.attach(it) }
     val context = androidx.compose.ui.platform.LocalContext.current
     // Camera: the photo is written to a file Arin shares with the camera app, then attached.
     var cameraUri by remember { mutableStateOf<android.net.Uri?>(null) }
@@ -227,6 +229,8 @@ fun ChatScreen(
                 onFree = { scope.launch { drawer.close() }; onOpenFree() },
                 onClaudeCode = { scope.launch { drawer.close() }; onOpenClaudeCode() },
                 onMovieMaker = { scope.launch { drawer.close() }; onOpenMovieMaker() },
+                onSecurity = { scope.launch { drawer.close() }; onOpenSecurity() },
+                onArinUpdate = { scope.launch { drawer.close() }; onOpenArinUpdate() },
             )
         },
     ) {
@@ -234,12 +238,16 @@ fun ChatScreen(
             containerColor = MaterialTheme.colorScheme.background,
             snackbarHost = { SnackbarHost(snackbar) },
             topBar = {
-                TopBar(
-                    vm,
-                    onMenu = { scope.launch { drawer.open() } },
-                    onNew = { vm.newChat(vm.chatProject.takeIf { vm.messages.isEmpty() }); input = "" },
-                    onProject = onOpenProject,
-                )
+                Column {
+                    TopBar(
+                        vm,
+                        onMenu = { scope.launch { drawer.open() } },
+                        onNew = { vm.newChat(vm.chatProject.takeIf { vm.messages.isEmpty() }); input = "" },
+                        onProject = onOpenProject,
+                    )
+                    // Real usage, at the top (away from the message box).
+                    Box(Modifier.padding(start = 16.dp, end = 16.dp, bottom = 2.dp)) { com.arin.claudecode.UsageBar(vm) }
+                }
             },
             bottomBar = {
                 Composer(
@@ -249,7 +257,7 @@ fun ChatScreen(
                     onSend = { send() },
                     onVoice = { openVoice() },
                     onPhotos = {
-                        pickPhotos.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+                        pickPhotos.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo))
                     },
                     onFiles = { pickFiles.launch(arrayOf("*/*")) },
                     onCamera = { openCamera() },
@@ -323,7 +331,7 @@ private fun TopBar(vm: ChatViewModel, onMenu: () -> Unit, onNew: () -> Unit, onP
                             overflow = TextOverflow.Ellipsis,
                         )
                         Text(
-                            vm.modelLabel() + when {
+                            vm.modelLabel() + (if (vm.helperTalk && vm.claudeHelperOn) "  ·  🟣 with " + vm.helperLabel.substringBefore(" (") else "") + when {
                                 vm.isRebuildTab -> "  ·  Rebuild"
                                 !vm.reaActive() -> ""
                                 vm.reaMissing -> "  ·  REA not installed"
@@ -339,6 +347,7 @@ private fun TopBar(vm: ChatViewModel, onMenu: () -> Unit, onNew: () -> Unit, onP
                 }
             }
             DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+                com.arin.selffix.AiChoices(vm) { menu = false }
                 // Your APIs: every API you added, switch with one tap, add more right here.
                 Text(
                     "Your APIs",
@@ -383,6 +392,7 @@ private fun TopBar(vm: ChatViewModel, onMenu: () -> Unit, onNew: () -> Unit, onP
                 }
             }
         }
+        com.arin.selffix.AiHelperButton(vm, hasInput = true) // ARIN-PROTECTED: ai-helper in every tab
         if (vm.messages.isNotEmpty()) ChatMenu(vm)
         IconButton(onClick = onNew) { Icon(Icons.Filled.Create, contentDescription = "New chat") }
     }
@@ -536,7 +546,7 @@ private fun Conversation(vm: ChatViewModel, onEdit: (Int) -> Unit) {
                 )
             }
             if (vm.streaming) {
-                item(key = "live") { LiveReply(vm.liveText, vm.liveThinking, vm.showThinking, vm.status, vm.liveCommands.toList(), onSummary = { stepsFor = "live" }) }
+                item(key = "live") { LiveReply(vm.liveText, vm.liveThinking, vm.showThinking, vm.status, vm.liveCommands.toList(), onSummary = { stepsFor = "live" }, who = vm.liveWho) }
             }
         }
         androidx.compose.animation.AnimatedVisibility(
@@ -601,8 +611,9 @@ private fun Composer(
                 androidx.compose.material3.TextButton(onClick = onCancelEdit) { Text("Cancel") }
             }
         }
-        // A build from this chat is running: it can be stopped here (and resumed later).
-        if (vm.chatBuildRunning()) {
+        // Every build running from this chat, each with its own Stop (stops only that one, at once; resume later).
+        val builds = vm.runningBuildsHere()
+        builds.forEachIndexed { i, (sid, name) ->
             Surface(
                 color = MaterialTheme.colorScheme.secondaryContainer,
                 shape = MaterialTheme.shapes.medium,
@@ -610,12 +621,11 @@ private fun Composer(
             ) {
                 Row(Modifier.padding(start = 12.dp, end = 4.dp, top = 4.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
                     Text(
-                        "Building ${vm.chatBuildAppName()}… progress is saved as it goes." +
-                            (com.arin.builder.BuildRunner.runningCount.let { n -> if (n > 1) " ($n builds running)" else "" }),
+                        (if (builds.size > 1) "Build ${i + 1}: " else "") + "building $name… progress is saved as it goes.",
                         style = MaterialTheme.typography.bodySmall,
                         modifier = Modifier.weight(1f),
                     )
-                    androidx.compose.material3.TextButton(onClick = { vm.stopChatBuild() }) { Text("Stop") }
+                    androidx.compose.material3.TextButton(onClick = { vm.stopBuild(sid) }) { Text("Stop", color = MaterialTheme.colorScheme.error) }
                 }
             }
         }
@@ -658,7 +668,14 @@ private fun Composer(
                 }
             }
         }
-        vm.pending.forEach { f -> FileChip(f, onRemove = { vm.removePending(f) }) }
+        com.arin.selffix.ActivityBar("chat") // what Arin is doing (helper help marked 🟣)
+        com.arin.selffix.HelperTalkBar(vm) // talking to the AI helper in this message box
+        // Waiting files in one compact row (swipe sideways), so the message box always stays on screen.
+        com.arin.selffix.PendingFiles(
+            vm.pending.map { it.name to it.size },
+            onRemove = { i -> vm.pending.getOrNull(i)?.let { vm.removePending(it) } },
+            onRemoveAll = { vm.pending.toList().forEach { vm.removePending(it) } },
+        )
         vm.steering.forEachIndexed { i, note ->
             Surface(
                 color = MaterialTheme.colorScheme.secondaryContainer,
@@ -672,6 +689,7 @@ private fun Composer(
                         maxLines = 3,
                         modifier = Modifier.weight(1f, fill = false),
                     )
+                    androidx.compose.material3.TextButton(onClick = { vm.sendSteerNow() }) { Text("Send now") }
                     androidx.compose.material3.TextButton(onClick = { vm.removeSteer(i) }) { Text("✕") }
                 }
             }
@@ -715,7 +733,7 @@ private fun Composer(
                     IconButton(onClick = { attachMenu = true }) { Icon(Icons.Filled.Add, contentDescription = "Attach") }
                     DropdownMenu(expanded = attachMenu, onDismissRequest = { attachMenu = false }) {
                         DropdownMenuItem(text = { Text("Camera") }, onClick = { attachMenu = false; onCamera() })
-                        DropdownMenuItem(text = { Text("Photos") }, onClick = { attachMenu = false; onPhotos() })
+                        DropdownMenuItem(text = { Text("Photos & videos") }, onClick = { attachMenu = false; onPhotos() })
                         DropdownMenuItem(text = { Text("Files (any type)") }, onClick = { attachMenu = false; onFiles() })
                         DropdownMenuItem(text = { Text("Installed app (APK)") }, onClick = { attachMenu = false; pickApp = true })
                         DropdownMenuItem(
@@ -799,6 +817,7 @@ private fun ChatMenu(vm: ChatViewModel) {
     var open by remember { mutableStateOf(false) }
     var info by remember { mutableStateOf(false) }
     var confirmClearAll by remember { mutableStateOf(false) }
+    val helperFlow = com.arin.selffix.rememberAiHelperFlow()
     Box {
         IconButton(onClick = { open = true }) {
             Icon(Icons.Filled.MoreVert, contentDescription = "Chat options")
@@ -826,12 +845,16 @@ private fun ChatMenu(vm: ChatViewModel) {
             })
             DropdownMenuItem(text = { Text("Chat info") }, onClick = { open = false; info = true })
             androidx.compose.material3.HorizontalDivider()
+            // AI helper: on/off, and Talk to Claude, ChatGPT, Gemini or a Custom API model, in every tab.
+            com.arin.selffix.AiHelperMenuItems(vm, helperFlow, close = { open = false }) // ARIN-PROTECTED: ai-helper in every tab
+            androidx.compose.material3.HorizontalDivider()
             DropdownMenuItem(
                 text = { Text("Clear all chats", color = MaterialTheme.colorScheme.error) },
                 onClick = { open = false; confirmClearAll = true },
             )
         }
     }
+    com.arin.selffix.AiHelperDialogs(vm, helperFlow, intoChat = true) // ARIN-PROTECTED: ai-helper in every tab
     if (confirmClearAll) {
         androidx.compose.material3.AlertDialog(
             onDismissRequest = { confirmClearAll = false },
@@ -864,7 +887,7 @@ private fun ChatMenu(vm: ChatViewModel) {
 
 /** Pick an app installed on this phone; its APK is attached to the REA chat. */
 @Composable
-private fun InstalledAppPicker(onPick: (com.arin.data.InstalledApps.App) -> Unit, onClose: () -> Unit) {
+internal fun InstalledAppPicker(onPick: (com.arin.data.InstalledApps.App) -> Unit, onClose: () -> Unit) {
     val context = androidx.compose.ui.platform.LocalContext.current
     var system by remember { mutableStateOf(false) }
     var query by remember { mutableStateOf("") }

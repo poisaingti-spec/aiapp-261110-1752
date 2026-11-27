@@ -1,5 +1,6 @@
 package com.arin.claudecode
 
+import kotlinx.coroutines.launch
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -83,10 +84,12 @@ fun ClaudeCodeScreen(vm: ChatViewModel, onBack: () -> Unit, onOpenSettings: () -
             Column(Modifier.weight(1f)) {
                 Text("Claude Code", style = MaterialTheme.typography.titleLarge)
                 if (vm.ccInstalled && vm.ccSignedIn) ModelPicker(vm)
+                if (vm.ccInstalled && vm.ccSignedIn) com.arin.claudecode.UsageBar(vm, claudeLogin = vm.ccBackend == "pro")
             }
             if (vm.ccInstalled && vm.ccSignedIn) {
                 IconButton(onClick = { vm.newCcChat() }, enabled = !vm.ccRunning) { Icon(Icons.Filled.Edit, contentDescription = "New chat") }
             }
+            com.arin.selffix.AiHelperButton(vm, hasInput = true) // ARIN-PROTECTED: ai-helper in every tab
             Box {
                 var menu by rememberSaveable { mutableStateOf(false) }
                 IconButton(onClick = { menu = true }) { Icon(Icons.Filled.MoreVert, contentDescription = "More") }
@@ -213,6 +216,7 @@ private fun Conversation(vm: ChatViewModel, modifier: Modifier) {
                 m, vm.showThinking,
                 isLast = i == vm.ccMessages.lastIndex && !vm.ccRunning,
                 onRetry = vm::retryClaudeCode,
+                onResume = if (i == vm.ccMessages.lastIndex && !vm.ccRunning && (m.failed || m.text.startsWith("Stopped") || m.text.startsWith("🔎"))) vm::resumeClaudeCode else null,
                 onSummary = if (m.commands.isNotEmpty()) ({ stepsFor = m.id }) else null,
             )
         }
@@ -239,7 +243,7 @@ private fun Composer(vm: ChatViewModel) {
         androidx.activity.result.contract.ActivityResultContracts.OpenMultipleDocuments(),
     ) { vm.ccAttach(it) }
     val pickPhotos = androidx.activity.compose.rememberLauncherForActivityResult(
-        androidx.activity.result.contract.ActivityResultContracts.PickMultipleVisualMedia(10),
+        androidx.activity.result.contract.ActivityResultContracts.PickMultipleVisualMedia(),
     ) { vm.ccAttach(it) }
     var cameraUri by androidx.compose.runtime.remember { mutableStateOf<android.net.Uri?>(null) }
     val takePhoto = androidx.activity.compose.rememberLauncherForActivityResult(
@@ -249,6 +253,29 @@ private fun Composer(vm: ChatViewModel) {
         if (saved && uri != null) vm.ccAttach(listOf(uri))
         cameraUri = null
     }
+    val takeVideo = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.CaptureVideo(),
+    ) { saved ->
+        val uri = cameraUri
+        if (saved && uri != null) vm.ccAttach(listOf(uri))
+        cameraUri = null
+    }
+    val pickApk = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.OpenDocument(),
+    ) { it?.let { u -> vm.ccAttach(listOf(u)) } }
+    var pickApp by androidx.compose.runtime.remember { mutableStateOf(false) }
+    val appScope = androidx.compose.runtime.rememberCoroutineScope()
+    if (pickApp) com.arin.chat.InstalledAppPicker(
+        onPick = { app ->
+            pickApp = false
+            appScope.launch {
+                runCatching { com.arin.data.InstalledApps.copyApks(context, app) }
+                    .onSuccess { files -> vm.ccAttach(files.map { android.net.Uri.fromFile(it) }) }
+                    .onFailure { vm.notice = "Couldn't copy ${app.label}'s APK: ${it.message}" }
+            }
+        },
+        onClose = { pickApp = false },
+    )
     fun openCamera() {
         runCatching {
             val dir = java.io.File(context.cacheDir, "exports").apply { mkdirs() }
@@ -261,23 +288,15 @@ private fun Composer(vm: ChatViewModel) {
 
     Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp)) {
         // Files waiting to go with the next message.
-        if (vm.ccPending.isNotEmpty() || vm.ccAttaching) {
-            androidx.compose.foundation.layout.FlowRow(
-                Modifier.fillMaxWidth().padding(bottom = 6.dp),
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
-                verticalArrangement = Arrangement.spacedBy(6.dp),
-            ) {
-                vm.ccPending.forEach { f ->
-                    androidx.compose.material3.InputChip(
-                        selected = false,
-                        onClick = { vm.ccRemovePending(f) },
-                        label = { Text("📎 " + f.name, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.widthIn(max = 200.dp)) },
-                        trailingIcon = { Icon(Icons.Filled.Close, contentDescription = "Remove", modifier = Modifier.size(16.dp)) },
-                    )
-                }
-                if (vm.ccAttaching) CircularProgressIndicator(Modifier.size(18.dp).padding(top = 8.dp), strokeWidth = 2.dp)
-            }
-        }
+        com.arin.selffix.ActivityBar("claude-code") // what Arin is doing (helper help marked 🟣)
+        com.arin.selffix.HelperTalkBar(vm) // talking to the AI helper in this message box
+        // Waiting files in one compact row (swipe sideways), so the message box always stays on screen.
+        com.arin.selffix.PendingFiles(
+            vm.ccPending.map { it.name to it.size },
+            onRemove = { i -> vm.ccPending.getOrNull(i)?.let { vm.ccRemovePending(it) } },
+            onRemoveAll = { vm.ccPending.toList().forEach { vm.ccRemovePending(it) } },
+        )
+        if (vm.ccAttaching) CircularProgressIndicator(Modifier.size(18.dp).padding(bottom = 6.dp), strokeWidth = 2.dp)
         Surface(color = colors.surfaceContainerHigh, shape = RoundedCornerShape(28.dp)) {
             Row(Modifier.padding(6.dp), verticalAlignment = Alignment.Bottom) {
                 Box {
@@ -293,6 +312,21 @@ private fun Composer(vm: ChatViewModel) {
                             )
                         })
                         DropdownMenuItem(text = { Text("Files (any type)") }, onClick = { attachMenu = false; pickFiles.launch(arrayOf("*/*")) })
+                        DropdownMenuItem(text = { Text("Camera (video)") }, onClick = {
+                            attachMenu = false
+                            runCatching {
+                                val dir = java.io.File(context.cacheDir, "exports").apply { mkdirs() }
+                                val uri = androidx.core.content.FileProvider.getUriForFile(context, context.packageName + ".files",
+                                    java.io.File(dir, "video-${System.currentTimeMillis()}.mp4"))
+                                cameraUri = uri
+                                takeVideo.launch(uri)
+                            }.onFailure { vm.notice = "Couldn't open the camera." }
+                        })
+                        DropdownMenuItem(text = { Text("Installed app (APK)") }, onClick = { attachMenu = false; pickApp = true })
+                        DropdownMenuItem(text = { Text("APK file") }, onClick = {
+                            attachMenu = false
+                            pickApk.launch(arrayOf("application/vnd.android.package-archive", "application/octet-stream", "*/*"))
+                        })
                     }
                 }
                 TextField(
